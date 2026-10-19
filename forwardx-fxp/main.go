@@ -140,7 +140,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.119"
+	fxpRuntimeVersion    = "2.2.120"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -377,53 +377,28 @@ func (s *exitEndpointSelector) markHealthy(index int) {
 // dialSelectedSecureTCP picks a healthy exit endpoint and opens a business
 // connection to it.
 //
-// The V3 multiplexed path delegates endpoint selection to the session pool,
-// which owns physical sessions and therefore knows which endpoint actually
-// failed. The legacy paths keep the per-attempt loop below, where each attempt
-// dials its own physical connection.
+// Selection stays outside the pool so the returned endpoint is exact, including
+// endpoints on different hosts that happen to use the same port.
 func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
 	if selector == nil || selector.count() == 0 {
 		return nil, nil, exitEndpoint{}, errors.New("no exit endpoints")
 	}
-	if v3MuxEnabled(cfg) {
-		conn, sec, err := v3Outbound.open("", 0, cfg, selector, selectionKey)
-		if err != nil {
-			return nil, nil, exitEndpoint{}, err
-		}
-		// The pool may have moved to another endpoint during failover. Report
-		// what the connection is actually attached to.
-		return conn, sec, endpointFromConn(conn, selector), nil
-	}
 	return dialSelectedEndpointLoop(selector, cfg, selectionKey)
 }
 
-// endpointFromConn reports the endpoint a pooled connection is attached to by
-// matching its remote address against the selector's endpoint list. When no
-// endpoint matches, the first configured endpoint is reported so callers still
-// get a usable record for logging.
-func endpointFromConn(conn net.Conn, selector *exitEndpointSelector) exitEndpoint {
-	if conn != nil && selector != nil {
-		if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-			selector.mu.Lock()
-			defer selector.mu.Unlock()
-			for _, endpoint := range selector.endpoints {
-				if endpoint.Port == addr.Port {
-					return endpoint
-				}
-			}
-		}
-	}
-	if selector != nil {
-		selector.mu.Lock()
-		defer selector.mu.Unlock()
-		if len(selector.endpoints) > 0 {
-			return selector.endpoints[0]
-		}
-	}
-	return exitEndpoint{}
+func dialSelectedEndpointLoop(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
+	return dialSelectedSetup(selector, cfg, selectionKey, nil, dialSecureTCP)
 }
 
-func dialSelectedEndpointLoop(selector *exitEndpointSelector, cfg config, selectionKey string) (net.Conn, *secureConn, exitEndpoint, error) {
+// Only setup may be retried. No payload has been consumed from the client yet;
+// once this returns, an I/O failure MUST terminate the stream, not replay bytes
+// into a new target connection. Active-stream resumption needs end-to-end ACKs.
+func dialSelectedSecureHello(selector *exitEndpointSelector, cfg config, selectionKey string, hello []byte) (net.Conn, *secureConn, exitEndpoint, error) {
+	return dialSelectedSetup(selector, cfg, selectionKey, func(sec *secureConn) error { return writeSecureHello(sec, hello) }, dialSecureTCP)
+}
+
+func dialSelectedSetup(selector *exitEndpointSelector, cfg config, selectionKey string, setup func(*secureConn) error,
+	dial func(string, int, config, *exitEndpointSelector, string) (net.Conn, *secureConn, error)) (net.Conn, *secureConn, exitEndpoint, error) {
 	attempted := map[int]bool{}
 	var lastErr error
 	for len(attempted) < selector.count() {
@@ -438,12 +413,21 @@ func dialSelectedEndpointLoop(selector *exitEndpointSelector, cfg config, select
 		}
 		// nil selector: this loop owns the endpoint choice, so the pool must not
 		// run a second selection pass on top of it.
-		conn, sec, err := dialSecureTCP(endpoint.Host, endpoint.Port, dialCfg, nil, "")
+		conn, sec, err := dial(endpoint.Host, endpoint.Port, dialCfg, nil, "")
+		if err == nil && setup != nil {
+			err = setup(sec)
+			if err != nil {
+				_ = conn.Close()
+			}
+		}
 		if err == nil {
 			selector.markHealthy(index)
 			return conn, sec, endpoint, nil
 		}
 		lastErr = err
+		if v3MuxEnabled(cfg) && !v3EndpointFailureIsRetryable(err) {
+			return nil, nil, exitEndpoint{}, err
+		}
 		selector.markFailure(index, err)
 	}
 	if lastErr == nil {
@@ -1065,11 +1049,6 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		proxyInfo = proxyProtocolInfo{}
 	}
 	selectionKey := endpointSelectionSource(client.RemoteAddr().String())
-	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg, selectionKey)
-	if err != nil {
-		return fmt.Errorf("dial exit: %w", err)
-	}
-	defer exit.Close()
 	hello, _ := json.Marshal(helloFrame{
 		Network:                  "tcp",
 		TargetIP:                 cfg.TargetIP,
@@ -1085,9 +1064,11 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		ProxyProtocolExitSend:    cfg.ProxyProtocolExitSend,
 		ProxyProtocolVersion:     normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion),
 	})
-	if err := writeSecureHello(sec, hello); err != nil {
-		return err
+	exit, sec, endpoint, err := dialSelectedSecureHello(selector, cfg, selectionKey, hello)
+	if err != nil {
+		return fmt.Errorf("dial exit and hello: %w", err)
 	}
+	defer exit.Close()
 	fxpVerbosef("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
 	policy := protocolPolicy{BlockHTTP: cfg.BlockHTTP, BlockSocks: cfg.BlockSocks, BlockTLS: cfg.BlockTLS}
 	reportBlock := func(proto string) {
@@ -1608,10 +1589,6 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 
 func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, counter *trafficCounter, queueBudget *fxpUDPQueueRuleBudget, remove func(*udpEntrySession)) (*udpEntrySession, error) {
 	selectionKey := clientAddr.IP.String()
-	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg, selectionKey)
-	if err != nil {
-		return nil, err
-	}
 	hello, _ := json.Marshal(helloFrame{
 		Network:      "udp",
 		TargetIP:     cfg.TargetIP,
@@ -1620,8 +1597,8 @@ func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, 
 		RuleID:       cfg.RuleID,
 		SelectionKey: selectionKey,
 	})
-	if err := writeSecureHello(sec, hello); err != nil {
-		_ = exit.Close()
+	exit, sec, endpoint, err := dialSelectedSecureHello(selector, cfg, selectionKey, hello)
+	if err != nil {
 		return nil, err
 	}
 	if counter == nil {
@@ -2181,17 +2158,14 @@ func handleRelayBusiness(upSec *secureConn, cfg config, selector *exitEndpointSe
 	if selectionKey == "" {
 		selectionKey = endpointSelectionSource(upConn.RemoteAddr().String())
 	}
-	downConn, downSec, endpoint, err := dialSelectedSecureTCP(selector, downCfg, selectionKey)
+	// Relay only retries downstream establishment, before forwarding business frames.
+	helloBytes, _ := json.Marshal(hello)
+	downConn, downSec, endpoint, err := dialSelectedSecureHello(selector, downCfg, selectionKey, helloBytes)
 	if err != nil {
 		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
 		return err
 	}
 	defer downConn.Close()
-	// Re-send helloFrame to downstream
-	helloBytes, _ := json.Marshal(hello)
-	if err := writeSecureHello(downSec, helloBytes); err != nil {
-		return err
-	}
 	fxpVerbosef("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), endpoint.Host, endpoint.Port, hello.TargetIP, hello.TargetPort)
 	// Bidirectional relay: upstream ↔ downstream
 	return relayBidir(upSec, downSec)

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   balanceTransactions,
   forwardGroups,
@@ -481,7 +481,7 @@ export function trafficBillingSnapshotResourceState(
 export async function listTrafficBillingConfigs() {
   const db = await getDb();
   if (!db) return [];
-  const configs = await db.select().from(trafficBillingConfigs).orderBy(desc(trafficBillingConfigs.updatedAt));
+  const configs = await db.select().from(trafficBillingConfigs).orderBy(asc(trafficBillingConfigs.sortOrder), desc(trafficBillingConfigs.updatedAt), desc(trafficBillingConfigs.id));
   const hostIds = Array.from(new Set((configs as any[])
     .filter((config: any) => config.resourceType === "host")
     .map((config: any) => Number(config.resourceId))

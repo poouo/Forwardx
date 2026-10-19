@@ -25,6 +25,13 @@ test("English network result states and built-in appearance options contain no C
     assert.equal(hasChinese(output), false);
     assert.match(output, /Network Test Results/);
     assert.match(output, /Select a host, test type and target/);
+    const completed = { taskId: "summary", target: "example.com", resolvedAddress: "192.0.2.1", resolvedAddresses: ["192.0.2.1"], exitCode: 0, timedOut: false, durationMs: 100, startedAt: "2026-10-19T00:00:00Z", finishedAt: "2026-10-19T00:00:01Z" };
+    const ping = renderToStaticMarkup(<ResultOutput result={{ ...completed, method: "ping", output: "4 packets transmitted, 4 received, 0% packet loss\nrtt min/avg/max/mdev = 1.00/2.00/3.00/0.50 ms" }} liveOutput="" state="success" />);
+    assert.equal(hasChinese(ping), false);
+    assert.match(ping, /Latency standard deviation/);
+    const route = renderToStaticMarkup(<ResultOutput result={{ ...completed, method: "traceroute", output: "1 * * *\n2 192.0.2.1 10.0 ms" }} liveOutput="" state="success" />);
+    assert.equal(hasChinese(route), false);
+    assert.match(route, /Silent or timed-out intermediate hops/);
     assert.equal(hasChinese(buildPendingOutput("tcp", "Test Host", "example.com", "443")), false);
     assert.match(buildPendingOutput("tcp", "Test Host", "example.com", "443"), /Target port: 443/);
     for (const item of PERSONALIZATION_THEME_PRESETS) {

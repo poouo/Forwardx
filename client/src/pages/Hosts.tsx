@@ -12,11 +12,12 @@ import DateTimePickerInput, {
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
 import HostStatusNotificationSetting from "@/components/hosts/HostStatusNotificationSetting";
+import HostAddressSelectors from "@/components/hosts/HostAddressSelectors";
+import { normalizeHostDdnsIpVersion, type HostDdnsIpVersion } from "@shared/hostAddresses";
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
 import {
-  agentDetectedIpText,
   compareVersions,
   formatBytes,
   formatUptime,
@@ -622,7 +623,10 @@ type HostFormData = {
   trafficAutoReset: boolean;
   trafficResetDay: number;
   ddnsEnabled: boolean;
-  ddnsIpVersion: "ipv4" | "ipv6";
+  ddnsIpVersion: HostDdnsIpVersion;
+  ddnsAddressMode: "primary" | "all";
+  preferredIpv4: string;
+  preferredIpv6: string;
   ddnsDomain: string;
   blockHttp: boolean;
   blockSocks: boolean;
@@ -658,6 +662,9 @@ const defaultFormData: HostFormData = {
   trafficResetDay: 1,
   ddnsEnabled: false,
   ddnsIpVersion: "ipv4",
+  ddnsAddressMode: "primary",
+  preferredIpv4: "",
+  preferredIpv6: "",
   ddnsDomain: "",
   blockHttp: false,
   blockSocks: false,
@@ -719,11 +726,6 @@ function formatTrafficCorrectionGbInput(bytes: number) {
   const gb = Math.max(0, Number(bytes) || 0) / HOST_TRAFFIC_GB_BYTES;
   if (gb === 0) return "0";
   return String(Number(gb.toFixed(6)));
-}
-
-function normalizeHostDdnsIpVersion(value: unknown, recordType?: unknown): "ipv4" | "ipv6" {
-  if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
-  return "ipv4";
 }
 
 function formatTrafficLimitGbInput(value: unknown) {
@@ -1833,6 +1835,9 @@ function HostsContent() {
       ddnsEnabled: !!host.ddnsEnabled,
       ddnsIpVersion: normalizeHostDdnsIpVersion(host.ddnsIpVersion, host.ddnsRecordType),
       ddnsDomain: host.ddnsDomain || "",
+      ddnsAddressMode: host.ddnsAddressMode === "all" ? "all" : "primary",
+      preferredIpv4: host.preferredIpv4 || "",
+      preferredIpv6: host.preferredIpv6 || "",
       blockHttp: !!host.blockHttp,
       blockSocks: !!host.blockSocks,
       blockTls: !!host.blockTls,
@@ -1939,7 +1944,8 @@ function HostsContent() {
           ddnsEnabled: form.ddnsEnabled,
           ddnsDomain: form.ddnsDomain.trim(),
           ddnsIpVersion: form.ddnsIpVersion,
-          ddnsRecordType: (form.ddnsIpVersion === "ipv6" ? "AAAA" : "A") as "A" | "AAAA",
+          ddnsRecordType: (form.ddnsIpVersion === "both" ? "BOTH" : form.ddnsIpVersion === "ipv6" ? "AAAA" : "A") as "A" | "AAAA" | "BOTH",
+          ddnsAddressMode: form.ddnsAddressMode,
         }
       : {};
     const protocolPolicyPayload = user?.role === "admin"
@@ -1949,6 +1955,8 @@ function HostsContent() {
     if (editingId) {
       updateMutation.mutate({
         id: editingId,
+        preferredIpv4: form.preferredIpv4 || null,
+        preferredIpv6: form.preferredIpv6 || null,
         name,
         hostType: form.hostType,
         networkInterface: ni || null,
@@ -3094,8 +3102,8 @@ function HostsContent() {
                     <Label className="text-sm font-semibold">{translateText("基础信息")}</Label>
                     <span className="text-xs text-muted-foreground">{translateText("主机连接")}</span>
                   </div>
-                  <div className="grid gap-2.5 sm:grid-cols-2">
-                    <div className="space-y-1">
+                  <div className="grid min-w-0 gap-2.5 sm:grid-cols-2">
+                    <div className="min-w-0 space-y-1">
                       <Label className="text-sm">{translateText("主机名称")}</Label>
                       <Input
                         className="h-8"
@@ -3104,13 +3112,7 @@ function HostsContent() {
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label className="text-sm">{translateText("Agent 检测 IP")}</Label>
-                      <Input className="h-8 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
-                    </div>
-                  </div>
-                  <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
-                    <div className="space-y-1">
+                    <div className="min-w-0 space-y-1">
                       <Label className="text-sm">{translateText("入口 IP / 域名")}</Label>
                       <Input
                         className="h-8"
@@ -3119,7 +3121,10 @@ function HostsContent() {
                         onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                       />
                     </div>
-                    <div className="space-y-1">
+                  </div>
+                  <HostAddressSelectors host={displayHosts.find((host: any) => host.id === editingId)} preferredIpv4={form.preferredIpv4} preferredIpv6={form.preferredIpv6} onChange={(field, value) => setForm(previous => ({ ...previous, [field]: value }))} />
+                  <div className="mt-2.5 grid min-w-0 gap-2.5 sm:grid-cols-2">
+                    <div className="min-w-0 space-y-1">
                       <Label className="text-sm">{translateText("内网地址 ")}<span className="text-xs text-muted-foreground">{translateText("可选")}</span></Label>
                       <Input
                         className="h-8"
@@ -3128,9 +3133,7 @@ function HostsContent() {
                         onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
                       />
                     </div>
-                  </div>
-                  <div className="mt-2.5 grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
+                    <div className="min-w-0 space-y-1">
                       <Label className="text-sm">{translateText("网卡名称 ")}<span className="text-xs text-muted-foreground">{translateText("可选")}</span></Label>
                       <Input
                         className="h-8"
@@ -3446,7 +3449,7 @@ function HostsContent() {
                       </div>
                       <p className="mt-1.5 px-3 text-xs text-muted-foreground">{translateText("当月没有该日期时按最后一天重置。")}</p>
                       <div className="mt-2.5 space-y-2 rounded-md bg-muted/35 px-3 py-2.5">
-                        <div className="flex min-h-8 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-h-8 flex-wrap items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
                             <RadioTower className="h-4 w-4 shrink-0 text-muted-foreground" />
                             <Label className="text-sm font-medium">{translateText("DDNS 服务")}</Label>
@@ -3454,11 +3457,17 @@ function HostsContent() {
                               <Badge variant="secondary" className="shrink-0 text-[11px]">{translateText("未配置服务商")}</Badge>
                             ) : null}
                           </div>
-                          <Switch
-                            checked={form.ddnsEnabled}
-                            disabled={!ddnsProviderEnabled && !form.ddnsEnabled}
-                            onCheckedChange={(checked) => setForm({ ...form, ddnsEnabled: checked })}
-                          />
+                          <div className="ml-auto flex shrink-0 items-center gap-2">
+                            <Select value={form.ddnsAddressMode} disabled={!ddnsProviderEnabled} onValueChange={value => setForm({ ...form, ddnsAddressMode: value === "all" ? "all" : "primary" })}>
+                              <SelectTrigger className="h-8 w-auto min-w-[8rem] max-w-[11rem] gap-2 text-xs [&>span]:truncate" aria-label={translateText("DDNS 地址范围")}><SelectValue /></SelectTrigger>
+                              <SelectContent><SelectItem value="primary">{translateText("仅记录主 IP")}</SelectItem><SelectItem value="all">{translateText("记录全部检测 IP")}</SelectItem></SelectContent>
+                            </Select>
+                            <Switch
+                              checked={form.ddnsEnabled}
+                              disabled={!ddnsProviderEnabled && !form.ddnsEnabled}
+                              onCheckedChange={(checked) => setForm({ ...form, ddnsEnabled: checked })}
+                            />
+                          </div>
                         </div>
                         <div className="grid min-w-0 gap-2.5 sm:grid-cols-[8rem_minmax(0,1fr)]">
                           <Select
@@ -3472,6 +3481,7 @@ function HostsContent() {
                             <SelectContent>
                               <SelectItem value="ipv4">IPv4 / A</SelectItem>
                               <SelectItem value="ipv6">IPv6 / AAAA</SelectItem>
+                              <SelectItem value="both">A + AAAA</SelectItem>
                             </SelectContent>
                           </Select>
                           <Input

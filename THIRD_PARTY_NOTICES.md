@@ -1,5 +1,20 @@
 # Third-Party Notices
 
+## resvg-js (build tool only)
+
+- Package: `@resvg/resvg-js` 2.6.2, MPL-2.0.
+- Upstream/source: <https://github.com/yisibl/resvg-js>.
+- Usage: rendering project-owned SVG logo geometry to bundled native app icon PNGs during development/build. The renderer is not included in browser or mobile runtime code.
+- Full license is retained in `node_modules/@resvg/resvg-js/LICENSE`; no upstream source modifications.
+
+## ExcelJS
+
+- Upstream: <https://github.com/exceljs/exceljs>
+- Version: 4.4.0, MIT license.
+- Usage: server-side styled Excel billing exports.
+- Copyright (c) 2014-2019 Guyon Roche.
+- Full license is retained in `node_modules/exceljs/LICENSE` in runtime distributions.
+
 ## ip2region
 
 - Upstream: <https://github.com/lionsoul2014/ip2region>

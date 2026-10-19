@@ -2,6 +2,8 @@ import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { applyPersonalizationTheme, clearPersonalizationTheme } from "@/lib/personalizationTheme";
 import { useEffect, useLayoutEffect, useState } from "react";
+import { applySiteFavicon } from "@/lib/siteFavicon";
+import { watchMobileAppIcon } from "@/lib/mobileAppIcon";
 
 const MOBILE_BACKGROUND_MEDIA = "(max-width: 767px), (pointer: coarse)";
 
@@ -83,6 +85,24 @@ export default function PersonalizationLayer() {
       clearPersonalizationTheme(root);
     };
   }, [personalizationTheme]);
+
+  useLayoutEffect(() => {
+    if (!data) return;
+    const root = document.documentElement;
+    const sync = () => applySiteFavicon(document, data.siteLogoDataUrl, getComputedStyle(root).getPropertyValue("--primary"));
+    sync();
+    // The on-page vector mark follows theme variables, so the tab must too.
+    // Custom uploaded images remain unchanged when switching light/dark mode.
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["class", "style"] });
+    return () => observer.disconnect();
+  }, [data?.siteLogoDataUrl, !!data]);
+
+  useEffect(() => {
+    // Do not reset the launcher to the fallback palette while publicInfo is loading.
+    if (!data) return;
+    return watchMobileAppIcon(document.documentElement);
+  }, [!!data]);
 
   if (!showVideo) return null;
 

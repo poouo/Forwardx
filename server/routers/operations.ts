@@ -7,6 +7,8 @@ import { setSetting } from "../repositories/settingsRepository";
 import { resolveOperationsSourceGeo } from "../operationsSourceGeo";
 import { createQueryCache } from "../queryCache";
 import { getOperationsFinance, getOperationsFinanceLedger } from "../repositories/operationsFinanceRepository";
+import { monitorOverview, saveMonitorSettings } from "../operationsMonitor";
+import { operationsMonitorSchema } from "../../shared/operationsMonitor";
 
 const cache = createQueryCache(30);
 const dates = z.object({ from: z.string().length(10), to: z.string().length(10), userId: z.union([z.literal("self"), z.literal("all"), z.number().int().positive()]).default("self") });
@@ -20,6 +22,8 @@ function range(input: z.infer<typeof dates>) {
 let geoBusy = false;
 let geoLastRequest = 0;
 export const operationsRouter = router({
+  monitor: adminProcedure.input(z.object({ page: z.number().int().min(0).max(10000).default(0) }).default({})).query(({ input }) => cache.get(`monitor:${input.page}`, { ttlMs: 5000, staleMs: 0 }, () => monitorOverview(input.page))),
+  saveMonitor: adminProcedure.input(operationsMonitorSchema).mutation(async ({ input }) => { const value = await saveMonitorSettings(input); cache.clear(); return value; }),
   finance: adminProcedure.input(dates).query(({input,ctx})=> {
     const {start,end} = range(input), userId = scopedUserId(input,ctx.user.id);
     return cache.get(`finance:${start}:${end}:${userId ?? "all"}`,{ttlMs:15000,staleMs:0},()=>getOperationsFinance(start,end,userId));

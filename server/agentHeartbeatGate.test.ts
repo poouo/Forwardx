@@ -748,9 +748,11 @@ test("empty address reports during Agent restart preserve the last valid address
     ipv4: "198.51.100.8",
     ipv6: "2001:db8::8",
   };
-  assert.deepEqual(mergeAgentReportedAddress({ ip: "unknown", ipv4: "", ipv6: "" }, existing), existing);
+  assert.deepEqual(mergeAgentReportedAddress({ ip: "unknown", ipv4: "", ipv6: "" }, existing), { ...existing, ipv4Addresses: '["198.51.100.8"]', ipv6Addresses: '["2001:db8::8"]' });
   assert.deepEqual(mergeAgentReportedAddress({ ipv6: "2001:db8::9" }, existing), {
     ...existing,
     ipv6: "2001:db8::9",
+    ipv4Addresses: '["198.51.100.8"]',
+    ipv6Addresses: '["2001:db8::9"]',
   });
 });

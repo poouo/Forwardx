@@ -152,3 +152,17 @@ export function downloadTextFile(
     throw new Error(translateText("浏览器未能保存文件，请检查下载权限后重试"));
   }
 }
+
+/** Binary files must never use the text/data-URL fallback. */
+export function downloadBlobFile(filename: string, blob: Blob, injectedRuntime?: FileDownloadRuntime) {
+  const runtime = injectedRuntime || getBrowserDownloadRuntime();
+  let objectUrl = "";
+  try {
+    objectUrl = runtime.createObjectUrl(blob);
+    triggerDownloadLink(runtime, objectUrl, sanitizeDownloadFilename(filename));
+    scheduleCleanup(runtime, () => safeRevokeObjectUrl(runtime, objectUrl), DOWNLOAD_OBJECT_URL_REVOKE_DELAY_MS);
+  } catch {
+    if (objectUrl) safeRevokeObjectUrl(runtime, objectUrl);
+    throw new Error(translateText("浏览器未能保存文件，请检查下载权限后重试"));
+  }
+}

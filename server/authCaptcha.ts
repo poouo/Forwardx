@@ -4,6 +4,9 @@ import * as svgCaptcha from "svg-captcha";
 import Cap from "@cap.js/server";
 import { Router, type Request, type Response } from "express";
 import { setBoundedMapValue } from "./boundedCache";
+import { createObfuscatedImageCaptcha } from "./imageCaptcha";
+import { getAuthCaptchaConfig } from "./authCaptchaConfig";
+import type { AuthCaptchaProvider } from "../shared/authCaptcha";
 
 export const LOGIN_CAPTCHA_FAILURE_THRESHOLD = 3;
 export const LOGIN_CAPTCHA_REQUIREMENT_TTL_MS = 15 * 60 * 1000;
@@ -107,7 +110,7 @@ export class AuthCaptchaService {
     this.refreshMaxPerWindow = options.refreshMaxPerWindow ?? CAPTCHA_REFRESH_MAX_PER_WINDOW;
     this.maxChallenges = options.maxChallenges ?? CAPTCHA_MAX_CHALLENGES;
     this.maxRateLimitKeys = options.maxRateLimitKeys ?? CAPTCHA_MAX_RATE_LIMIT_KEYS;
-    this.svgGenerator = options.svgGenerator ?? svgCaptcha.create;
+    this.svgGenerator = options.svgGenerator ?? createObfuscatedImageCaptcha;
     // Cap's default file-backed token store is not appropriate for a panel
     // process and can leave state in the working directory. The business
     // layer below binds all tokens to IP and purpose and bounds that state.
@@ -162,12 +165,12 @@ export class AuthCaptchaService {
   createImageChallenge(ip: string, purpose: CaptchaPurpose, now = Date.now()) {
     this.consumeRefreshSlot(ip, now);
     const generated = this.svgGenerator({
-      size: 5,
-      width: 190,
-      height: 56,
-      fontSize: 44,
+      size: 6,
+      width: 224,
+      height: 72,
+      fontSize: 48,
       charPreset: CAPTCHA_CHARACTERS,
-      noise: 3,
+      noise: 5,
       color: true,
       background: "#f8fafc",
     });
@@ -281,6 +284,17 @@ export class AuthCaptchaService {
     return answersEqual(challenge.answer, normalizeAnswer(answer));
   }
 
+  verifyResponse(provider: AuthCaptchaProvider, input: { captchaId?: string; captchaAnswer?: string; capToken?: string }, ip: string, purpose: CaptchaPurpose) {
+    // Never accept a fallback method: the administrator chooses the policy.
+    if (provider === "image") {
+      return Promise.resolve(!input.capToken && !!input.captchaId && !!input.captchaAnswer
+        && this.verifyChallenge(input.captchaId, input.captchaAnswer, ip, purpose));
+    }
+    return !input.captchaId && !input.captchaAnswer && input.capToken
+      ? this.verifyCapToken(ip, purpose, input.capToken)
+      : Promise.resolve(false);
+  }
+
   recordLoginFailure(ip: string, username: string, now = Date.now()) {
     const key = this.loginKey(ip, username);
     const entry = this.loginFailures.get(key);
@@ -371,6 +385,11 @@ authCapRouter.post("/api/auth/cap/:purpose/challenge", async (req: Request, res:
     return;
   }
   try {
+    const config = await getAuthCaptchaConfig();
+    if (!config.enabled || config.provider !== "cap") {
+      res.status(409).json({ success: false, error: "CAPTCHA_PROVIDER_CHANGED" });
+      return;
+    }
     const challenge = await authCaptcha.createCapChallenge(requestIp(req), purpose);
     res.setHeader("Cache-Control", "no-store");
     res.json(challenge);
@@ -403,6 +422,11 @@ authCapRouter.post("/api/auth/cap/:purpose/redeem", async (req: Request, res: Re
     return;
   }
   try {
+    const config = await getAuthCaptchaConfig();
+    if (!config.enabled || config.provider !== "cap") {
+      res.status(409).json({ success: false, error: "CAPTCHA_PROVIDER_CHANGED" });
+      return;
+    }
     const result = await authCaptcha.redeemCapChallenge(requestIp(req), purpose, token, solutions);
     if (!result.success) {
       res.status(400).json({ success: false, error: result.message || "CAPTCHA_INVALID" });

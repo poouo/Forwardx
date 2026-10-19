@@ -177,7 +177,7 @@ Checks: `pnpm exec tsc --noEmit`, `pnpm test:agent-proxy`, `pnpm test:server`, `
 
 ## Security
 
-Keep a fixed random `JWT_SECRET`, use HTTPS/strong passwords/least privilege, and disable public registration when unnecessary. Human verification defaults to enabled and can be disabled in system configuration; keep it enabled on public panels. Protect Agent/DDNS Tokens, proxy credentials and backups; verify restores. Never publish `.env`, database configuration or migration credentials.
+Keep a fixed random `JWT_SECRET`, use HTTPS/strong passwords/least privilege, and disable public registration when unnecessary. Human verification defaults to enabled; administrators can select click verification or obfuscated image CAPTCHA in system configuration, or disable it. Keep it enabled on public panels. Protect Agent/DDNS Tokens, proxy credentials and backups; verify restores. Never publish `.env`, database configuration or migration credentials.
 
 ## Support the author
 
@@ -197,4 +197,10 @@ ForwardX Agent includes the third-party userspace WireGuard implementation under
 
 ## Star history
 
-[![Stargazers over time](https://starchart.cc/poouo/Forwardx.svg)](https://starchart.cc/poouo/Forwardx)
+<a href="https://star-history.com/#poouo/Forwardx&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date" />
+    <img alt="ForwardX Star History" src="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date" />
+  </picture>
+</a>

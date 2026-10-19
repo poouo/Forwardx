@@ -100,6 +100,66 @@ test("billing SQL pages retain all sources, stable ordering, diagnostics and use
       assert.deepEqual(await billing.listBillingLedger({isAdmin:true},{balance:[],payment:[],subscription:[]}),[]);
       assert.deepEqual(await billing.listBalanceTransactions(undefined,20,[]),[]);
       await assert.rejects(admin.ledgerPage({pageSize:101}),error=>error.code==="BAD_REQUEST");
+
+      // Export uses the same visibility rules, without page/legacy row caps.
+      const collect = async options => {
+        const rows=[];
+        for await (const batch of billing.iterateBillingLedgerExport(options)) rows.push(...batch);
+        return rows;
+      };
+      const allExport = await collect({isAdmin:true,viewerUserId:1});
+      assert.deepEqual(keys(allExport),keys(adminExpected));
+      assert.deepEqual(keys(await collect({isAdmin:true,viewerUserId:1,userId:2})),keys(visible(true,2)));
+      assert.deepEqual(keys(await collect({viewerUserId:2,userId:3})),keys(visible(false,2)));
+      assert.deepEqual(keys(await collect({viewerUserId:2,includeCancelledSubscriptions:false})),keys(visible(false,2,false)));
+      assert.deepEqual(await collect({userId:2}),[]);
+      const iterator = billing.iterateBillingLedgerExport({isAdmin:true,viewerUserId:1});
+      const first = await iterator.next();
+      assert.equal(first.value.length,500);
+      await insert("balance_transactions",{id:10000,userId:2,type:"admin_recharge",amountCents:99,balanceAfterCents:99,createdAt:now-100000});
+      const duringExport = [...first.value];
+      for await (const batch of iterator) duringExport.push(...batch);
+      assert.deepEqual(keys(duringExport),keys(adminExpected),"new backdated rows cannot move the end of a running export");
+
+      // HTTP boundary enforces scope even when the client sends someone else's ID.
+      const { createBillingExportRouter } = await import(url("server/billingExportRoutes.ts"));
+      const { default: express } = await import("express");
+      const { default: ExcelJS } = await import("exceljs");
+      const app = express();
+      app.use(createBillingExportRouter(async ({req,res})=> {
+        const role=req.headers["x-test-role"];
+        return {req,res,user:role?{id:role==="admin"?1:2,role,accountEnabled:role!=="disabled"}:null};
+      }));
+      const server = app.listen(0,"127.0.0.1");
+      await new Promise(resolve=>server.once("listening",resolve));
+      const base="http://127.0.0.1:"+server.address().port+"/api/billing/ledger.xlsx";
+      const request = (query="",role="user") => fetch(base+query,{headers:role?{"x-test-role":role}:{}});
+      const readXlsx = async response => {
+        assert.equal(response.status,200);
+        assert.match(response.headers.get("content-type"),/spreadsheetml.sheet/);
+        assert.equal(response.headers.get("cache-control"),"no-store");
+        const wb=new ExcelJS.Workbook();
+        await wb.xlsx.load(Buffer.from(await response.arrayBuffer()));
+        const rows=[];
+        wb.worksheets[0].eachRow((row,index)=>{if(index>5) rows.push(row);});
+        return rows;
+      };
+      try {
+        assert.equal((await request("","")).status,401);
+        assert.equal((await request("","disabled")).status,401);
+        assert.equal((await request("?userId=invalid")).status,400);
+        const userRows=await readXlsx(await request("?userId=3"));
+        assert.equal(userRows.length,visible(false,2).length+1);
+        assert.ok(userRows.every(row=>row.getCell(3).value==="2"));
+        const adminRows=await readXlsx(await request("","admin"));
+        assert.equal(adminRows.length,adminExpected.length+1);
+        assert.deepEqual(new Set(adminRows.map(row=>row.getCell(3).value)),new Set(["2","3"]));
+        const filteredRows=await readXlsx(await request("?userId=3","admin"));
+        assert.equal(filteredRows.length,visible(true,3).length);
+        assert.ok(filteredRows.every(row=>row.getCell(3).value==="3"));
+        assert.equal((await readXlsx(await request("?userId=1","admin"))).length,0);
+        assert.equal((await request("","admin")).status,429);
+      } finally { await new Promise(resolve=>server.close(resolve)); }
     } finally { await runtime.closeDatabase(); }
   `;
   try {

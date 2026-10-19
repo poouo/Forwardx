@@ -403,6 +403,8 @@ function filterTunnelEndpointHost(host: any) {
     tunnelEntryIp: host.tunnelEntryIp,
     ddnsEnabled: !!host.ddnsEnabled,
     ddnsDomain: host.ddnsDomain ?? null,
+    ddnsIpVersion: host.ddnsIpVersion ?? "ipv4",
+    ddnsRecordType: host.ddnsRecordType ?? "A",
     isOnline: !!host.isOnline,
     lastHeartbeat: host.lastHeartbeat ?? null,
   };

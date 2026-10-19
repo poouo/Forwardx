@@ -18,6 +18,7 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/localizedToast";
+import HostChinaHealthSettings, { ChinaHealthStatus, createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft } from "./HostChinaHealthSettings";
 
 type ServiceForm = {
   name: string;
@@ -29,6 +30,7 @@ type ServiceForm = {
   excludeHostIds: number[];
   intervalSeconds: number;
   isEnabled: boolean;
+  health: ChinaHealthDraft;
 };
 
 export type HostProbeServiceViewMode = "card" | "table";
@@ -45,6 +47,7 @@ const defaultForm: ServiceForm = {
   excludeHostIds: [],
   intervalSeconds: 30,
   isEnabled: true,
+  health: createChinaHealthDraft(),
 };
 
 function getStoredServiceViewMode(): HostProbeServiceViewMode {
@@ -221,6 +224,7 @@ function ServiceCard({
         <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
           <ServiceActionButtons service={service} onEdit={onEdit} onDelete={onDelete} />
         </div>
+        <ChinaHealthStatus health={service.health} />
       </CardContent>
     </Card>
   );
@@ -293,6 +297,10 @@ export default function HostProbeServiceManager({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success(translateText("服务已添加")); },
     onError: (err) => toast.error(err.message || translateText("添加服务失败")),
   });
+  const acknowledgeAction = trpc.hosts.acknowledgeProbeHealthAction.useMutation({
+    onSuccess: () => { void utils.hosts.probeServices.invalidate(); toast.success(translateText("已记录商家结果核对")); },
+    onError: error => toast.error(error.message),
+  });
   const updateMutation = trpc.hosts.updateProbeService.useMutation({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setEditingId(null); setForm(defaultForm); toast.success(translateText("服务已更新")); },
     onError: (err) => toast.error(err.message || translateText("更新服务失败")),
@@ -355,7 +363,10 @@ export default function HostProbeServiceManager({
     if (!targetIp) { toast.error(translateText("请输入 IP 地址")); return; }
     if (form.method === "tcping" && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) { toast.error(translateText("目标端口必须在 1-65535 之间")); return; }
     if (form.hostScope === "specific" && form.hostIds.length === 0) { toast.error(translateText("请选择需要运行服务的主机")); return; }
-    const payload = { ...form, name, targetIp, targetPort: form.method === "tcping" ? targetPort : null, intervalSeconds: Math.max(5, Number(form.intervalSeconds) || 30) };
+    if (form.health.enabled && (form.hostScope !== "specific" || form.hostIds.length !== 1)) { toast.error(translateText("国内健康检测必须选择一台特定主机")); return; }
+    let health;
+    try { health = chinaHealthPayload(form.health); } catch { toast.error(translateText("请检查国内健康检测阈值、接口地址、请求头和成功条件")); return; }
+    const payload = { ...form, health, name, targetIp, targetPort: form.method === "tcping" ? targetPort : null, intervalSeconds: Math.max(5, Number(form.intervalSeconds) || 30) };
     if (editingId) updateMutation.mutate({ ...payload, id: editingId });
     else createMutation.mutate(payload);
   };
@@ -370,7 +381,7 @@ export default function HostProbeServiceManager({
       }
       if (prev.hostScope === "specific") {
         if (prev.hostIds.map(Number).includes(id)) return prev;
-        return { ...prev, hostIds: [...prev.hostIds, id] };
+        return { ...prev, hostIds: prev.health.enabled ? [id] : [...prev.hostIds, id] };
       }
       return prev;
     });
@@ -400,6 +411,7 @@ export default function HostProbeServiceManager({
       excludeHostIds: Array.isArray(service.excludeHostIds) ? service.excludeHostIds.map(Number).filter(Boolean) : [],
       intervalSeconds: Math.max(5, Number(service.intervalSeconds) || 30),
       isEnabled: service.isEnabled !== false,
+      health: createChinaHealthDraft(service.health),
     });
     setDialogOpen(true);
   };
@@ -534,6 +546,7 @@ export default function HostProbeServiceManager({
                           <div>
                             <div className="font-medium">{service.name}</div>
                             <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{service.method}</Badge>
+                            <ChinaHealthStatus health={service.health} />
                           </div>
                         </div>
                       </TableCell>
@@ -560,50 +573,69 @@ export default function HostProbeServiceManager({
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-2xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[88vh] flex-col gap-3 overflow-hidden sm:max-w-xl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editingId ? translateText("编辑服务") : translateText("添加服务")}</DialogTitle>
             <DialogDescription>{translateText("配置主机 Ping / TCPing 探测服务")}</DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5"><Label>{translateText("服务名")}</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 公网 API 延迟")} /></div>
-              <div className="space-y-1.5"><Label>{translateText("类型")}</Label><Select value={form.method} onValueChange={(value) => setForm({ ...form, method: value as ServiceForm["method"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem></SelectContent></Select></div>
+          <HostProbeServiceModeTabs mode={form.health.enabled ? "china" : "standard"} onModeChange={mode => setForm(previous => applyHostProbeServiceMode(previous, mode))}>
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="probe-service-name" className="flex min-h-5 items-center text-xs">{translateText("服务名")}</Label>
+                <Input id="probe-service-name" className="h-9 sm:h-8" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 公网 API 延迟")} />
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="probe-service-method" className="flex min-h-5 items-center text-xs">{translateText("类型")}</Label>
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Select value={form.method} onValueChange={(value) => setForm({ ...form, method: value as ServiceForm["method"] })}>
+                      <SelectTrigger id="probe-service-method" className="h-9 sm:h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <Label htmlFor="probe-service-enabled" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    {translateText("启用服务")}
+                    <Switch id="probe-service-enabled" checked={form.isEnabled} onCheckedChange={(checked) => setForm({ ...form, isEnabled: checked })} />
+                  </Label>
+                </div>
+              </div>
             </div>
-            <div className={`grid gap-3 ${form.method === "tcping" ? "sm:grid-cols-[minmax(0,1fr)_150px]" : ""}`}>
-              <div className="space-y-1.5"><Label>{translateText("IP 地址 / 域名")}</Label><Input value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder={translateText("1.1.1.1 或 example.com")} /></div>
-              {form.method === "tcping" && <div className="space-y-1.5"><Label>{translateText("目标端口")}</Label><Input type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
+            <div className={`grid gap-2.5 ${form.method === "tcping" ? "sm:grid-cols-[minmax(0,1fr)_8rem]" : ""}`}>
+              <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("IP 地址 / 域名")}</Label><Input className="h-9 sm:h-8" value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder={translateText("1.1.1.1 或 example.com")} /></div>
+              {form.method === "tcping" && <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("目标端口")}</Label><Input className="h-9 sm:h-8" type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
             </div>
-            <div className="grid gap-3 sm:grid-cols-[1fr_140px]">
-              <div className="space-y-1.5"><Label>{translateText("选择主机")}</Label><Select value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{translateText("所有主机")}</SelectItem><SelectItem value="exclude">{translateText("排除主机")}</SelectItem><SelectItem value="specific">{translateText("特定主机")}</SelectItem></SelectContent></Select></div>
-              <div className="space-y-1.5"><Label>{translateText("服务运行时间")}</Label><Input type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
+            <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_8rem]">
+              <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("选择主机")}</Label><Select disabled={form.health.enabled} value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger className="h-9 sm:h-8"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{translateText("所有主机")}</SelectItem><SelectItem value="exclude">{translateText("排除主机")}</SelectItem><SelectItem value="specific">{translateText("特定主机")}</SelectItem></SelectContent></Select></div>
+              <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("服务运行时间")}</Label><Input className="h-9 sm:h-8" type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
             </div>
             {form.hostScope !== "all" && (
-              <div className="space-y-3 rounded-md border border-border/50 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm">{form.hostScope === "exclude" ? translateText("添加需要排除在外的主机") : translateText("选择需要运行服务的主机")}</Label>
-                  {selectedScopeHostIds.length > 0 && (
-                    <span className="text-xs text-muted-foreground">{selectedScopeHostIds.length}{translateText(" 台")}</span>
-                  )}
+              <div className="space-y-2 rounded-md border border-border/50 bg-muted/15 p-2.5">
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Label className="text-xs">{form.hostScope === "exclude" ? translateText("添加需要排除在外的主机") : translateText("选择需要运行服务的主机")}</Label>
+                    {selectedScopeHostIds.length > 0 && (
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{selectedScopeHostIds.length}{translateText(" 台")}</span>
+                    )}
+                  </div>
+                  <Select value="" onValueChange={addScopeHost}>
+                    <SelectTrigger className="h-9 sm:h-8 sm:w-52 sm:shrink-0">
+                      <SelectValue placeholder={availableScopeHosts.length === 0 ? translateText("已全部添加") : form.hostScope === "exclude" ? translateText("添加排除主机...") : translateText("添加运行主机...")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableScopeHosts.length === 0 ? (
+                        <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("已全部添加")}</div>
+                      ) : availableScopeHosts.map((host) => (
+                        <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
+                          <HostStatusLabel host={host} label={host.name} />
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <Select value="" onValueChange={addScopeHost}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder={availableScopeHosts.length === 0 ? translateText("已全部添加") : form.hostScope === "exclude" ? translateText("添加排除主机...") : translateText("添加运行主机...")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableScopeHosts.length === 0 ? (
-                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">{translateText("已全部添加")}</div>
-                    ) : availableScopeHosts.map((host) => (
-                      <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
-                        <HostStatusLabel host={host} label={host.name} />
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
                 {selectedScopeHosts.length === 0 ? (
-                  <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">{translateText("从上方选择主机")}</div>
+                  <p className="text-xs text-muted-foreground">{translateText("从上方选择主机")}</p>
                 ) : (
-                  <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
+                  <div className="max-h-40 space-y-1 overflow-y-auto">
                     {selectedScopeHosts.map((item, index) => (
                       <div key={item.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border/50 bg-background px-2.5 py-1.5">
                         <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
@@ -619,12 +651,23 @@ export default function HostProbeServiceManager({
                 )}
               </div>
             )}
-            <label className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">
-              <span className="text-sm font-medium">{translateText("启用服务")}</span>
-              <Switch checked={form.isEnabled} onCheckedChange={(checked) => setForm({ ...form, isEnabled: checked })} />
-            </label>
-          </div>
-          <DialogFooter>
+            <HostChinaHealthSettings value={form.health} onChange={health => setForm(previous => ({ ...previous, health }))} />
+            {editingId && (() => {
+              const health = (services as any[]).find(service => Number(service.id) === editingId)?.health;
+              const action = health?.blockedAction || health?.lastAction;
+              if (!form.health.enabled || !health?.enabled) return null;
+              const actionLabels: Record<string, string> = { pending: "换 IP 请求处理中", uncertain: "换 IP 结果不明确", accepted: "商家接口已接收请求", not_executed: "Agent 未执行请求", succeeded: "商家接口确认成功", sync_skipped: "商家成功，面板地址同步已跳过", sync_failed: "商家成功，面板同步失败" };
+              return <div className="space-y-2 rounded-lg border p-3">
+                <ChinaHealthStatus health={health} />
+                {action && <p className="text-xs text-muted-foreground">{translateText(actionLabels[action.status] || action.status)} · {new Date(action.createdAt * 1000).toLocaleString()}{action.newIp ? ` · ${action.newIp}` : ""}</p>}
+                {action && ["pending", "uncertain"].includes(action.status) && !action.acknowledged && <Button variant="outline" size="sm" disabled={acknowledgeAction.isPending || Date.now() / 1000 - action.createdAt < 150} onClick={async () => {
+                  const ok = await confirmDialog({ title: translateText("核对商家换 IP 结果"), description: translateText("请先在商家确认上次请求已结束。此操作只解除未知结果保护，不会重发上次请求；当前故障仍不会重复换 IP。"), confirmText: translateText("已核对，解除保护") });
+                  if (ok) acknowledgeAction.mutate({ serviceId: editingId });
+                }}>{translateText("已核对商家结果")}</Button>}
+              </div>;
+            })()}
+          </HostProbeServiceModeTabs>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>{translateText("取消")}</Button>
             <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>
           </DialogFooter>

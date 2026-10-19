@@ -14,6 +14,7 @@ export default defineConfig({
   },
   publicDir: "client/public",
   build: {
+    manifest: true,
     outDir: "client/dist",
     emptyOutDir: true,
   },

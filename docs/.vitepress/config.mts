@@ -84,6 +84,7 @@ export default defineConfig({
           { text: "推广返佣（AFF）", link: "/guide/affiliates" },
           { text: "Telegram / Discord 和通知", link: "/guide/notifications" },
           { text: "AI 助手", link: "/guide/ai-assistant" },
+          { text: "诊断、资源告警与 MCP", link: "/guide/observability-mcp" },
           { text: "Google 账户登录", link: "/guide/google-login" },
         ],
       },

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { observeHostResources } from "./operationsMonitor";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching, pushAgentDesiredState } from "./agentEvents";
@@ -32,6 +33,7 @@ import { isIP } from "net";
 import { resolve4, resolve6 } from "dns/promises";
 import { hasQueuedLookingGlassAgentTasks, takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { hasQueuedIperf3AgentTasks, takeIperf3AgentTasks } from "./iperf3AgentTasks";
+import { recordIpSwitchAgentCapability, hasQueuedIpSwitchAgentTasks, takeIpSwitchAgentTasks } from "./agentIpSwitchTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
 import { updateAgentToolInventory } from "./agentToolInventory";
@@ -39,6 +41,7 @@ import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAg
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
 import { mergeAgentReportedAddress } from "./agentAddressState";
+import { scheduleHostDdnsUpdate } from "./hostDdns";
 import {
   gostTunnelTransportType,
   planGostTunnelProbeListeners,
@@ -1445,6 +1448,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     logHostName = String((host as any).name || "").trim();
     updateAgentPluginInventory(logHostId, req.body?.pluginVersions, req.body?.pluginSyncSignatures);
     updateAgentToolInventory(logHostId, req.body?.forwardTools, req.body?.forwardToolsCheckedAt);
+    recordIpSwitchAgentCapability(logHostId, req.body?.ipSwitchSupported);
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
     const busyHeartbeat = req.body?.busy === true || String(req.body?.busy || "").toLowerCase() === "true";
@@ -1620,6 +1624,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || upgradedFirewallCounterAgent
       || upgradedProtocolGuardBackendAgent
       || addressChanged
+      || reportedAddress.ipv4Addresses !== previousHost.ipv4Addresses
+      || reportedAddress.ipv6Addresses !== previousHost.ipv6Addresses
       || agentVersionChanged
       || (!!nextCpuInfo && nextCpuInfo !== String(previousHost.cpuInfo || ""))
       || (Number(memoryTotal || 0) > 0 && Number(memoryTotal) !== Number(previousHost.memoryTotal || 0))
@@ -1641,9 +1647,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         await db.touchHostHeartbeat(host.id);
       }
     } else await db.updateHostHeartbeat(host.id, {
-      ip: reportedAddress.ip,
-      ipv4: reportedAddress.ipv4,
-      ipv6: reportedAddress.ipv6,
+      ...reportedAddress,
       agentVersion: nextAgentVersion || (host as any).agentVersion || null,
       cpuInfo: nextCpuInfo || (host as any).cpuInfo || null,
       memoryTotal: memoryTotal || (host as any).memoryTotal || null,
@@ -1717,6 +1721,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     if (addressChanged) {
       await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
+    } else if (["ipv4Addresses", "ipv6Addresses"].some(key => (reportedAddress as any)[key] !== (previousHost as any)[key])) {
+      scheduleHostDdnsUpdate(host, "agent-address-inventory-changed");
     }
     if (recoveryTriggered) {
       const reason = recoveredFromOffline ? "agent-reconnected" : rebootDetected ? "agent-reboot-detected" : "agent-process-restarted";
@@ -1754,6 +1760,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       diskUsed: diskUsed ?? null,
       diskTotal: diskTotal ?? null,
       uptime: uptime ?? null,
+    });
+
+    void observeHostResources(host, { cpu: cpuUsage, memory: memoryUsage, disk: diskUsage }).catch(() => {
+      console.warn(`[OperationsMonitor] resource observation failed host=${host.id}`);
     });
 
     if (busyHeartbeat) {
@@ -1795,6 +1805,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         || hasHostTcpingRequest(host.id)
         || hasQueuedLookingGlassAgentTasks(host.id)
         || hasQueuedIperf3AgentTasks(host.id)
+        || hasQueuedIpSwitchAgentTasks(host.id)
         || hasQueuedPluginAgentTasks(host.id),
       recoveryTriggered,
       addressChanged,
@@ -6543,6 +6554,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
+    const ipSwitchTasks = takeIpSwitchAgentTasks(host.id);
     const pluginsAwaitingSync = new Set(pluginSyncTasks.map((task) => task.pluginId));
     const pluginTasks = supportsPluginTasks && reportedPluginInventory && !pluginSyncActionQueued
       ? takePluginAgentTasks(host.id, 4, (task) => (
@@ -6553,6 +6565,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const hasPendingPluginTasks = supportsPluginTasks && hasQueuedPluginAgentTasks(host.id);
     const hasInteractiveTasks = lookingGlassTests.length > 0
       || iperf3Tasks.length > 0
+      || ipSwitchTasks.length > 0
       || pluginTasks.length > 0
       || hasPendingPluginTasks
       || pluginSyncActionQueued
@@ -6632,6 +6645,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && selfTests.length === 0
       && lookingGlassTests.length === 0
       && iperf3Tasks.length === 0
+      && ipSwitchTasks.length === 0
       && pluginTasks.length === 0
       && !hasPendingPluginTasks
       && !pluginSyncActionQueued
@@ -6683,6 +6697,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       interactiveTasks: hasInteractiveTasks ? (
         lookingGlassTests.length
         + iperf3Tasks.length
+        + ipSwitchTasks.length
         + pluginTasks.length
         + (hasPendingPluginTasks ? 1 : 0)
         + (tcpingRequested ? 1 : 0)
@@ -6698,6 +6713,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       stateSignatures: stateSections.signatures,
       lookingGlassTests,
       iperf3Tasks,
+      ipSwitchTasks,
       pluginTasks,
       agentUpgrade,
       panelUrl,

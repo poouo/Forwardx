@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { ruleCreatePrompt, ruleCreateTextPatch, simpleRuleCreateRequest, type BotChoicePrompt, type RuleRouteChoice } from "./ai/ruleCreateWizard";
 import { resolveRuleOperationOwner } from "./ruleOperationOwner";
 import { PANEL_SETTINGS, panelToolNameSchema, panelInputSchema, preparePanelCall, executePanelCall, queryPanelCall, formatPanelToolResult, PanelPreflightError, type PanelToolName, type PreparedPanelCall } from "./ai/panelTools";
+import { preciseQuery } from "./ai/preciseQuery";
 import { ZodError } from "zod";
 import { createBotAction, readBotAction, claimBotAction, finishBotAction, readBotDraft, saveBotDraft, clearBotDraft, pruneBotWorkflowHistory } from "./ai/workflowStore";
 import { withDatabaseTransaction } from "./dbRuntime";
@@ -1817,6 +1818,8 @@ function localAiQueryIntent(text: string): AiQueryIntent {
 }
 
 async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
+  const exact = preciseQuery(text);
+  if (exact) return exact;
   const fallback = localAiQueryIntent(text);
   if (fallback.intent === "unsupported") return fallback;
   const settings = await getDeepSeekSettings().catch(() => null);

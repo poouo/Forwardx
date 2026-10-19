@@ -124,7 +124,10 @@ jobs:
 
       - name: Sync Capacitor Android project
         if: steps.existing_apk.outputs.exists != 'true'
-        run: pnpm exec cap sync android
+        run: |
+          pnpm mobile:icons
+          pnpm test:mobile-icons
+          pnpm exec cap sync android
 
       - name: Prepare Gradle wrapper
         if: steps.existing_apk.outputs.exists != 'true'

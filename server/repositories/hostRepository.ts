@@ -402,6 +402,8 @@ function compactHostOption(host: any) {
     agentVersion: host?.agentVersion,
     ddnsEnabled: host?.ddnsEnabled,
     ddnsDomain: host?.ddnsDomain,
+    ddnsIpVersion: host?.ddnsIpVersion,
+    ddnsRecordType: host?.ddnsRecordType,
     portRangeStart: host?.portRangeStart,
     portRangeEnd: host?.portRangeEnd,
     portAllowlist: host?.portAllowlist,
@@ -462,6 +464,8 @@ export async function getHostOptions(ownerUserId?: number, allowedHostIds?: numb
         agentVersion: hosts.agentVersion,
         ddnsEnabled: hosts.ddnsEnabled,
         ddnsDomain: hosts.ddnsDomain,
+        ddnsIpVersion: hosts.ddnsIpVersion,
+        ddnsRecordType: hosts.ddnsRecordType,
         portRangeStart: hosts.portRangeStart,
         portRangeEnd: hosts.portRangeEnd,
         portAllowlist: hosts.portAllowlist,
@@ -628,6 +632,7 @@ export async function deleteHost(id: number) {
   await db.delete(hostGroupMembers).where(eq(hostGroupMembers.hostId, id));
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
   await db.delete(hostProbeServiceStats).where(eq(hostProbeServiceStats.hostId, id));
+  await executeRaw(`DELETE FROM ${quoteIdentifier("host_probe_health")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   hostAvailabilityRecorder.forget(id);
   await executeRaw(`DELETE FROM ${quoteIdentifier("host_availability_intervals")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));

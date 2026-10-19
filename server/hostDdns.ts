@@ -1,6 +1,7 @@
 ﻿import { appendPanelLog } from "./_core/panelLogger";
-import { getDdnsSettings, updateDdnsRecord } from "./ddns";
+import { getDdnsSettings, updateDdnsRecordValues } from "./ddns";
 import * as db from "./db";
+import { hostAddressOptions, normalizeHostIp, normalizeHostDdnsIpVersion } from "../shared/hostAddresses";
 
 const HOST_DDNS_RETRY_BASE_MS = 60_000;
 const HOST_DDNS_RETRY_MAX_MS = 30 * 60_000;
@@ -131,20 +132,27 @@ function finishHostDdnsUpdate(hostId: number, retryAt: number | null = null) {
   }
 }
 
-function normalizeRecordType(value: unknown) {
-  return String(value || "A").toUpperCase() === "AAAA" ? "AAAA" : "A";
+export function hostDdnsTargets(host: any) {
+  const version = normalizeHostDdnsIpVersion(host?.ddnsIpVersion, host?.ddnsRecordType);
+  const families = version === "both" ? ["ipv4", "ipv6"] as const : [version];
+  return families.map(family => ({
+    recordType: family === "ipv6" ? "AAAA" : "A", ipVersion: family,
+    values: host?.ddnsAddressMode === "all" ? hostAddressOptions(host, family) : [normalizeHostIp(host?.[family], family) || normalizeHostIp(host?.ip, family)].filter(Boolean),
+  }));
 }
-
-function normalizeIpVersion(value: unknown, recordType: string) {
-  if (value === "ipv6" || (!value && normalizeRecordType(recordType) === "AAAA")) return "ipv6";
-  return "ipv4";
-}
-
 export function hostDdnsTargetValue(host: any) {
-  const recordType = normalizeRecordType(host?.ddnsRecordType);
-  const ipVersion = normalizeIpVersion(host?.ddnsIpVersion, recordType);
-  const value = String(ipVersion === "ipv6" ? host?.ipv6 || "" : host?.ipv4 || "").trim();
-  return { recordType, ipVersion, value };
+  const targets = hostDdnsTargets(host), ipVersion = normalizeHostDdnsIpVersion(host?.ddnsIpVersion, host?.ddnsRecordType);
+  return { recordType: ipVersion === "both" ? "BOTH" : targets[0].recordType, ipVersion,
+    value: targets.some(target => target.values.length) ? JSON.stringify(Object.fromEntries(targets.map(target => [target.recordType, target.values]))) : "" };
+}
+function previousDdnsRecords(host: any): Record<string, string[]> {
+  const value = String(host?.lastDdnsValue || "");
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch { /* Existing single-address state is kept readable across upgrades. */ }
+  const version = normalizeHostDdnsIpVersion(host?.ddnsIpVersion, host?.ddnsRecordType);
+  return value && version !== "both" ? { [version === "ipv6" ? "AAAA" : "A"]: [value] } : {};
 }
 
 function hostNeedsDdnsUpdate(host: any) {
@@ -153,7 +161,8 @@ function hostNeedsDdnsUpdate(host: any) {
   if (!hostId || !host?.ddnsEnabled || !domain) return false;
   const target = hostDdnsTargetValue(host);
   if (!target.value) return false;
-  return String(host?.lastDdnsValue || "") !== target.value || !!host?.lastDdnsError;
+  const previous = previousDdnsRecords(host);
+  return hostDdnsTargets(host).some(target => !target.values.length || JSON.stringify(previous[target.recordType]) !== JSON.stringify(target.values)) || !!host?.lastDdnsError;
 }
 
 async function retryHostDdnsUpdate(hostId: number, options: { force?: boolean } = {}) {
@@ -189,7 +198,7 @@ async function executeHostDdnsUpdate(
       await db.updateHost(hostId, { lastDdnsError: `No reported ${target.ipVersion.toUpperCase()} address` } as any);
       return;
     }
-    if (!options.force && String(host?.lastDdnsValue || "") === target.value && !host?.lastDdnsError) {
+    if (!options.force && !hostNeedsDdnsUpdate(host)) {
       clearHostDdnsRetry(hostId);
       return;
     }
@@ -198,14 +207,21 @@ async function executeHostDdnsUpdate(
     if (!settings.enabled || settings.provider === "disabled") {
       throw new Error("DDNS service is not enabled in system settings");
     }
-    await updateDdnsRecord({
-      domain,
-      recordType: target.recordType,
-      value: target.value,
-      groupId: -hostId,
-    });
+    const previous = previousDdnsRecords(host), errors: string[] = [];
+    for (const item of hostDdnsTargets(host)) {
+      if (!item.values.length) { errors.push(`No reported ${item.ipVersion.toUpperCase()} address`); continue; }
+      if (!options.force && JSON.stringify(previous[item.recordType]) === JSON.stringify(item.values)) continue;
+      try {
+        await updateDdnsRecordValues({ domain, recordType: item.recordType, values: item.values, groupId: -hostId });
+        previous[item.recordType] = item.values;
+        // Persist each successful family. A failed AAAA retry must not repeatedly
+        // replace an already-converged A RRset (and vice versa).
+        await db.updateHost(hostId, { lastDdnsValue: JSON.stringify(previous), lastDdnsAt: new Date() } as any);
+      } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    }
+    if (errors.length) throw new Error(errors.join("; "));
     await db.updateHost(hostId, {
-      lastDdnsValue: target.value,
+      lastDdnsValue: JSON.stringify(previous),
       lastDdnsAt: new Date(),
       lastDdnsError: null,
     } as any);
@@ -239,7 +255,7 @@ export function scheduleHostDdnsUpdate(
   const willAttemptProviderUpdate = options.force
     ? !!host?.ddnsEnabled && !!domain && !!target.value
     : hostNeedsDdnsUpdate(host);
-  void executeHostDdnsUpdate(hostId, () => host, reason, options);
+  void executeHostDdnsUpdate(hostId, () => db.getHostById(hostId), reason, options);
   return willAttemptProviderUpdate;
 }
 
@@ -257,7 +273,7 @@ export async function reconcileHostDdnsRecords(
     if (!hostId || !host?.ddnsEnabled || !domain) continue;
     const target = hostDdnsTargetValue(host);
     if (!target.value) continue;
-    if (!options.force && String(host?.lastDdnsValue || "") === target.value && !host?.lastDdnsError) continue;
+    if (!options.force && !hostNeedsDdnsUpdate(host)) continue;
     if (!options.force && !hostDdnsUpdates.canReconcile(hostId)) continue;
     if (scheduleHostDdnsUpdate(host, reason, options)) queued += 1;
   }

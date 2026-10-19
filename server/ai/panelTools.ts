@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { FORWARD_TYPES, TUNNEL_PROTOCOLS, normalizeForwardProtocolSettings } from "../../shared/forwardTypes";
 import type { TrpcContext } from "../_core/context";
+import { queryTraffic, queryUsers, trafficQuerySchema, userQuerySchema } from "./analytics";
 import { SIDEBAR_MENU_KEYS, SIDEBAR_MENU_LABELS, DEFAULT_SIDEBAR_MENU_SETTINGS, normalizeSidebarMenuSettings } from "../../shared/sidebarMenu";
 
 const id = z.number().int().positive();
@@ -107,6 +108,14 @@ PANEL_SETTINGS["menu.plugins"] = setting("插件菜单与功能", "pluginsEnable
 
 type Tool = { label: string; mode: "read" | "write"; admin?: boolean; schema: z.ZodTypeAny; route?: string; resource?: "rule" | "host" | "tunnel" | "group" | "user" | "plan" | "announcement"; fields?: string[]; warning?: string };
 export const PANEL_TOOLS = {
+  "users.summary": { label: "用户数量统计", mode: "read", admin: true, schema: userQuerySchema },
+  "users.search": { label: "用户搜索（分页）", mode: "read", admin: true, schema: userQuerySchema },
+  "traffic.rank": { label: "实际流量排行", mode: "read", schema: trafficQuerySchema },
+  "network.diagnose": { label: "网络配置体检（不发送探测）", mode: "read", schema: z.object({ hostId: id.optional(), ruleId: id.optional() }).strict().refine(input => Number(!!input.hostId) + Number(!!input.ruleId) === 1, "请选择一台主机或一条规则"), route: "lookingGlass.diagnose" },
+  "operations.health": { label: "资源告警与安全配置检查", mode: "read", admin: true, schema: empty, route: "operations.monitor" },
+  "rules.list": { label: "可见规则列表", mode: "read", schema: filters },
+  "hosts.list": { label: "可见主机列表", mode: "read", schema: filters },
+  "tunnels.list": { label: "可见隧道列表", mode: "read", schema: filters, route: "tunnels.list" },
   "settings.read": { label: "设置查询", mode: "read", admin: true, schema: filters },
   "settings.set": { label: "修改设置", mode: "write", admin: true, schema: z.object({ key: z.enum(Object.keys(PANEL_SETTINGS) as [string, ...string[]]), value: z.union([z.boolean(), z.number().finite(), z.string().max(128)]) }).strict() },
   "expiry.list": { label: "到期查询", mode: "read", schema: filters.extend({ resource: z.enum(["rules", "users", "hosts", "subscriptions"]), scope: z.enum(["self", "visible"]).optional(), days: z.number().int().min(1).max(3650).optional(), includeExpired: z.boolean().optional() }).strict() },
@@ -361,9 +370,13 @@ export function projectPanelResult(value: any, depth = 0): any {
   return undefined;
 }
 for (const field of ["rateLimitMbps", "trafficMode", "quotaUsedIn", "quotaUsedOut", "ruleLimitReason", "expirySource", "ruleExpiresAt", "accountExpiresAt"]) SAFE_FIELDS.add(field);
+for (const field of ["disabled", "admins", "users", "expired", "sampledAt", "offset", "hasMore", "displayRemark", "entity", "from", "to", "timezone", "direction", "order", "coverageSince", "note", "totalBytes"]) SAFE_FIELDS.add(field);
+for (const field of ["resourceName", "checks"]) SAFE_FIELDS.add(field);
+for (const field of ["active", "events", "resources", "security", "hostName", "metric", "phase", "since", "lastSeen", "peak", "value", "cpu", "memory", "disk", "stale", "page"]) SAFE_FIELDS.add(field);
 SAFE_FIELDS.add("adminManaged");
 function display(v: unknown): string { return v === true ? "开启" : v === false ? "关闭" : v == null ? "不限/未设置" : typeof v === "object" ? JSON.stringify(v) : String(v); }
 const FIELD_LABELS: Record<string, string> = {
+  disabled: "停用账户", admins: "管理员数", users: "普通用户数", expired: "已到期账户", sampledAt: "查询时间", offset: "分页偏移", hasMore: "还有更多", displayRemark: "用户备注", entity: "排行对象", from: "开始日期", to: "结束日期", timezone: "时区", direction: "统计方向", order: "排序", coverageSince: "现存历史起始时间", note: "统计口径", totalBytes: "双向合计(字节)",
   adminManaged: "管理员自定义（用户只读）",
   trafficMode: "流量计量方式", quotaUsedIn: "额度累计入向(字节)", quotaUsedOut: "额度累计出向(字节)",
   ruleLimitReason: "规则暂停原因", expirySource: "生效到期来源", ruleExpiresAt: "规则到期时间", accountExpiresAt: "账户到期时间",
@@ -386,7 +399,13 @@ export async function queryPanelCall(actorId: number, tool: unknown, input: unkn
   const def: Tool = PANEL_TOOLS[call.tool];
   let result: any;
   const matches = (r: any) => !call.input.keyword || [r.id, r.name, r.title, r.username, r.planName].some(v => String(v || "").toLowerCase().includes(String(call.input.keyword).toLowerCase()));
-  if (call.tool === "settings.read") {
+  if (call.tool === "users.summary" || call.tool === "users.search") {
+    return { label: def.label, result: await queryUsers(call.input, call.tool === "users.summary") };
+  } else if (call.tool === "traffic.rank") {
+    return { label: def.label, result: await queryTraffic(user, call.input) };
+  } else if (call.tool === "rules.list" || call.tool === "hosts.list") {
+    result = await resources(call.tool === "rules.list" ? "rules" : "hosts", user);
+  } else if (call.tool === "settings.read") {
     const all = await db.getAllSettings();
     result = Object.keys(PANEL_SETTINGS).map(key => ({ id: key, name: PANEL_SETTINGS[key].label, value: settingValue(all, key) })).filter(matches);
   } else if (call.tool === "plans.list") {

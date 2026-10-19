@@ -19,6 +19,7 @@ import {
   type Iperf3Status,
 } from "../iperf3AgentTasks";
 import { requireHostAccess } from "./helpers";
+import { diagnoseNetwork } from "../networkDiagnostics";
 
 const methodSchema = z.enum(["ping", "ping6", "traceroute", "traceroute6", "mtr", "mtr6", "tcp"]);
 
@@ -171,6 +172,8 @@ function decorateIperf3Status(status: Iperf3Status, host: any) {
 }
 
 export const lookingGlassRouter = router({
+  diagnose: protectedProcedure.input(z.object({ hostId: z.number().int().positive().optional(), ruleId: z.number().int().positive().optional() }).strict().refine(input => Number(!!input.hostId) + Number(!!input.ruleId) === 1, "请选择一台主机或一条规则"))
+    .query(({ ctx, input }) => diagnoseNetwork(ctx.user, input)),
   hosts: protectedProcedure.query(async ({ ctx }) => {
     await assertNetworkTestAllowed(ctx);
     if (ctx.user.role === "admin") return db.getHostOptions();

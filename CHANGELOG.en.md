@@ -2,8 +2,22 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.286] - 2026-10-19
 
+- Sync Android/iOS launcher icons with preset themes and light/dark mode; unify the default logo.
+- Keep the browser-tab icon in sync with the panel theme and custom logo.
+- Use two-column CAPTCHA settings with administrator-selected click verification or obfuscated image challenges, enforced server-side.
+- Load only the current page on startup and prefetch on menu intent; preserve navigation and upgrade state without full-screen loading overlays.
+- Add styled Excel billing exports for all/selected users (admins) or the current user's own ledger.
+- Refine host editing and compact DDNS controls; add service-mode tabs and shorten health-check copy with collapsible help.
+- Discover multiple public IPv4/IPv6 addresses with separate primary selections; add dual-stack DDNS and primary-only/all-address synchronization.
+- Add China connectivity checks to host services: sustained failures trigger notifications and Agent-side private HTTP/HTTPS IP-switch APIs without reply confirmation, with cooldowns, rate caps, replay protection and address sync.
+- Add exact AI user counts and actual traffic rankings with entity, date, direction and permission filters.
+- Add administrator-only, read-only external MCP access in AI settings with expiring/revocable tokens, permission checks and rate limits.
+- Add Ping summaries, route-hop visualization and host/rule configuration checks to Network Test.
+- Add global resource status, security configuration checks and opt-in sustained resource alerts with recovery events and notifications.
+- Retry FXP connection/hello setup on other candidates before business payload; fix same-port endpoint identity. Established-stream relay resumption is not included.
+- Add persistent drag sorting for subscription plans and metered resources in card and table views, with matching store order.
 - Default the rule list to My Rules instead of restoring the previous user filter.
 - Fix rule drag sorting being disabled after selecting a category.
 - Reposition map hover details to keep the active region visible.
@@ -17,6 +31,8 @@
 - Check source-traffic dependencies and enable verified connection accounting during Agent installation and script upgrades, with clear failure warnings.
 - Run panel health checks in the background without a full-screen refresh interstitial; retain outage diagnostics and recovery checks while avoiding duplicate startup requests.
 - Fix stale multi-entry tunnel latency results and failed entries showing as untested; improve per-hop diagnostics.
+
+- Versions: panel `2.3.286`, Android / iOS `2.4.4`, Agent `2.2.199`, ForwardX FXP runtime `2.2.120`. Multi-IP discovery and automatic IP switching require an Agent upgrade; launcher theme sync requires an App update.
 
 ## [2.3.285] - 2026-10-17
 

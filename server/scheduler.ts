@@ -19,6 +19,8 @@ import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } fr
 import { cleanOldAddressGeoCache } from "./hostGeo";
 import { cleanOperationsHistory } from "./repositories/operationsRepository";
 import { runHistoryMaintenance } from "./historyMaintenance";
+import { cleanMonitorHistory } from "./operationsMonitor";
+import { cleanProbeHealthHistory } from "./hostProbeHealth";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
@@ -363,6 +365,8 @@ async function runTcpingCleanup() {
     ["host-availability", cleanOldHostAvailability],
     ["address-geo", cleanOldAddressGeoCache],
     ["operations", cleanOperationsHistory],
+    ["operations-monitor", cleanMonitorHistory],
+    ["probe-health", cleanProbeHealthHistory],
   ], { shouldContinue: () => databaseHealth.snapshot().state !== "unavailable" });
 }
 

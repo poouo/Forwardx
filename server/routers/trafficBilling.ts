@@ -3,6 +3,7 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { reconcileTrafficBillingAuthorization } from "../trafficBillingAuthorization";
+import { reorderProducts } from "../repositories/productOrder";
 
 const resourceTypeSchema = z.enum(["host", "tunnel", "forward_group"]);
 
@@ -28,6 +29,9 @@ export const trafficBillingRouter = router({
     ]);
     return { enabled, configs };
   }),
+  reorder: adminProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1), startIndex: z.number().int().min(0).default(0) }))
+    .mutation(({ input }) => reorderProducts("traffic_billing_configs", input.ids, input.startIndex)),
 
   storeResources: protectedProcedure.query(async () => {
     const enabled = await db.isTrafficBillingEnabled();

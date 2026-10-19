@@ -68,7 +68,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { prefetchRoute } from "@/lib/routeModules";
 import QRCode from "qrcode";
 import { useLocation } from "wouter";
 import { Button } from "./ui/button";
@@ -358,7 +359,14 @@ function getLayoutUpgradeProgress(job: any) {
   return { percent: 0, label: translateText("等待确认{0}", [actionLabel]), steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
-export default function DashboardLayout({
+const DashboardShellContext = createContext(false);
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const hasShell = useContext(DashboardShellContext);
+  return hasShell ? <>{children}</> : <DashboardShell>{children}</DashboardShell>;
+}
+
+function DashboardShell({
   children,
 }: {
   children: React.ReactNode;
@@ -375,11 +383,13 @@ export default function DashboardLayout({
   }
 
   return (
-    <SidebarProvider className="pearl-shell">
-      <DashboardLayoutContent>
-        {children}
-      </DashboardLayoutContent>
-    </SidebarProvider>
+    <DashboardShellContext.Provider value={true}>
+      <SidebarProvider className="pearl-shell">
+        <DashboardLayoutContent>
+          {children}
+        </DashboardLayoutContent>
+      </SidebarProvider>
+    </DashboardShellContext.Provider>
   );
 }
 
@@ -397,6 +407,14 @@ function DashboardLayoutContent({
   const accountMenuOpenRef = useRef(accountMenuOpen);
   const isDesktopCollapsed = !isMobile && state === "collapsed";
   const isAdmin = user?.role === "admin";
+  const routePrefetchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelRoutePrefetch = () => clearTimeout(routePrefetchTimer.current);
+  useEffect(() => () => clearTimeout(routePrefetchTimer.current), []);
+  const warmRoute = (path: string, delayed = false) => {
+    cancelRoutePrefetch();
+    if (delayed) routePrefetchTimer.current = setTimeout(() => prefetchRoute(path, user?.role), 120);
+    else prefetchRoute(path, user?.role);
+  };
   const utils = trpc.useUtils();
   const { resolvedTheme, setTheme } = useTheme();
   const [deferBackgroundQueries, setDeferBackgroundQueries] = useState(true);
@@ -1240,6 +1258,7 @@ function DashboardLayoutContent({
   const navigateFromSidebar = (path: string) => {
     closeMobileNavigation();
     if (path === currentPath) return;
+    warmRoute(path);
     setLocation(path);
   };
   const navigateFromAccountMenu = (path: string) => {
@@ -1288,6 +1307,11 @@ function DashboardLayoutContent({
           isActive={isActive}
           aria-current={isActive ? "page" : undefined}
           onClick={handleClick}
+          onPointerEnter={() => { if (!item.externalUrl) warmRoute(item.path, true); }}
+          onPointerLeave={cancelRoutePrefetch}
+          onFocus={() => { if (!item.externalUrl) warmRoute(item.path); }}
+          onBlur={cancelRoutePrefetch}
+          onPointerDown={() => { if (!item.externalUrl) warmRoute(item.path); }}
           tooltip={item.label}
           className={cn("h-10 font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >

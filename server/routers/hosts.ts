@@ -24,6 +24,12 @@ import { planAgentUpgradeWaves } from "../agentUpgradeRollout";
 import { billingCalendarParts } from "@shared/billingTime";
 import { normalizeAgentProbeCounts } from "@shared/agentDtos";
 import { deleteHostWithImpact, getHostDeletionImpact, prepareHostDeletion } from "../hostDeletion";
+import { hostChinaHealthSchema } from "../../shared/hostChinaHealth";
+import { getProbeHealthViews, saveProbeHealth, acknowledgeIpSwitch, probeHealthLock } from "../hostProbeHealth";
+import { withDatabaseTransaction } from "../dbRuntime";
+import { withKeyedTaskLock } from "../keyedTaskLock";
+import { normalizeHostIp, hostAddressOptions, normalizeHostDdnsIpVersion } from "../../shared/hostAddresses";
+import { mergeAgentReportedAddress } from "../agentAddressState";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -69,8 +75,8 @@ const hostBillingCycleMonthsSchema = z.union([
   z.literal(1), z.literal(3), z.literal(6), z.literal(12), z.literal(24), z.literal(36),
 ]);
 const hostExpiryActionSchema = z.enum(["none", "extend_cycle"]);
-const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6"]);
-const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA"]);
+const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6", "both"]);
+const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA", "BOTH"]);
 const hostDdnsDomainSchema = z.string().trim().max(253).nullable().optional();
 const pageRequestSchema = z.object({
   page: z.number().int().positive().default(1),
@@ -88,6 +94,7 @@ const hostProbeServiceInputSchema = z.object({
   excludeHostIds: hostProbeIdsSchema,
   intervalSeconds: z.number().int().min(5).max(86400).default(30),
   isEnabled: z.boolean().optional(),
+  health: hostChinaHealthSchema.nullable().optional(),
 });
 const hostGroupInputSchema = z.object({
   name: z.string().trim().min(1).max(128),
@@ -187,20 +194,16 @@ function normalizeHostExpiryAction(value: unknown) {
   return value === "extend_cycle" ? "extend_cycle" : "none";
 }
 
-function normalizeHostDdnsIpVersion(value: unknown, recordType?: string) {
-  if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
-  return "ipv4";
-}
-
 function normalizeHostDdnsRecordType(ipVersion: unknown) {
-  return ipVersion === "ipv6" ? "AAAA" : "A";
+  return ipVersion === "both" ? "BOTH" : ipVersion === "ipv6" ? "AAAA" : "A";
 }
 
 function normalizeHostDdnsPayload(input: {
   ddnsEnabled?: boolean;
   ddnsDomain?: string | null;
-  ddnsRecordType?: "A" | "AAAA";
-  ddnsIpVersion?: "ipv4" | "ipv6";
+  ddnsRecordType?: "A" | "AAAA" | "BOTH";
+  ddnsIpVersion?: "ipv4" | "ipv6" | "both";
+  ddnsAddressMode?: "primary" | "all";
 }) {
   const ipVersion = normalizeHostDdnsIpVersion(input.ddnsIpVersion, input.ddnsRecordType);
   const recordType = normalizeHostDdnsRecordType(ipVersion);
@@ -211,6 +214,7 @@ function normalizeHostDdnsPayload(input: {
     ddnsDomain: domain || null,
     ddnsRecordType: recordType,
     ddnsIpVersion: ipVersion,
+    ddnsAddressMode: input.ddnsAddressMode === "all" ? "all" : "primary",
   };
 }
 
@@ -860,9 +864,11 @@ export const hostsRouter = router({
       const isAdmin = ctx.user.role === "admin";
       const services = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);
       const latestById = await db.getLatestHostProbeServiceStats(services.map((service: any) => Number(service.id)));
+      const health = isAdmin ? await getProbeHealthViews(services.map((service: any) => Number(service.id))) : new Map();
       return services.map((service: any) => ({
         ...service,
         latest: latestById.get(Number(service.id)) || null,
+        health: health.get(Number(service.id)) || null,
       }));
     }),
     availabilityHistory: protectedProcedure
@@ -896,26 +902,34 @@ export const hostsRouter = router({
       .input(hostProbeServiceInputSchema)
       .mutation(async ({ input, ctx }) => {
         const payload = normalizeHostProbeServiceInput(input);
-        const id = await db.createHostProbeService({ ...payload, userId: ctx.user.id });
-        return { id };
+        return withDatabaseTransaction(async () => {
+          const id = await db.createHostProbeService({ ...payload, userId: ctx.user.id });
+          await saveProbeHealth({ ...payload, id }, input.health);
+          return { id };
+        });
       }),
     updateProbeService: adminProcedure
       .input(hostProbeServiceInputSchema.extend({ id: z.number().int().positive() }))
       .mutation(async ({ input }) => {
-        const service = await db.getHostProbeServiceById(input.id);
-        if (!service) throw new Error("服务不存在");
-        const payload = normalizeHostProbeServiceInput(input);
-        await db.updateHostProbeService(input.id, payload);
-        return { success: true };
+        return withKeyedTaskLock(probeHealthLock(input.id), () => withDatabaseTransaction(async () => {
+          const service = await db.getHostProbeServiceById(input.id);
+          if (!service) throw new Error("服务不存在");
+          const payload = normalizeHostProbeServiceInput(input);
+          await db.updateHostProbeService(input.id, payload);
+          await saveProbeHealth({ ...payload, id: input.id }, input.health, service);
+          return { success: true };
+        }));
       }),
     deleteProbeService: adminProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(async ({ input }) => {
         const service = await db.getHostProbeServiceById(input.id);
         if (!service) throw new Error("服务不存在");
-        await db.deleteHostProbeService(input.id);
+        await withKeyedTaskLock(probeHealthLock(input.id), () => withDatabaseTransaction(() => db.deleteHostProbeService(input.id)));
         return { success: true };
       }),
+    acknowledgeProbeHealthAction: adminProcedure.input(z.object({ serviceId: z.number().int().positive() }))
+      .mutation(async ({ input }) => { await acknowledgeIpSwitch(input.serviceId); return { success: true }; }),
     reorderProbeServices: adminProcedure
       .input(z.object({ ids: reorderIdsSchema }))
       .mutation(async ({ input }) => {
@@ -1020,6 +1034,7 @@ export const hostsRouter = router({
         ddnsDomain: hostDdnsDomainSchema,
         ddnsRecordType: hostDdnsRecordTypeSchema.optional(),
         ddnsIpVersion: hostDdnsIpVersionSchema.optional(),
+        ddnsAddressMode: z.enum(["primary", "all"]).optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -1085,6 +1100,8 @@ export const hostsRouter = router({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
         ip: hostAddressSchema.optional(),
+        preferredIpv4: z.string().trim().max(45).nullable().optional(),
+        preferredIpv6: z.string().trim().max(45).nullable().optional(),
         hostType: z.enum(["master", "slave"]).optional(),
         networkInterface: networkInterfaceSchema,
         sortOrder: hostSortOrderSchema,
@@ -1114,6 +1131,7 @@ export const hostsRouter = router({
         ddnsDomain: hostDdnsDomainSchema,
         ddnsRecordType: hostDdnsRecordTypeSchema.optional(),
         ddnsIpVersion: hostDdnsIpVersionSchema.optional(),
+        ddnsAddressMode: z.enum(["primary", "all"]).optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -1135,6 +1153,16 @@ export const hostsRouter = router({
           ? normalizePortAllowlist(input.portAllowlist)
           : String((host as any).portAllowlist || "");
         const { id, ...data } = input;
+        const primarySelectionChanged = data.preferredIpv4 !== undefined || data.preferredIpv6 !== undefined;
+        if (primarySelectionChanged) {
+          for (const [field, family] of [["preferredIpv4", "ipv4"], ["preferredIpv6", "ipv6"]] as const) {
+            if (data[field] === undefined) continue;
+            const value = data[field] ? normalizeHostIp(data[field], family) : null;
+            if (data[field] && (!value || !hostAddressOptions(host, family).includes(value) && value !== (host as any)[field])) throw new Error("主 IP 必须从该主机已检测到的对应地址中选择");
+            data[field] = value;
+          }
+          Object.assign(data, mergeAgentReportedAddress({ ipv4: host.ipv4, ipv6: host.ipv6 }, { ...host, ...data }));
+        }
         if (ctx.user.role === "admin") {
           const enabled = data.trafficFailoverEnabled ?? (host as any).trafficFailoverEnabled;
           const limit = data.trafficLimit ?? (host as any).trafficLimit;
@@ -1151,13 +1179,14 @@ export const hostsRouter = router({
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;
         if (ctx.user.role === "admin") {
-          const hasDdnsConfigInput = ["ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"].some((key) => (data as any)[key] !== undefined);
+          const hasDdnsConfigInput = ["ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion", "ddnsAddressMode"].some((key) => (data as any)[key] !== undefined);
           if (hasDdnsConfigInput) {
             const ddnsConfig = normalizeHostDdnsPayload({
               ddnsEnabled: (data as any).ddnsEnabled !== undefined ? (data as any).ddnsEnabled : (host as any).ddnsEnabled,
               ddnsDomain: (data as any).ddnsDomain !== undefined ? (data as any).ddnsDomain : (host as any).ddnsDomain,
               ddnsRecordType: (data as any).ddnsRecordType !== undefined ? (data as any).ddnsRecordType : (host as any).ddnsRecordType,
-              ddnsIpVersion: (data as any).ddnsIpVersion !== undefined ? (data as any).ddnsIpVersion : (host as any).ddnsIpVersion,
+              ddnsIpVersion: data.ddnsIpVersion ?? (data.ddnsRecordType !== undefined ? normalizeHostDdnsIpVersion(undefined, data.ddnsRecordType) : (host as any).ddnsIpVersion),
+              ddnsAddressMode: data.ddnsAddressMode ?? (host as any).ddnsAddressMode,
             });
             if (ddnsConfig.ddnsEnabled) await assertHostDdnsServiceConfigured();
             Object.assign(data as any, ddnsConfig);
@@ -1166,7 +1195,8 @@ export const hostsRouter = router({
             const ddnsTargetChanged = ddnsConfig.ddnsDomain !== previousDdnsDomain
               || ddnsConfig.ddnsEnabled !== !!(host as any).ddnsEnabled
               || ddnsConfig.ddnsIpVersion !== normalizeHostDdnsIpVersion((host as any).ddnsIpVersion, (host as any).ddnsRecordType);
-            if (ddnsTargetChanged) {
+            const ddnsModeChanged = ddnsConfig.ddnsAddressMode !== ((host as any).ddnsAddressMode || "primary");
+            if (ddnsTargetChanged || ddnsModeChanged) {
               (data as any).lastDdnsValue = null;
               (data as any).lastDdnsAt = null;
               (data as any).lastDdnsError = null;
@@ -1206,7 +1236,7 @@ export const hostsRouter = router({
             }
           }
         } else {
-          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "billingCycleMonths", "billingMonth", "billingDay", "expiryHandling", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
+          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "billingCycleMonths", "billingMonth", "billingDay", "expiryHandling", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion", "ddnsAddressMode"] as const) delete (data as any)[field];
         }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];
@@ -1217,7 +1247,7 @@ export const hostsRouter = router({
         const portRangeChanged = ["portRangeStart", "portRangeEnd"].some((key) =>
           (data as any)[key] !== undefined && Number((data as any)[key] ?? 0) !== Number((host as any)[key] ?? 0)
         ) || ((data as any).portAllowlist !== undefined && nextPortAllowlist !== String((host as any).portAllowlist || ""));
-        const entryChanged = ["entryIp", "tunnelEntryIp"].some((key) =>
+        const entryChanged = ["entryIp", "tunnelEntryIp", "ip", "ipv4", "ipv6"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
         if (entryChanged) {
@@ -1232,11 +1262,12 @@ export const hostsRouter = router({
           });
         }
         await db.updateHost(id, data as any);
-        if (ddnsConfigChanged) {
+        if (ddnsConfigChanged || primarySelectionChanged) {
           scheduleHostDdnsUpdate({ ...host, ...(data as any), id }, "host-ddns-config-updated", { force: true });
         }
         if (entryChanged) {
           await refreshHostAddressRuntime(id, host, "host-address-updated");
+          await db.runForwardGroupsForHostAddressChange(id, "host-address-updated");
         }
         if (portRangeChanged) {
           const nextPolicy = portPolicyFrom({

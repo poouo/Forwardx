@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createObfuscatedImageCaptcha } from "./imageCaptcha";
 import {
   AuthCaptchaService,
   CaptchaRefreshRateLimitError,
@@ -191,4 +192,37 @@ test("Cap challenges are bound to IP and purpose and tokens are single-use", asy
   assert.equal(await service.verifyCapToken("192.0.2.40", "register", redeemed.token!), false);
   assert.equal(await service.verifyCapToken("192.0.2.40", "login", redeemed.token!), true);
   assert.equal(await service.verifyCapToken("192.0.2.40", "login", redeemed.token!), false);
+});
+
+test("only the selected provider can verify, including tokens issued before a switch", async () => {
+  const service = createService();
+  const image = service.createImageChallenge("192.0.2.77", "login");
+  const imageInput = { captchaId: image.captchaId, captchaAnswer: "A7K9P" };
+  assert.equal(await service.verifyResponse("cap", imageInput, "192.0.2.77", "login"), false);
+  assert.equal(await service.verifyResponse("image", { ...imageInput, capToken: "mixed" }, "192.0.2.77", "login"), false);
+  assert.equal(await service.verifyResponse("image", imageInput, "192.0.2.77", "login"), true);
+  const issued = await service.createCapChallenge("192.0.2.77", "login");
+  const redeemed = await service.redeemCapChallenge("192.0.2.77", "login", issued.token!, capSolutions(issued.token!, issued.challenge));
+  assert.ok(redeemed.success && redeemed.token);
+  const capInput = { capToken: redeemed.token! };
+  assert.equal(await service.verifyResponse("image", capInput, "192.0.2.77", "login"), false);
+  assert.equal(await service.verifyResponse("cap", capInput, "192.0.2.77", "login"), true);
+  assert.equal(await service.verifyResponse("cap", capInput, "192.0.2.77", "login"), false);
+});
+
+test("image uses varied path glyphs, distortion and noise without leaking the answer", () => {
+  const answers = new Set<string>();
+  const images = new Set<string>();
+  for (let index = 0; index < 12; index++) {
+    const { text, data } = createObfuscatedImageCaptcha();
+    assert.match(text, /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/);
+    assert.ok(!data.includes(text));
+    assert.doesNotMatch(data, /<text|<script|<foreignObject|<!--|https?:\/\/(?!www.w3.org)/);
+    assert.match(data, /feDisplacementMap/);
+    assert.match(data, /skewX/);
+    assert.equal((data.match(/<circle /g) || []).length, 45);
+    answers.add(text); images.add(data);
+  }
+  assert.equal(answers.size, 12);
+  assert.equal(images.size, 12);
 });

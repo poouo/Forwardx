@@ -6,6 +6,7 @@ import {
   DOWNLOAD_OBJECT_URL_REVOKE_DELAY_MS,
   MAX_DATA_URL_FALLBACK_LENGTH,
   downloadTextFile,
+  downloadBlobFile,
   sanitizeDownloadFilename,
   type FileDownloadRuntime,
 } from "./fileDownload";
@@ -178,4 +179,18 @@ test("can be imported without a DOM and reports that downloads require a browser
     () => downloadTextFile("backup.fwxbak", "payload"),
     /当前环境不支持浏览器文件下载/,
   );
+});
+
+test("binary Excel downloads keep bytes unchanged and never fall back to text encoding", () => {
+  const bytes = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00])]);
+  const harness = createRuntime({
+    createObjectUrl: blob => { assert.equal(blob, bytes); return "blob:xlsx"; },
+    createBlob: () => { throw new Error("must not convert binary to text"); },
+  });
+  downloadBlobFile("billing.xlsx", bytes, harness.runtime);
+  assert.equal(harness.links[0].href, "blob:xlsx");
+  assert.equal(harness.links[0].download, "billing.xlsx");
+  const broken = createRuntime({ createObjectUrl: () => { throw new Error("unavailable"); } });
+  assert.throws(() => downloadBlobFile("billing.xlsx", bytes, broken.runtime), /浏览器未能保存文件/);
+  assert.equal(broken.links.length, 0);
 });

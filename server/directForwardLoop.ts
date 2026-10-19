@@ -1,7 +1,9 @@
 import { isIP } from "node:net";
+import { hostAddressOptions, normalizeHostIp } from "../shared/hostAddresses";
 
 function addressToken(value: unknown) {
-  return String(value || "").trim().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "").toLowerCase();
+  const token = String(value || "").trim().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "").toLowerCase();
+  return normalizeHostIp(token, "ipv6") || token;
 }
 
 function isLocalAddress(target: string) {
@@ -25,7 +27,7 @@ export function assertNoDirectSelfForwardLoop(options: {
   const target = addressToken(options.targetIp);
   if (!target) return;
   const host = options.host;
-  const addresses = [host?.ip, host?.ipv4, host?.ipv6, host?.entryIp, host?.tunnelEntryIp, host?.ddnsDomain].map(addressToken).filter(Boolean);
+  const addresses = [host?.ip, ...hostAddressOptions(host, "ipv4"), ...hostAddressOptions(host, "ipv6"), host?.entryIp, host?.tunnelEntryIp, host?.ddnsDomain].map(addressToken).filter(Boolean);
   if (isLocalAddress(target) || addresses.includes(target)) {
     throw new Error(`禁止将本机 ${port} 端口转发回自身同端口，这会造成转发死循环`);
   }

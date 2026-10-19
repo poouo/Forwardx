@@ -16,6 +16,7 @@ import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
 import { clearTwoFactorSetupChallenge, clearTwoFactorSetupChallengesForUser, createTwoFactorSetupChallenge, getTwoFactorSetupChallenge } from "../twoFactorSetupChallenges";
 import { authCaptcha, CaptchaRefreshRateLimitError } from "../authCaptcha";
+import { getAuthCaptchaConfig } from "../authCaptchaConfig";
 import {
   authRateLimitState,
   clearAuthAccountFailures,
@@ -48,11 +49,6 @@ function recordPasswordFail(ip: string, username: string) {
 
 function recordTwoFactorFail(ip: string, username: string) {
   recordTwoFactorFailure(ip, username);
-}
-
-async function captchaEnabled(): Promise<boolean> {
-  // Missing settings (including existing installations) keep verification on.
-  return (await db.getSetting("authCaptchaEnabled")) !== "false";
 }
 
 function loginRateLimitState(ip: string, username: string) {
@@ -202,7 +198,12 @@ export const authRouter = router({
 
   createCaptcha: publicProcedure
     .input(z.object({ purpose: z.enum(["login", "register"]) }))
-    .mutation(({ input, ctx }) => {
+    .mutation(async ({ input, ctx }) => {
+      const config = await getAuthCaptchaConfig();
+      if (!config.enabled || config.provider !== "image") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "验证码方式已更改，请刷新页面" });
+      }
+      ctx.res.setHeader?.("Cache-Control", "no-store");
       try {
         return authCaptcha.createImageChallenge(getRequestIp(ctx), input.purpose);
       } catch (error) {
@@ -219,7 +220,8 @@ export const authRouter = router({
   emailConfig: publicProcedure.query(async () => {
     const config = await getEmailConfig();
     const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
-    return { verifyRegistration: config.enabled && config.verifyRegistration, registrationEnabled, authCaptchaEnabled: await captchaEnabled() };
+    const captcha = await getAuthCaptchaConfig();
+    return { verifyRegistration: config.enabled && config.verifyRegistration, registrationEnabled, authCaptchaEnabled: captcha.enabled, authCaptchaProvider: captcha.provider };
   }),
 
   sendEmailCode: publicProcedure
@@ -263,8 +265,8 @@ export const authRouter = router({
     .input(z.object({ username: z.string() }))
     .query(async ({ input, ctx }) => {
       const ip = ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
-      const enabled = await captchaEnabled();
-      return { enabled, required: enabled && authCaptcha.requiresLoginCaptcha(ip, input.username) };
+      const { enabled, provider } = await getAuthCaptchaConfig();
+      return { enabled, provider, required: enabled && authCaptcha.requiresLoginCaptcha(ip, input.username) };
     }),
 
   login: publicProcedure
@@ -288,16 +290,10 @@ export const authRouter = router({
         });
       }
 
-      const useCaptcha = await captchaEnabled();
+      const captcha = await getAuthCaptchaConfig();
+      const useCaptcha = captcha.enabled;
       if (useCaptcha && authCaptcha.requiresLoginCaptcha(ip, input.username)) {
-        let captchaValid = false;
-        if (input.capToken) {
-          captchaValid = await authCaptcha.verifyCapToken(ip, "login", input.capToken);
-        } else if (input.captchaId && input.captchaAnswer) {
-          // Keep accepting the image challenge for older clients during the
-          // rollout. New clients use Cap's server-verifiable PoW token.
-          captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "login");
-        }
+        const captchaValid = await authCaptcha.verifyResponse(captcha.provider, input, ip, "login");
         if (!input.capToken && !input.captchaId && !input.captchaAnswer) {
           console.warn(`[Auth] Login requires captcha username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error("CAPTCHA_REQUIRED");
@@ -420,15 +416,9 @@ export const authRouter = router({
         throw new Error("当前注册未开放，请联系管理员");
       }
       const ip = getRequestIp(ctx);
-      if (await captchaEnabled()) {
-        let captchaValid = false;
-        if (input.capToken) {
-          captchaValid = await authCaptcha.verifyCapToken(ip, "register", input.capToken);
-        } else if (input.captchaId && input.captchaAnswer) {
-          // Legacy image challenge compatibility for clients that have not yet
-          // loaded the Cap widget.
-          captchaValid = authCaptcha.verifyChallenge(input.captchaId, input.captchaAnswer, ip, "register");
-        }
+      const captcha = await getAuthCaptchaConfig();
+      if (captcha.enabled) {
+        const captchaValid = await authCaptcha.verifyResponse(captcha.provider, input, ip, "register");
         if (!captchaValid) {
           console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error(input.capToken || input.captchaId ? "CAPTCHA_INVALID" : "CAPTCHA_REQUIRED");

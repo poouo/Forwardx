@@ -3,6 +3,7 @@ import { forwardxAiClient, type ForwardxAiClient } from "./client";
 import type { ForwardxAiSettings } from "./settings";
 import { forwardxManageIntentResponseSchema, forwardxQueryIntentResponseSchema, FORWARDX_MANAGE_ACTIONS, FORWARDX_QUERY_INTENTS } from "./skills/forwardxCore";
 import { panelToolCatalog, panelToolNameSchema, panelInputSchema, parsePanelCall, type PanelToolName } from "./panelTools";
+import { preciseQuery } from "./preciseQuery";
 
 export const CONTEXT_TOOLS = ["rules", "hosts", "tunnels", "users", "account", "settings", "forward_groups", "plans", "subscriptions", "announcements", "panel"] as const;
 export type ContextTool = typeof CONTEXT_TOOLS[number];
@@ -35,6 +36,7 @@ const PROMPT = [
   "For ALL rule creation use panel_operation/rules.create with known fields only, even if tunnelId, forwardGroupId, sourcePort or protocol is missing. The server will generate permission-filtered, paginated resource buttons and protocol/random-port choices, then request final confirmation. Do not return a prose-only clarify when a clear creation request already gives a target endpoint. Do not choose the first or only route silently. Never invent sourcePort=0 unless random was requested; never use hostId alone. A missing name may be derived from the target endpoint and shown in preview.",
   "expiry.list defaults to future 7 days unless a window is specified; includeExpired=true only if requested. Rules may have independent expiry and quota, configurable ONLY by admins through rules.create/update: rateLimitMbps, trafficLimit (bytes, 0=unlimited), trafficMode (outbound/both/max), createdAt (metadata, not activation), expiresAt (ISO timestamp, null=unlimited). Effective expiry is the earlier of rule and owner account expiry; label expirySource. Distinguish users, subscriptions, hosts (stoppedAt). Never confuse per-rule and account limits.",
   "Use scope=self for 'my/我的' expiry and subscription queries, even for administrators; scope=visible means all resources the actor may view. Never mistake self for all users.",
+  "Precise statistics: use panel_query/users.summary for current user counts (not the length of users context). Use users.search for paginated user search. Use traffic.rank for user/rule/host/resource traffic ranking: entity=users|rules|hosts|resources, period=today|yesterday|7d|30d|custom, limit=the requested top N, direction=total|in|out. '当前流量排行前三个' defaults to users,today,limit=3; explicitly label that scope. '当前有几个用户' means users.summary. Distinguish an account being enabled, not expired, and currently logged in; do not claim online-user counts from account totals. Never infer exact totals from truncated context or invent missing history. Respect returned timezone, coverage and accounting note.",
   "Settings operations use settings.set {key,value}. A query about a switch is settings.read, not authorization to change it. Do not disable the notification bot/channel or AI itself: connection credentials, database switching, upgrades, migration, shell, payment execution, account roles/passwords/tokens/certificates are web-only.",
   "For permission add/remove use users.permissions_change (preserves other IDs). *_permissions tools REPLACE the full manual list and require an explicit replace request. Do not confuse a tunnel with all rules using that tunnel. Byte quotas are bytes (GiB=1073741824), Mbps rates are numbers, prices are cents or milli-cents as catalog indicates. Convert dates using the supplied current time and timezone, with explicit offset; ambiguous dates must be clarified.",
   `Allowed query intents: ${FORWARDX_QUERY_INTENTS.join(",")}. Query fields: intent,id,keyword,ruleStatus(running|pending|disabled|abnormal),rankMetric(traffic|connections|latency),rankOrder(desc|asc),limit.`,
@@ -46,6 +48,8 @@ export async function planBotOperation(options: {
   readContext: (tool: ContextTool, keyword?: string, call?: { tool?: PanelToolName; input?: Record<string, unknown> }) => Promise<unknown>;
   client?: ForwardxAiClient;
 }): Promise<BotPlan> {
+  const exact = !options.workflow && preciseQuery(options.text);
+  if (exact) return { kind: "query", goal: options.text.slice(0, 500), confidence: 1, query: exact };
   const observations: { tool: ContextTool; keyword?: string; data: unknown }[] = [];
   const observed = new Set<string>();
   for (let round = 0; round < 3; round++) {

@@ -235,6 +235,10 @@ export const hosts = table("hosts", {
   ip: text("ip").notNull(),
   ipv4: text("ipv4"),
   ipv6: text("ipv6"),
+  ipv4Addresses: text("ipv4Addresses"),
+  ipv6Addresses: text("ipv6Addresses"),
+  preferredIpv4: text("preferredIpv4"),
+  preferredIpv6: text("preferredIpv6"),
   hostType: varchar("hostType", { length: 32 }).notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
   // 用户自定义的入口 IP/域名，为空时回退使用 ip
@@ -295,6 +299,7 @@ export const hosts = table("hosts", {
   ddnsDomain: text("ddnsDomain"),
   ddnsRecordType: varchar("ddnsRecordType", { length: 8 }).notNull().default("A"),
   ddnsIpVersion: varchar("ddnsIpVersion", { length: 8 }).notNull().default("ipv4"),
+  ddnsAddressMode: varchar("ddnsAddressMode", { length: 16 }).notNull().default("primary"),
   lastDdnsValue: text("lastDdnsValue"),
   lastDdnsAt: epoch("lastDdnsAt"),
   lastDdnsError: text("lastDdnsError"),
@@ -1046,6 +1051,7 @@ export type InsertBalanceTransaction = typeof balanceTransactions.$inferInsert;
 
 export const trafficBillingConfigs = table("traffic_billing_configs", {
   id: serial("id"),
+  sortOrder: int("sortOrder").notNull().default(0),
   resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel | forward_group
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),

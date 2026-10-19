@@ -38,8 +38,7 @@ export function buildIOSIPA() {
   // Always sync on the build host: Windows-generated SPM paths are not valid on macOS.
   run("pnpm", ["mobile:sync:ios"]);
   run("plutil", ["-lint", "ios/App/App/Info.plist", "ios/App/App/PrivacyInfo.xcprivacy"]);
-  const icon = "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png";
-  run("swift", ["scripts/ios-icon.swift", "client/public/logo-light.png", icon]);
+  // mobile:sync:ios generates all opaque theme icons from the shared web logo.
 
   const buildDir = path.join(root, "ios/build");
   fs.mkdirSync(buildDir, { recursive: true });
@@ -55,6 +54,14 @@ export function buildIOSIPA() {
   }
   if (readPlist("CFBundleIdentifier") !== "com.forwardx.app" || readPlist("CFBundleSupportedPlatforms:0") !== "iPhoneOS") {
     throw new Error("Expected com.forwardx.app built for a physical iOS device");
+  }
+  const project = fs.readFileSync(path.join(root, "ios/App/App.xcodeproj/project.pbxproj"), "utf8");
+  const alternateNames = project.match(/ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "([^"]+)"/)?.[1].split(" ") || [];
+  if (!alternateNames.length) throw new Error("Missing alternate theme icon build configuration");
+  for (const name of alternateNames) {
+    // Confirm actool actually merged the alternates into the packaged app, not only the project.
+    readPlist(`CFBundleIcons:CFBundleAlternateIcons:${name}`);
+    readPlist(`CFBundleIcons~ipad:CFBundleAlternateIcons:${name}`);
   }
   const executable = readPlist("CFBundleExecutable");
   if (path.basename(executable) !== executable) throw new Error("Invalid app executable");

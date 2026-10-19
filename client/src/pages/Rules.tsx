@@ -990,6 +990,9 @@ function hostEntryFamilies(host: any | null | undefined) {
   if (manualEntry) {
     addLiteralHostFamily(families, manualEntry);
   } else if (hostDdnsDomain(host)) {
+    if (host?.ddnsIpVersion === "both" || host?.ddnsRecordType === "BOTH") {
+      families.add("ipv4"); families.add("ipv6");
+    }
     const ddnsFamily = hostDdnsFamily(host);
     if (ddnsFamily) families.add(ddnsFamily);
   } else {

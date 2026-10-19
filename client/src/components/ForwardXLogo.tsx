@@ -1,5 +1,5 @@
-import { useMemo } from "react";
 import { cn } from "@/lib/utils";
+import { FORWARDX_LOGO, logoSecondaryColor } from "@/lib/brandLogo";
 
 interface ForwardXLogoProps {
   size?: number | string;
@@ -33,7 +33,7 @@ export function ForwardXLogo({
 
   return (
     <svg
-      viewBox="0 0 120 120"
+      viewBox={FORWARDX_LOGO.viewBox}
       width={dimension}
       height={dimension}
       fill="none"
@@ -45,7 +45,7 @@ export function ForwardXLogo({
       <defs>
         <linearGradient id="forwardx-logo-bg" x1="0%" y1="0%" x2="100%" y2="100%">
           <stop offset="0%" stopColor="var(--primary, #236de9)" />
-          <stop offset="100%" stopColor="color-mix(in srgb, var(--primary, #236de9) 70%, #0d9488)" />
+          <stop offset="100%" stopColor={logoSecondaryColor("var(--primary, #236de9)")} />
         </linearGradient>
         <linearGradient id="forwardx-chevron-accent" x1="0%" y1="0%" x2="100%" y2="100%">
           <stop offset="0%" stopColor="#d1fae5" />
@@ -60,7 +60,7 @@ export function ForwardXLogo({
         <rect
           width="120"
           height="120"
-          rx="30"
+          rx={FORWARDX_LOGO.radius}
           fill="url(#forwardx-logo-bg)"
         />
       )}
@@ -69,13 +69,13 @@ export function ForwardXLogo({
       <g filter="url(#forwardx-glow)">
         {/* Main "F" spine and upper arm */}
         <path
-          d="M26 28 L68 28 L68 40 L40 40 L40 50 L58 50 L58 60 L40 60 L40 92 L26 92 Z"
+          d={FORWARDX_LOGO.body}
           fill="#ffffff"
         />
 
         {/* Dynamic Forward Chevron (X forward arm) */}
         <path
-          d="M52 57 L84 35 L94 45 L70 60 L94 75 L84 85 L52 63 Z"
+          d={FORWARDX_LOGO.chevron}
           fill="url(#forwardx-chevron-accent)"
           fillOpacity="0.95"
         />

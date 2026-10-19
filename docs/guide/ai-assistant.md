@@ -1,5 +1,7 @@
 # AI 助手
 
+精确数量/流量排行查询和外部只读 MCP 接入见 [诊断、资源告警与 MCP](./observability-mcp.md)。
+
 AI 助手通过已选择的 Telegram / Discord 机器人提供自然语言查询与受控管理，需要先完成 [通知渠道配置与账号绑定](./notifications.md)。
 
 ## 配置 AI 助手

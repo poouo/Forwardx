@@ -2,6 +2,9 @@ import { getFormatLocale, getLanguage } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import NotificationSettingsCard from "@/components/NotificationSettingsCard";
 import GoogleLoginSettingsCard from "@/components/GoogleLoginSettingsCard";
+import McpAccessCard from "@/components/McpAccessCard";
+import AuthCaptchaSettingsFields from "@/components/AuthCaptchaSettingsFields";
+import { normalizeAuthCaptchaProvider, type AuthCaptchaProvider } from "@shared/authCaptcha";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { EmailSettingsContent } from "./EmailSettings";
@@ -2889,6 +2892,8 @@ function DeepSeekSettingsCard() {
         </CardContent>
       </Card>
 
+      <McpAccessCard />
+
       <Dialog
         open={showDeleteDeepSeekKey}
         onOpenChange={(open) => {
@@ -4042,6 +4047,7 @@ function SystemInfoSection() {
   const [panelSslCountdown, setPanelSslCountdown] = useState(5);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [authCaptchaEnabled, setAuthCaptchaEnabled] = useState(true);
+  const [authCaptchaProvider, setAuthCaptchaProvider] = useState<AuthCaptchaProvider>("cap");
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
@@ -4107,6 +4113,7 @@ function SystemInfoSection() {
       setPanelSslKeyPem(settings.panelSsl?.keyPem || "");
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setAuthCaptchaEnabled(settings.authCaptchaEnabled ?? true);
+      setAuthCaptchaProvider(normalizeAuthCaptchaProvider(settings.authCaptchaProvider));
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
       setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
@@ -4398,7 +4405,7 @@ function SystemInfoSection() {
   };
 
   const handleSaveAuthCaptcha = () => {
-    saveSystemSettings("authCaptcha", { authCaptchaEnabled }, {
+    saveSystemSettings("authCaptcha", { authCaptchaEnabled, authCaptchaProvider }, {
       onSuccess: () => {
         void utils.auth.emailConfig.invalidate();
         void utils.auth.needsCaptcha.invalidate();
@@ -5071,16 +5078,10 @@ function SystemInfoSection() {
           <CardTitle className="flex items-center gap-2 text-base">
             <Shield className="h-4 w-4 shrink-0 text-primary" />{translateText("登录/注册人机验证")}
           </CardTitle>
-          <CardDescription>{translateText("默认开启。建议使用 HTTPS；部分浏览器在 HTTP 下无法完成验证。")}</CardDescription>
+          <CardDescription>{translateText("默认开启，由管理员统一选择验证方式。")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">{translateText("启用人机验证")}</p>
-              <p className="text-xs text-muted-foreground">{translateText("关闭后登录和注册不再要求人机验证，但仍保留密码、登录限流、邮箱验证和双重验证。公网部署建议保持开启。")}</p>
-            </div>
-            <Switch aria-label={translateText("启用人机验证")} className="shrink-0" checked={authCaptchaEnabled} onCheckedChange={setAuthCaptchaEnabled} />
-          </div>
+          <AuthCaptchaSettingsFields enabled={authCaptchaEnabled} provider={authCaptchaProvider} onEnabledChange={setAuthCaptchaEnabled} onProviderChange={setAuthCaptchaProvider} />
           <div className="flex justify-end">
             <Button onClick={handleSaveAuthCaptcha} disabled={isSavingSetting("authCaptcha")}>{translateText("保存人机验证设置")}</Button>
           </div>

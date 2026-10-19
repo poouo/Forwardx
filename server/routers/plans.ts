@@ -4,6 +4,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { reorderProducts } from "../repositories/productOrder";
 import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
 
 const planInput = z.object({
@@ -65,6 +66,9 @@ export const plansRouter = router({
   list: adminProcedure.query(async () => {
     return db.listSubscriptionPlans(true);
   }),
+  reorder: adminProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(100), startIndex: z.number().int().min(0).default(0) }))
+    .mutation(({ input }) => reorderProducts("subscription_plans", input.ids, input.startIndex)),
   options: adminProcedure.query(async () => {
     return db.listSubscriptionPlanOptions(true);
   }),

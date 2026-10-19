@@ -12,33 +12,41 @@ import MotionPolicy from "./components/MotionPolicy";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import PersonalizationLayer from "./components/PersonalizationLayer";
 import Live2DWidgetHost from "./components/plugins/Live2DWidgetHost";
-import Setup from "./pages/Setup";
-import AnnouncementsPage from "@/pages/Announcements";
-import BillingPage from "@/pages/Billing";
-import CustomSidebarPage from "@/pages/CustomSidebarPage";
-import EmailSettingsPage from "@/pages/EmailSettings";
-import ForwardGroupsPage from "@/pages/ForwardGroups";
-import HomePage from "@/pages/Home";
-import OperationsPage from "@/pages/Operations";
-import HomepagePreviewPage from "@/pages/HomepagePreview";
-import HostMonitorPage from "@/pages/HostMonitor";
-import HostsPage from "@/pages/Hosts";
-import LoginPage from "@/pages/Login";
-import LookingGlassPage from "@/pages/LookingGlass";
-import PaymentsPage from "@/pages/Payments";
-import PlansPage from "@/pages/Plans";
-import PluginsPage from "@/pages/Plugins";
-import ProfilePage from "@/pages/Profile";
-import RulesPage from "@/pages/Rules";
-import SettingsPage from "@/pages/Settings";
-import StorePage from "@/pages/Store";
-import SupportTicketsPage from "@/pages/SupportTickets";
-import AffiliatesPage from "@/pages/Affiliates";
-import SubscriptionsPage from "@/pages/Subscriptions";
-import TrafficBillingPage from "@/pages/TrafficBilling";
-import TunnelsPage from "@/pages/Tunnels";
-import UsersPage from "@/pages/Users";
-import WalletPage from "@/pages/Wallet";
+import DashboardLayout from "./components/DashboardLayout";
+import RoutePage, { RoutePagePlaceholder } from "./components/RoutePage";
+import { resolveClientRoute, type ClientPage } from "@shared/clientRoutes";
+
+function pageComponent(page: ClientPage) {
+  return (props: Record<string, any>) => <RoutePage page={page} pageProps={props} />;
+}
+
+const Setup = pageComponent("Setup");
+const AnnouncementsPage = pageComponent("Announcements");
+const BillingPage = pageComponent("Billing");
+const CustomSidebarPage = pageComponent("CustomSidebarPage");
+const EmailSettingsPage = pageComponent("EmailSettings");
+const ForwardGroupsPage = pageComponent("ForwardGroups");
+const HomePage = pageComponent("Home");
+const OperationsPage = pageComponent("Operations");
+const HomepagePreviewPage = pageComponent("HomepagePreview");
+const HostMonitorPage = pageComponent("HostMonitor");
+const HostsPage = pageComponent("Hosts");
+const LoginPage = pageComponent("Login");
+const LookingGlassPage = pageComponent("LookingGlass");
+const PaymentsPage = pageComponent("Payments");
+const PlansPage = pageComponent("Plans");
+const PluginsPage = pageComponent("Plugins");
+const ProfilePage = pageComponent("Profile");
+const RulesPage = pageComponent("Rules");
+const SettingsPage = pageComponent("Settings");
+const StorePage = pageComponent("Store");
+const SupportTicketsPage = pageComponent("SupportTickets");
+const AffiliatesPage = pageComponent("Affiliates");
+const SubscriptionsPage = pageComponent("Subscriptions");
+const TrafficBillingPage = pageComponent("TrafficBilling");
+const TunnelsPage = pageComponent("Tunnels");
+const UsersPage = pageComponent("Users");
+const WalletPage = pageComponent("Wallet");
 import DatabaseHealthGate from "./components/DatabaseHealthGate";
 import PanelStartView from "./components/PanelStartView";
 
@@ -71,7 +79,7 @@ function LookingGlassRoute() {
   });
 
   if (loading) return <PanelStartView />;
-  if (user && publicInfo.isLoading && !publicInfo.data) return null;
+  if (user && publicInfo.isLoading && !publicInfo.data) return <RoutePagePlaceholder />;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
   return <LookingGlassPage />;
@@ -94,7 +102,10 @@ function PluginsRoute({ sidebarPluginId }: { sidebarPluginId?: string }) {
 }
 
 function Router() {
-  return (
+  const [location] = useLocation();
+  const { user } = useAuth();
+  const route = resolveClientRoute(location);
+  const content = (
     <Switch>
       <Route path="/setup" component={Setup} />
       <Route path="/login">{routeComponent(LoginPage)}</Route>
@@ -134,6 +145,11 @@ function Router() {
       <Route component={NotFound} />
     </Switch>
   );
+  // Keep navigation, sidebar scroll and upgrade state alive while only the
+  // content module changes. Public pages must never inherit the dashboard shell.
+  return user && route?.dashboard
+    ? <DashboardLayout key={String(user.id) + ":" + user.role}>{content}</DashboardLayout>
+    : content;
 }
 
 function SetupGate() {

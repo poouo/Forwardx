@@ -2,6 +2,7 @@ import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
+import BillingExportButton from "@/components/BillingExportButton";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -660,6 +661,7 @@ export default function Billing() {
                 <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
                   <UserSelect value={ledgerUserId} onValueChange={value => { setLedgerUserId(value); ledgerPageRequest.setPage(1); }} className="w-full sm:w-56"
                     specialOptions={[{ value: "all", label: translateText("全部用户") }]} />
+                  <BillingExportButton userId={ledgerUserId === "all" ? undefined : Number(ledgerUserId)} />
                 </div>
               </CardHeader>
               <CardContent>

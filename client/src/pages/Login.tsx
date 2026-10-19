@@ -2,6 +2,8 @@ import { t as translateText } from "@/i18n";
 import { useState, useCallback, useEffect, useRef } from "react";
 import LanguageSelector from "@/components/LanguageSelector";
 import GoogleLoginButton from "@/components/GoogleLoginButton";
+import ImageCaptchaField from "@/components/ImageCaptchaField";
+import { normalizeAuthCaptchaProvider } from "@shared/authCaptcha";
 import { captureAffiliateReferral, getAffiliateReferral, clearAffiliateReferral } from "@/lib/affiliateReferral";
 import { googleAuthMessage } from "@shared/googleAuth";
 import "@cap.js/widget";
@@ -9,7 +11,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon } from "lucide-react";
+import { Eye, EyeOff, Loader2, Sun, Moon, UserPlus, LogIn, Send, Settings as SettingsIcon } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "@/lib/localizedToast";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -141,77 +143,6 @@ function CapVerificationField(props: {
   );
 }
 
-const ignoreCapError = () => undefined;
-
-function ImageCaptchaField(props: {
-  id: string;
-  value: string;
-  imageDataUrl?: string;
-  loading: boolean;
-  refreshDisabled: boolean;
-  refreshTitle: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-  onRefresh: () => void;
-  resetKey?: number;
-}) {
-  return (
-    <CapVerificationField
-      purpose={props.id === "reg-captcha" ? "register" : "login"}
-      disabled={props.disabled}
-      resetKey={props.resetKey ?? 0}
-      onToken={props.onChange}
-      onError={ignoreCapError}
-    />
-  );
-  /*
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={props.id}>验证码</Label>
-      <div className="flex items-stretch gap-2">
-        <div className="flex h-14 min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md border bg-white">
-          {props.imageDataUrl ? (
-            <img
-              src={props.imageDataUrl}
-              alt="图片验证码"
-              className="h-full w-full select-none object-fill"
-              draggable={false}
-            />
-          ) : props.loading ? (
-            <Loader2 className="h-5 w-5 animate-spin text-slate-500" />
-          ) : (
-            <span className="text-sm text-slate-500">验证码暂不可用</span>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={props.onRefresh}
-          disabled={props.refreshDisabled}
-          className="flex h-14 w-11 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          title={props.refreshTitle}
-          aria-label={props.refreshTitle}
-        >
-          <RefreshCw className={`h-4 w-4 ${props.loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
-      <Input
-        id={props.id}
-        type="text"
-        inputMode="text"
-        autoCapitalize="characters"
-        autoComplete="off"
-        spellCheck={false}
-        maxLength={12}
-        placeholder="请输入图片中的字符"
-        value={props.value}
-        onChange={(event) => props.onChange(event.target.value)}
-        disabled={props.disabled || !props.imageDataUrl}
-      />
-    </div>
-  );
-  */
-}
-
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
 const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
 const DISPLAY_NAME_MAX_LENGTH = 24;
@@ -258,6 +189,7 @@ export default function Login() {
   const telegramWebAppChallengeRetriedRef = useRef(false);
   const captchaRequestIdRef = useRef(0);
   const captchaRequestPendingRef = useRef(false);
+  const captchaAutoRequestKeyRef = useRef<string | null>(null);
   const telegramWebAppLoginRetryMutateRef = useRef((payload: { initData: string; challenge?: string; mobile?: boolean }) => {
     void payload;
   });
@@ -324,13 +256,32 @@ export default function Login() {
   });
   const serverRequiresLoginCaptcha = captchaStatusQuery.data?.required === true;
   const loginCaptchaRequired = captchaStatusQuery.data?.enabled !== false && (serverRequiresLoginCaptcha || loginCaptchaRequiredFor === normalizedUsername);
-  // The image challenge remains available only for old clients; the current
-  // page uses the self-hosted Cap widget below.
-  const captchaVisible = false;
+  const captchaProvider = normalizeAuthCaptchaProvider(mode === "register"
+    ? emailConfig?.authCaptchaProvider ?? publicInfo?.authCaptchaProvider
+    : captchaStatusQuery.data?.provider ?? publicInfo?.authCaptchaProvider);
+  const verificationVisible = !twoFactorChallenge && (mode === "register" ? registrationCaptchaEnabled : loginCaptchaRequired);
+  const captchaVisible = captchaProvider === "image" && verificationVisible;
   const captchaPurpose = mode === "register" ? "register" as const : "login" as const;
+  const panelCaptchaUrl = mobileAuth.isNative ? mobileAuth.getPanelUrl() : "";
+  const refreshCaptchaConfig = useCallback(() => {
+    void utils.auth.emailConfig.invalidate();
+    void utils.auth.needsCaptcha.invalidate();
+    void utils.system.publicInfo.invalidate();
+  }, [utils]);
+  const handleCapError = useCallback(() => {
+    refreshCaptchaConfig();
+  }, [refreshCaptchaConfig]);
+
+  useEffect(() => {
+    ++captchaRequestIdRef.current;
+    captchaRequestPendingRef.current = false;
+    captchaAutoRequestKeyRef.current = null;
+    setCaptchaChallenge(null);
+    setCaptchaAnswer("");
+  }, [captchaProvider, captchaPurpose, panelCaptchaUrl, verificationVisible]);
 
   const createCaptchaMutation = trpc.auth.createCaptcha.useMutation();
-  const requestCaptcha = useCallback((purpose: "login" | "register", clearExisting = true) => {
+  const requestCaptcha = useCallback((purpose: "login" | "register") => {
     if (!hasMobilePanelUrl) {
       setCaptchaAnswer("");
       return;
@@ -338,11 +289,12 @@ export default function Login() {
     if (Date.now() < captchaCooldownUntil || captchaRequestPendingRef.current) return;
     const requestId = ++captchaRequestIdRef.current;
     captchaRequestPendingRef.current = true;
-    if (clearExisting) setCaptchaChallenge(null);
+    setCaptchaChallenge(null);
+    setCaptchaAnswer("");
     createCaptchaMutation.mutate({ purpose }, {
       onSuccess: (data) => {
-        captchaRequestPendingRef.current = false;
         if (requestId !== captchaRequestIdRef.current) return;
+        captchaRequestPendingRef.current = false;
         setCaptchaChallenge({
           captchaId: data.captchaId,
           imageDataUrl: data.imageDataUrl,
@@ -353,8 +305,9 @@ export default function Login() {
         setCaptchaCooldownUntil(0);
       },
       onError: (error) => {
-        captchaRequestPendingRef.current = false;
         if (requestId !== captchaRequestIdRef.current) return;
+        captchaRequestPendingRef.current = false;
+        if (error.message === "验证码方式已更改，请刷新页面") refreshCaptchaConfig();
         const retryAfter = captchaRetryAfterSeconds(error.message || "");
         if (retryAfter > 0) {
           setCaptchaCooldownUntil(Date.now() + retryAfter * 1000);
@@ -368,14 +321,27 @@ export default function Login() {
         toast.error(error.message || translateText("验证码加载失败"));
       },
     });
-  }, [captchaCooldownUntil, createCaptchaMutation, hasMobilePanelUrl]);
+  }, [captchaCooldownUntil, createCaptchaMutation, hasMobilePanelUrl, refreshCaptchaConfig]);
 
   useEffect(() => {
     if (!captchaVisible || !hasMobilePanelUrl) return;
     const challengeReady = captchaChallenge?.purpose === captchaPurpose && captchaChallenge.expiresAt > Date.now();
-    if (challengeReady || createCaptchaMutation.isPending || Date.now() < captchaCooldownUntil) return;
+    const key = `${panelCaptchaUrl}:${captchaPurpose}:${captchaResetKey}`;
+    if (challengeReady || captchaRequestPendingRef.current || Date.now() < captchaCooldownUntil || captchaAutoRequestKeyRef.current === key) return;
+    // Failed requests do not automatically loop and exhaust the refresh limit.
+    captchaAutoRequestKeyRef.current = key;
     requestCaptcha(captchaPurpose);
-  }, [captchaChallenge, captchaCooldownUntil, captchaPurpose, captchaVisible, createCaptchaMutation.isPending, hasMobilePanelUrl, requestCaptcha]);
+  }, [captchaChallenge, captchaCooldownUntil, captchaPurpose, captchaVisible, captchaResetKey, panelCaptchaUrl, hasMobilePanelUrl, requestCaptcha]);
+
+  useEffect(() => {
+    if (!captchaChallenge || !captchaVisible) return;
+    const timer = window.setTimeout(() => {
+      setCaptchaChallenge(null);
+      setCaptchaAnswer("");
+      setCaptchaResetKey(value => value + 1);
+    }, Math.max(0, captchaChallenge.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [captchaChallenge, captchaVisible]);
 
   useEffect(() => {
     if (captchaCooldownUntil <= Date.now()) return;
@@ -409,6 +375,10 @@ export default function Login() {
     },
     onError: (error, variables) => {
       const msg = error.message || "";
+      setCaptchaChallenge(null);
+      setCaptchaAnswer("");
+      if (variables.captchaId) setCaptchaResetKey(value => value + 1);
+      refreshCaptchaConfig();
       if (mobileAuth.isNative && isMobileNetworkError(msg)) {
         toast.error(translateText("无法连接面板，请检查右上角面板地址"));
         setShowPanelSettings(true);
@@ -617,7 +587,9 @@ export default function Login() {
       }
       toast.error(msg === "CAPTCHA_INVALID" ? translateText("验证码错误或已过期，请重新输入") : msg || translateText("注册失败"));
       setCaptchaAnswer("");
+      setCaptchaChallenge(null);
       setCaptchaResetKey((value) => value + 1);
+      refreshCaptchaConfig();
     },
   });
 
@@ -753,14 +725,14 @@ export default function Login() {
       return;
     }
     if (loginCaptchaRequired) {
-      if (!captchaAnswer.trim()) {
+      if (!captchaAnswer.trim() || (captchaProvider === "image" && (!captchaChallenge || captchaChallenge.purpose !== "login" || captchaChallenge.expiresAt <= Date.now()))) {
         toast.error(translateText("请先完成人机验证"));
         return;
       }
       loginMutation.mutate({
         username: username.trim(),
         password,
-        capToken: captchaAnswer.trim(),
+        ...(captchaProvider === "image" ? { captchaId: captchaChallenge!.captchaId, captchaAnswer: captchaAnswer.trim() } : { capToken: captchaAnswer.trim() }),
         mobile: mobileAuth.isNative,
       });
     } else {
@@ -809,7 +781,7 @@ export default function Login() {
         return;
       }
     }
-    if (registrationCaptchaEnabled && !captchaAnswer.trim()) {
+    if (registrationCaptchaEnabled && (!captchaAnswer.trim() || (captchaProvider === "image" && (!captchaChallenge || captchaChallenge.purpose !== "register" || captchaChallenge.expiresAt <= Date.now())))) {
       toast.error(translateText("请先完成人机验证"));
       return;
     }
@@ -824,7 +796,9 @@ export default function Login() {
       name: name.trim() || undefined,
       email: email.trim() || undefined,
       emailCode: emailCode.trim() || undefined,
-      capToken: registrationCaptchaEnabled ? captchaAnswer.trim() : undefined,
+      ...(registrationCaptchaEnabled ? captchaProvider === "image"
+        ? { captchaId: captchaChallenge!.captchaId, captchaAnswer: captchaAnswer.trim() }
+        : { capToken: captchaAnswer.trim() } : {}),
     });
   };
 
@@ -971,6 +945,7 @@ export default function Login() {
                 </div>
               </div>
               {loginCaptchaRequired && (
+                captchaProvider === "cap" ? <CapVerificationField key={panelCaptchaUrl} purpose="login" disabled={isPending} resetKey={captchaResetKey} onToken={setCaptchaAnswer} onError={handleCapError} /> :
                 <ImageCaptchaField
                   id="captcha"
                   value={captchaAnswer}
@@ -980,8 +955,7 @@ export default function Login() {
                   refreshTitle={captchaRefreshTitle}
                   disabled={isPending}
                   onChange={setCaptchaAnswer}
-                  resetKey={captchaResetKey}
-                  onRefresh={() => requestCaptcha("login", false)}
+                  onRefresh={() => requestCaptcha("login")}
                 />
               )}
 
@@ -1165,7 +1139,9 @@ export default function Login() {
                 />
               </div>
 
-              {registrationCaptchaEnabled && <ImageCaptchaField
+              {registrationCaptchaEnabled && (captchaProvider === "cap"
+                ? <CapVerificationField key={panelCaptchaUrl} purpose="register" disabled={isPending || !hasMobilePanelUrl} resetKey={captchaResetKey} onToken={setCaptchaAnswer} onError={handleCapError} />
+                : <ImageCaptchaField
                 id="reg-captcha"
                 value={captchaAnswer}
                 imageDataUrl={activeCaptchaImage}
@@ -1174,9 +1150,8 @@ export default function Login() {
                 refreshTitle={captchaRefreshTitle}
                 disabled={isPending || !hasMobilePanelUrl}
                 onChange={setCaptchaAnswer}
-                resetKey={captchaResetKey}
-                onRefresh={() => requestCaptcha("register", false)}
-              />}
+                onRefresh={() => requestCaptcha("register")}
+              />)}
 
               <Button
                 type="submit"

@@ -1,7 +1,7 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
-import AutoAnimateContainer from "@/components/AutoAnimateContainer";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -302,10 +302,12 @@ function BillingConfigCard({
   config,
   onEdit,
   onDelete,
+  dragHandle,
 }: {
   config: any;
   onEdit: () => void;
   onDelete: () => void;
+  dragHandle?: ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -315,6 +317,7 @@ function BillingConfigCard({
           <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
         </div>
         <div className="-mr-2 -mt-2 flex shrink-0 items-center gap-1">
+          {dragHandle}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}>
             <Pencil className="h-4 w-4" />
           </Button>
@@ -395,6 +398,23 @@ export default function TrafficBillingConfigManager({
     utils.trafficBilling.status.invalidate(),
     utils.trafficBilling.storeResources.invalidate(),
   ]);
+  const configOrder = useOptimisticSortableOrder({ items: data?.configs || [], getId: (config: any) => Number(config.id) });
+  const reorderConfigs = trpc.trafficBilling.reorder.useMutation({
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
+  });
+  const configSortDisabled = configsLoading || reorderConfigs.isPending || configOrder.items.length < 2;
+  const configSortable = useSortableReorder({
+    items: configOrder.items,
+    getId: (config: any) => Number(config.id),
+    disabled: configSortDisabled,
+    onReorder: (nextConfigs) => {
+      const requestId = configOrder.begin(nextConfigs);
+      reorderConfigs.mutate({ ids: nextConfigs.map((config: any) => Number(config.id)) }, {
+        onError: () => configOrder.release(requestId),
+        onSettled: () => configOrder.resync(requestId, invalidateBilling),
+      });
+    },
+  });
 
   const setEnabledMutation = trpc.trafficBilling.setEnabled.useMutation({
     onSuccess: async (_data, variables) => {
@@ -575,30 +595,39 @@ export default function TrafficBillingConfigManager({
           {configsLoading ? (
             <DataSectionLoading label={translateText("正在加载计费配置")} />
           ) : (
-            <AutoAnimateContainer duration={220}>
+            <SortableReorderContext sortable={configSortable} strategy={configViewMode === "card" ? "rect" : "vertical"}>
               {configViewMode === "card" ? (
-                <AutoAnimateContainer key="billing-config-card-view" className="standard-card-grid gap-3" duration={220}>
-                  {(data?.configs || []).map((config: any) => (
-                    <BillingConfigCard
-                      key={config.id}
-                      config={config}
-                      onEdit={() => openEdit(config)}
-                      onDelete={() => deleteConfig.mutate({ id: config.id })}
-                    />
+                <div key="billing-config-card-view" className="standard-card-grid gap-3">
+                  {configOrder.items.map((config: any) => (
+                    <SortableItem key={config.id} id={Number(config.id)} disabled={configSortDisabled}>
+                      {({ itemProps, handleProps }) => (
+                        <div {...itemProps} className="group/sortable min-w-0">
+                          <BillingConfigCard
+                            dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />}
+                            config={config}
+                            onEdit={() => openEdit(config)}
+                            onDelete={() => deleteConfig.mutate({ id: config.id })}
+                          />
+                        </div>
+                      )}
+                    </SortableItem>
                   ))}
                   {(data?.configs || []).length === 0 && (
                     <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无计费配置")}</div>
                   )}
-                </AutoAnimateContainer>
+                </div>
               ) : (
                 <div key="billing-config-table-view" className="overflow-x-auto">
                   <Table>
                     <TableHeader><TableRow><TableHead>{translateText("资源")}</TableHead><TableHead>{translateText("单价")}</TableHead><TableHead>{translateText("倍率")}</TableHead><TableHead>{translateText("权限")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
-                    <AutoAnimateContainer as={TableBody} duration={220}>
-                      {(data?.configs || []).map((config: any) => (
-                        <TableRow key={config.id}>
+                    <TableBody>
+                      {configOrder.items.map((config: any) => (
+                        <SortableItem key={config.id} id={Number(config.id)} itemKind="row" disabled={configSortDisabled}>
+                          {({ itemProps, handleProps }) => (
+                        <TableRow {...itemProps} className="group/sortable">
                           <TableCell>
                             <div className="flex items-center gap-2">
+                              <SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />
                               {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
                               <span>{config.resourceName}</span>
                               <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || translateText("转发资源")}</Badge>
@@ -619,17 +648,19 @@ export default function TrafficBillingConfigManager({
                             </div>
                           </TableCell>
                         </TableRow>
+                          )}
+                        </SortableItem>
                       ))}
                       {(data?.configs || []).length === 0 && (
                         <TableRow>
                           <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{translateText("暂无计费配置")}</TableCell>
                         </TableRow>
                       )}
-                    </AutoAnimateContainer>
+                    </TableBody>
                   </Table>
                 </div>
               )}
-            </AutoAnimateContainer>
+            </SortableReorderContext>
           )}
         </CardContent>
       </Card>

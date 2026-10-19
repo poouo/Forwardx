@@ -5,6 +5,7 @@ import UserSelect from "@/components/UserSelect";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import { PlanManagementSettings } from "@/components/PlanManagementSettings";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -229,6 +230,8 @@ function PlanCard({
   toggling,
   onToggleActive,
   onToggleStoreVisible,
+  dragHandle,
+  isDragging,
 }: {
   plan: any;
   resourceParts: PlanResourcePart[];
@@ -237,15 +240,18 @@ function PlanCard({
   toggling?: boolean;
   onToggleActive: () => void;
   onToggleStoreVisible: () => void;
+  dragHandle?: ReactNode;
+  isDragging?: boolean;
 }) {
   return (
-    <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/40 p-3">
+    <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/40 p-3" style={isDragging ? { transform: "none" } : undefined}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="break-words text-sm font-medium">{plan.name}</p>
           {!planDescription(plan) && <p className="mt-1 break-words text-xs text-muted-foreground">{translateText("无描述")}</p>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {dragHandle}
           <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={onEdit} title={translateText("编辑套餐")} aria-label={translateText("编辑套餐")}><Pencil className="h-4 w-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete} title={translateText("删除")} aria-label={translateText("删除")}>
             <Trash2 className="h-4 w-4" />
@@ -660,6 +666,29 @@ export default function Plans() {
     planPageRequest,
     { pageSize: 12, isReady: !isLoading && !!planPageQuery.data },
   );
+  const planOrder = useOptimisticSortableOrder({ items: plans, getId: (plan: any) => Number(plan.id) });
+  const reorderPlans = trpc.plans.reorder.useMutation({
+    onError: (error) => toast.error(error.message || translateText("保存失败")),
+  });
+  const planSortDisabled = planPageQuery.isPlaceholderData || reorderPlans.isPending || plans.length < 2;
+  const planSortable = useSortableReorder({
+    items: planOrder.items,
+    getId: (plan: any) => Number(plan.id),
+    disabled: planSortDisabled,
+    onReorder: (nextPlans) => {
+      const requestId = planOrder.begin(nextPlans);
+      reorderPlans.mutate({
+        ids: nextPlans.map((plan: any) => Number(plan.id)),
+        startIndex: (planPagination.currentPage - 1) * planPagination.pageSize,
+      }, {
+        onError: () => planOrder.release(requestId),
+        onSettled: () => planOrder.resync(requestId, () => Promise.all([
+          utils.plans.list.invalidate(), utils.plans.listPage.invalidate(),
+          utils.plans.options.invalidate(), utils.plans.storeList.invalidate(),
+        ])),
+      });
+    },
+  });
 
   const storeStatusQuery = trpc.plans.storeStatus.useQuery(undefined, { enabled: settingsOpen });
   const needsPlanResourceOptions = editing && planDialogTab === "resources";
@@ -1043,25 +1072,32 @@ export default function Plans() {
                 {isLoading ? (
                   <DataSectionLoading label={translateText("正在加载套餐数据")} />
                 ) : (
-                  <AutoAnimateContainer duration={220}>
+                  <SortableReorderContext sortable={planSortable} strategy={planViewMode === "card" ? "rect" : "vertical"}>
                     {planViewMode === "card" ? (
-                      <AutoAnimateContainer key="plan-card-view" className="standard-card-grid gap-3" duration={220}>
-                        {plans.map((plan: any) => (
-                          <PlanCard
-                            key={plan.id}
-                            plan={plan}
-                            resourceParts={planResourcePartsForDisplay(plan, forwardGroupMap)}
-                            toggling={statusUpdatingPlanId === Number(plan.id)}
-                            onEdit={() => openPlanEdit(plan)}
-                            onDelete={() => deletePlan.mutate({ id: plan.id })}
-                            onToggleActive={() => togglePlanActive(plan)}
-                            onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
-                          />
+                      <div key="plan-card-view" className="standard-card-grid gap-3">
+                        {planOrder.items.map((plan: any) => (
+                          <SortableItem key={plan.id} id={Number(plan.id)} disabled={planSortDisabled}>
+                            {({ itemProps, handleProps, isDragging }) => (
+                              <div {...itemProps} className="group/sortable min-w-0">
+                                <PlanCard
+                                  dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderPlans.isPending} />}
+                                  isDragging={isDragging}
+                                  plan={plan}
+                                  resourceParts={planResourcePartsForDisplay(plan, forwardGroupMap)}
+                                  toggling={statusUpdatingPlanId === Number(plan.id)}
+                                  onEdit={() => openPlanEdit(plan)}
+                                  onDelete={() => deletePlan.mutate({ id: plan.id })}
+                                  onToggleActive={() => togglePlanActive(plan)}
+                                  onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
+                                />
+                              </div>
+                            )}
+                          </SortableItem>
                         ))}
                         {plans.length === 0 && (
                           <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("还没有套餐")}</div>
                         )}
-                      </AutoAnimateContainer>
+                      </div>
                     ) : (
                       <div key="plan-table-view" className="overflow-x-auto">
                         <Table>
@@ -1075,11 +1111,16 @@ export default function Plans() {
                               <TableHead className="text-right">{translateText("操作")}</TableHead>
                             </TableRow>
                           </TableHeader>
-                          <AutoAnimateContainer as={TableBody} duration={220}>
-                            {plans.map((plan: any) => (
-                              <TableRow key={plan.id}>
+                          <TableBody>
+                            {planOrder.items.map((plan: any) => (
+                              <SortableItem key={plan.id} id={Number(plan.id)} itemKind="row" disabled={planSortDisabled}>
+                                {({ itemProps, handleProps }) => (
+                              <TableRow {...itemProps} className="group/sortable">
                                 <TableCell>
-                                  <div className="font-medium">{plan.name}</div>
+                                  <div className="flex items-center gap-2">
+                                    <SortableDragHandle dragHandleProps={handleProps} busy={reorderPlans.isPending} />
+                                    <div className="font-medium">{plan.name}</div>
+                                  </div>
                                   {!planDescription(plan) && <div className="text-xs text-muted-foreground">{translateText("无描述")}</div>}
                                 </TableCell>
                                 {planDescription(plan) ? (
@@ -1117,15 +1158,17 @@ export default function Plans() {
                                   </Button>
                                 </TableCell>
                               </TableRow>
+                                )}
+                              </SortableItem>
                             ))}
                             {plans.length === 0 && (
                               <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{translateText("还没有套餐")}</TableCell></TableRow>
                             )}
-                          </AutoAnimateContainer>
+                          </TableBody>
                         </Table>
                       </div>
                     )}
-                  </AutoAnimateContainer>
+                  </SortableReorderContext>
                 )}
               </CardContent>
             </Card>

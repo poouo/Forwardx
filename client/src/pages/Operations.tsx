@@ -7,6 +7,7 @@ import OperationsDateFilter from "@/components/OperationsDateFilter";
 import OperationsSourceList from "@/components/OperationsSourceList";
 import OperationsFinanceSummary from "@/components/OperationsFinanceSummary";
 import OperationsRefreshSelect from "@/components/OperationsRefreshSelect";
+import OperationsMonitorPanel from "@/components/OperationsMonitorPanel";
 import Ranking from "@/components/OperationsRanking";
 import { SummaryMetricCard } from "@/components/SummaryMetricCard";
 import { useOperationsRefresh } from "@/hooks/useOperationsRefresh";
@@ -80,6 +81,7 @@ export default function OperationsPage() {
       </div>
     </div>
     {(import.meta as any).env?.VITE_FORWARDX_DEV_PANEL === "1" && <p className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground">{t("本地演示数据，不代表真实流量或 IP 位置。")}</p>}
+    <OperationsMonitorPanel interval={refreshInterval} />
     <OperationsDateFilter from={from} to={to} minimum={minimum} today={today} onFromChange={setFrom} onToChange={setTo}
       onApply={() => { setDates({ from, to }); setPage(0); }}
       onToday={() => { const value = operationsDate(); setFrom(value); setTo(value); setDates({ from: value, to: value }); setPage(0); }}

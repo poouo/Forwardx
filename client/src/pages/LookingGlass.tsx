@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { trpc } from "@/lib/trpc";
+import NetworkDiagnostics from "@/components/NetworkDiagnostics";
+import { networkTestSummary } from "@shared/networkTestSummary";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -138,6 +140,7 @@ export function ResultOutput({
   state: RunState;
 }) {
   const isRunning = state === "queued" || state === "running";
+  const summary = !isRunning && result ? networkTestSummary(result.method, result.output) : null;
   const ok = resultOk(result);
   const title = result ? methodMeta(result.method).label : translateText("网络测试结果");
   const output = result?.output || liveOutput || translateText("选择主机、测试类型和目标后开始执行。");
@@ -189,6 +192,10 @@ export function ResultOutput({
           </div>
         </div>
       </CardHeader>
+      {summary && (summary.lossPercent !== undefined || summary.avgMs !== undefined || summary.hops.length > 0) && <div className="max-h-40 shrink-0 overflow-auto border-b px-4 py-2 text-xs">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">{summary.lossPercent !== undefined && <span>{translateText("丢包率")} {summary.lossPercent}%</span>}{summary.avgMs !== undefined && <span>{translateText("平均延迟")} {summary.avgMs.toFixed(2)} ms</span>}{summary.maxMs !== undefined && <span>{translateText("最大延迟")} {summary.maxMs.toFixed(2)} ms</span>}{summary.jitterMs !== undefined && <span>{translateText("延迟标准差")} {summary.jitterMs.toFixed(2)} ms</span>}</div>
+        {summary.hops.length > 0 && <><ol className="mt-2 flex flex-wrap gap-2">{summary.hops.map(hop => <li key={hop.hop} className="rounded-md border bg-muted/30 px-2 py-1"><span className="font-medium">#{hop.hop}</span> <span className="font-mono">{hop.address}</span> · {hop.timedOut ? translateText("超时") : hop.avgMs !== undefined ? `${hop.avgMs.toFixed(1)} ms` : "—"}{hop.lossPercent !== undefined && ` · ${hop.lossPercent}%`}</li>)}</ol><p className="mt-1 text-muted-foreground">{translateText("中间跳超时或不回应不代表目标业务丢包，请结合末跳和 TCP 测试判断。")}</p></>}
+      </div>}
       <CardContent className="min-h-0 flex-1 p-0">
         <pre className="pearl-console h-full min-h-0 overflow-auto px-4 py-4 font-mono text-xs leading-6">
           {output}
@@ -755,6 +762,7 @@ export default function LookingGlass() {
             </CardContent>
           </Card>
         )}
+        <NetworkDiagnostics hostId={Number(hostId)} />
       </div>
     </DashboardLayout>
   );

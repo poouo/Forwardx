@@ -4,6 +4,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import BillingExportButton from "@/components/BillingExportButton";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import { Badge } from "@/components/ui/badge";
@@ -161,9 +162,10 @@ export default function Wallet() {
         </div>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2">
               <ReceiptText className="h-5 w-5" />{translateText("账单流水")}</CardTitle>
+            <BillingExportButton />
           </CardHeader>
           <CardContent className="overflow-x-auto">
             {ledgerLoading ? (

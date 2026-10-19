@@ -47,6 +47,7 @@ jobs:
           pnpm check:versions
           pnpm exec tsc --noEmit
           pnpm test:ios
+          pnpm test:mobile-icons
 
       - name: Build unsigned device IPA
         run: pnpm mobile:ipa

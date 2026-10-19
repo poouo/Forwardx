@@ -1,4 +1,6 @@
 import { Router, Request, Response } from "express";
+import { observeProbeHealth, validateIpSwitchClaim } from "./hostProbeHealth";
+import { claimIpSwitchAgentTask, completeIpSwitchAgentTask } from "./agentIpSwitchTasks";
 import * as db from "./db";
 import { sourceAnalyticsEnabled, parseSourceObservations, recordOperationsTraffic, recordOperationsSources } from "./repositories/operationsRepository";
 import { reconcileRuleLimits, recordRuleQuotaTraffic } from "./ruleLimits";
@@ -569,6 +571,23 @@ agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: 
     console.error("[Agent LookingGlassProgress] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+agentRouter.post("/api/agent/ip-switch-claim", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    const taskId = req.body?.taskId;
+    const allowed = typeof taskId === "string" && await claimIpSwitchAgentTask(host.id, taskId, (serviceId, id, ip) => withKeyedTaskLock(`probe-health-service:${serviceId}`, () => validateIpSwitchClaim(host.id, serviceId, id, ip)));
+    res.json({ allowed });
+  } catch { res.status(500).json({ error: "IP switch claim failed" }); }
+});
+agentRouter.post("/api/agent/ip-switch-result", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    res.json({ success: completeIpSwitchAgentTask(host.id, req.body?.result) });
+  } catch { res.status(500).json({ error: "IP switch result failed" }); }
 });
 
 agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
@@ -1454,6 +1473,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     });
     if (serviceStats.length > 0) {
       await db.insertHostProbeServiceStats(serviceStats);
+      void observeProbeHealth(host, serviceResults).catch(() => console.warn(`[ChinaHealth] observation failed host=${host.id}`));
     }
 
     const reportedRuleRows = await db.getForwardRulesByIds(results.map((report) => Number(report.ruleId || 0))) as any[];

@@ -1,6 +1,66 @@
 import UIKit
 import Capacitor
 
+// App-local bridge registration avoids any third-party dynamic-icon plugin.
+class ForwardXBridgeViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(ForwardXAppIconPlugin())
+    }
+}
+
+@objc(ForwardXAppIconPlugin)
+class ForwardXAppIconPlugin: CAPPlugin, CAPBridgedPlugin {
+    let identifier = "ForwardXAppIconPlugin"
+    let jsName = "ForwardXAppIcon"
+    let pluginMethods: [CAPPluginMethod] = [CAPPluginMethod(name: "setIcon", returnType: CAPPluginReturnPromise)]
+
+    @objc func setIcon(_ call: CAPPluginCall) {
+        guard let key = call.getString("key") else {
+            call.reject("Missing app icon theme")
+            return
+        }
+        let parts = key.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 2,
+              ["ink", "teal", "forest", "wisteria", "ember", "sakura"].contains(parts[0]),
+              ["light", "dark"].contains(parts[1]) else {
+            call.reject("Unknown app icon theme")
+            return
+        }
+        let name: String? = key == "ink-light" ? nil : "AppIcon" + parts.map { $0.prefix(1).uppercased() + String($0.dropFirst()) }.joined()
+        DispatchQueue.main.async {
+            let app = UIApplication.shared
+            guard app.applicationState == .active, app.supportsAlternateIcons else {
+                // The web layer retries when the app returns to the foreground.
+                call.resolve(["applied": false])
+                return
+            }
+            guard app.alternateIconName != name else {
+                call.resolve(["applied": true])
+                return
+            }
+            if let alternate = name {
+                let info = Bundle.main.infoDictionary ?? [:]
+                let icons = info["CFBundleIcons"] as? [String: Any] ?? [:]
+                let tabletIcons = info["CFBundleIcons~ipad"] as? [String: Any] ?? [:]
+                let alternatives = (UIDevice.current.userInterfaceIdiom == .pad ? tabletIcons["CFBundleAlternateIcons"] as? [String: Any] : nil)
+                    ?? (icons["CFBundleAlternateIcons"] as? [String: Any]) ?? [:]
+                guard alternatives[alternate] != nil else {
+                    call.reject("Theme icon is missing from this application bundle")
+                    return
+                }
+            }
+            // Use only the public API. iOS may display its icon-change confirmation.
+            app.setAlternateIconName(name) { error in
+                if let error = error {
+                    call.reject("Unable to update app icon: " + error.localizedDescription)
+                } else {
+                    call.resolve(["applied": true])
+                }
+            }
+        }
+    }
+}
+
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
 

@@ -481,8 +481,8 @@ export async function listSubscriptionPlans(includeHidden = true) {
   const db = await getDb();
   if (!db) return [];
   const rows = includeHidden
-    ? await db.select().from(subscriptionPlans).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt))
-    : await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true))).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt));
+    ? await db.select().from(subscriptionPlans).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id))
+    : await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true))).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id));
   return attachPlanResources(rows);
 }
 
@@ -502,10 +502,10 @@ export async function listSubscriptionPlanOptions(includeHidden = true) {
     })
     .from(subscriptionPlans);
   return includeHidden
-    ? query.orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt))
+    ? query.orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id))
     : query
       .where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true)))
-      .orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt));
+      .orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id));
 }
 
 
@@ -2878,9 +2878,11 @@ export async function listBillingLedger(options?: {
     .slice(0, limit);
 }
 
-export async function listBillingLedgerPage(input: NonNullable<Parameters<typeof listBillingLedger>[0]> & PageRequest) {
+type BillingLedgerOptions = NonNullable<Parameters<typeof listBillingLedger>[0]>;
+type BillingLedgerKind = "balance" | "payment" | "subscription";
+
+function billingLedgerUnion(input: BillingLedgerOptions, upperIds?: Map<BillingLedgerKind, number>) {
   const targetUserId = input.isAdmin ? input.userId : input.viewerUserId;
-  if (!input.isAdmin && !targetUserId) return pageResult([], 0, input, 20);
   const q = quoteDbIdentifier;
   const parameters: unknown[] = [];
   const parts = ([
@@ -2888,6 +2890,7 @@ export async function listBillingLedgerPage(input: NonNullable<Parameters<typeof
   ] as const).map(([kind, table]) => {
     const conditions: string[] = [];
     if (targetUserId !== undefined) { conditions.push(`${q("userId")} = ?`); parameters.push(targetUserId); }
+    if (upperIds) { conditions.push(`${q("id")} <= ?`); parameters.push(upperIds.get(kind) ?? 0); }
     if (kind === "subscription") {
       conditions.push(`${q("adminDismissedAt")} IS NULL`);
       if (!input.isAdmin) conditions.push(`${q("userDismissedAt")} IS NULL`);
@@ -2896,9 +2899,15 @@ export async function listBillingLedgerPage(input: NonNullable<Parameters<typeof
     return `SELECT '${kind}' AS ${q("kind")}, ${q("id")} AS ${q("sourceId")}, ${q("createdAt")} AS ${q("createdAt")}
       FROM ${q(table)}${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}`;
   });
+  return { union: parts.join(" UNION ALL "), parameters };
+}
+
+export async function listBillingLedgerPage(input: BillingLedgerOptions & PageRequest) {
+  if (!input.isAdmin && !input.viewerUserId) return pageResult([], 0, input, 20);
+  const q = quoteDbIdentifier;
   // Page IDs in SQL before hydrating details; do not load or cap the entire ledger.
   // The three source types remain separate entries, even when they share an order.
-  const union = parts.join(" UNION ALL ");
+  const { union, parameters } = billingLedgerUnion(input);
   const [count] = await queryRaw<{ totalItems: number }>(`SELECT COUNT(*) AS ${q("totalItems")} FROM (${union}) AS ${q("ledger")}`, parameters);
   const total = Number(count?.totalItems || 0);
   const window = pageWindowForTotal(input, total, 20);
@@ -2912,6 +2921,40 @@ export async function listBillingLedgerPage(input: NonNullable<Parameters<typeof
   const byId = new Map(hydrated.map(item => [item.id, item]));
   const items = selected.map(row => byId.get(`${row.kind}-${row.sourceId}`)).filter((item): item is NonNullable<typeof item> => !!item);
   return pageResult(items, total, window, 20);
+}
+
+/** Bounded keyset batches: no OFFSET drift or moving end while new bills arrive. */
+export async function* iterateBillingLedgerExport(input: BillingLedgerOptions, signal?: AbortSignal) {
+  if (!input.isAdmin && !input.viewerUserId) return;
+  const q = quoteDbIdentifier;
+  const upperIds = new Map<BillingLedgerKind, number>();
+  for (const [kind, table] of [
+    ["balance", "balance_transactions"], ["payment", "payment_orders"], ["subscription", "user_subscriptions"],
+  ] as const) {
+    signal?.throwIfAborted();
+    const [row] = await queryRaw<{ maxId: number }>(`SELECT MAX(${q("id")}) AS ${q("maxId")} FROM ${q(table)}`);
+    upperIds.set(kind, Number(row?.maxId || 0));
+  }
+  const { union, parameters } = billingLedgerUnion(input, upperIds);
+  type Cursor = { kind: BillingLedgerKind; sourceId: number; createdAt: unknown };
+  let cursor: Cursor | undefined;
+  while (true) {
+    signal?.throwIfAborted();
+    const after = cursor ? ` WHERE ${q("createdAt")} < ? OR (${q("createdAt")} = ? AND
+      (${q("kind")} > ? OR (${q("kind")} = ? AND ${q("sourceId")} < ?)))` : "";
+    const cursorParams = cursor ? [cursor.createdAt, cursor.createdAt, cursor.kind, cursor.kind, cursor.sourceId] : [];
+    const selected = await queryRaw<Cursor>(`SELECT * FROM (${union}) AS ${q("ledger")}${after}
+      ORDER BY ${q("createdAt")} DESC, ${q("kind")} ASC, ${q("sourceId")} DESC LIMIT 500`, [...parameters, ...cursorParams]);
+    if (!selected.length) return;
+    const ids = { balance: [] as number[], payment: [] as number[], subscription: [] as number[] };
+    for (const row of selected) ids[row.kind].push(Number(row.sourceId));
+    const hydrated = await listBillingLedger({ ...input, limit: 500 }, ids);
+    const byId = new Map(hydrated.map(item => [item.id, item]));
+    signal?.throwIfAborted();
+    yield selected.map(row => byId.get(`${row.kind}-${row.sourceId}`)).filter((item): item is NonNullable<typeof item> => !!item);
+    cursor = selected[selected.length - 1];
+    if (selected.length < 500) return;
+  }
 }
 
 export async function addUserBalance(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {

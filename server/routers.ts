@@ -5,6 +5,7 @@ import { agentTokensRouter } from "./routers/agentTokens";
 import { announcementsRouter } from "./routers/announcements";
 import { supportTicketsRouter } from "./routers/supportTickets";
 import { affiliatesRouter } from "./routers/affiliates";
+import { mcpRouter } from "./routers/mcp";
 import { authRouter } from "./routers/auth";
 import { googleRouter } from "./routers/google";
 import { billingRouter } from "./routers/billing";
@@ -47,6 +48,7 @@ export const appRouter = router({
   announcements: announcementsRouter,
   supportTickets: supportTicketsRouter,
   affiliates: affiliatesRouter,
+  mcp: mcpRouter,
 });
 
 export type AppRouter = typeof appRouter;

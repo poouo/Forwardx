@@ -1,6 +1,7 @@
 import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
 import { updateMultiDeviceLoginSettingCache } from "./context";
 import { z } from "zod";
+import { AUTH_CAPTCHA_PROVIDERS, normalizeAuthCaptchaProvider } from "../../shared/authCaptcha";
 import * as db from "../db";
 import { ENV } from "../env";
 import { spawn } from "child_process";
@@ -1652,6 +1653,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     webPortManagement: getWebPortManagement({ publicView: true }),
     registrationEnabled: all.registrationEnabled !== "false",
     authCaptchaEnabled: all.authCaptchaEnabled !== "false",
+    authCaptchaProvider: normalizeAuthCaptchaProvider(all.authCaptchaProvider),
     twoFactorEnabled: all.twoFactorEnabled === "true",
     lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
     allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
@@ -1790,6 +1792,7 @@ export const systemRouter = router({
       personalizationBackground: publicPersonalizationBackground(all),
       registrationEnabled: all.registrationEnabled !== "false",
       authCaptchaEnabled: all.authCaptchaEnabled !== "false",
+      authCaptchaProvider: normalizeAuthCaptchaProvider(all.authCaptchaProvider),
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
       allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
@@ -1837,6 +1840,7 @@ export const systemRouter = router({
       webPortManagement: getWebPortManagement(),
       registrationEnabled: all.registrationEnabled !== "false",
       authCaptchaEnabled: all.authCaptchaEnabled !== "false",
+      authCaptchaProvider: normalizeAuthCaptchaProvider(all.authCaptchaProvider),
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
       pluginsEnabled: all.pluginsEnabled === "true",
@@ -2057,6 +2061,7 @@ export const systemRouter = router({
         personalizationTheme: z.string().max(32).optional(),
         registrationEnabled: z.boolean().optional(),
         authCaptchaEnabled: z.boolean().optional(),
+        authCaptchaProvider: z.enum(AUTH_CAPTCHA_PROVIDERS).optional(),
         twoFactorEnabled: z.boolean().optional(),
         lookingGlassUserEnabled: z.boolean().optional(),
         allowMultiDeviceLogin: z.boolean().optional(),
@@ -2197,6 +2202,10 @@ export const systemRouter = router({
       if (input.authCaptchaEnabled !== undefined) {
         await db.setSetting("authCaptchaEnabled", input.authCaptchaEnabled ? "true" : "false");
         console.info(`[Settings] authentication captcha ${input.authCaptchaEnabled ? "enabled" : "disabled"}`);
+      }
+      if (input.authCaptchaProvider !== undefined) {
+        await db.setSetting("authCaptchaProvider", input.authCaptchaProvider);
+        console.info(`[Settings] authentication captcha provider=${input.authCaptchaProvider}`);
       }
       if (input.twoFactorEnabled !== undefined) {
         await db.setSetting("twoFactorEnabled", input.twoFactorEnabled ? "true" : "false");

@@ -175,7 +175,7 @@ pnpm dev:panel
 
 ## 安全建议
 
-固定随机 `JWT_SECRET`，启用 HTTPS、强密码及最小权限；不需要注册时关闭入口。登录人机验证默认开启，管理员可在系统配置关闭，但公网推荐保持开启。保护 Agent / DDNS Token、代理凭据和备份，定期验证恢复；不要公开 `.env`、数据库配置或迁移密钥。
+固定随机 `JWT_SECRET`，启用 HTTPS、强密码及最小权限；不需要注册时关闭入口。登录人机验证默认开启，管理员可在系统配置选择点击验证或混淆图片验证码，也可关闭，但公网推荐保持开启。保护 Agent / DDNS Token、代理凭据和备份，定期验证恢复；不要公开 `.env`、数据库配置或迁移密钥。
 
 ## 给作者充点克劳德
 
@@ -195,4 +195,10 @@ ForwardX Agent also includes the third-party userspace WireGuard implementation 
 
 ## Star 趋势
 
-[![Stargazers over time](https://starchart.cc/poouo/Forwardx.svg)](https://starchart.cc/poouo/Forwardx)
+<a href="https://star-history.com/#poouo/Forwardx&amp;Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date" />
+    <img alt="ForwardX Star 趋势" src="https://api.star-history.com/svg?repos=poouo/Forwardx&amp;type=Date" />
+  </picture>
+</a>

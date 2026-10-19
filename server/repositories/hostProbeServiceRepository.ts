@@ -134,6 +134,7 @@ export async function updateHostProbeService(id: number, input: Omit<HostProbeSe
 export async function deleteHostProbeService(id: number) {
   const db = await getDb();
   if (!db) return;
+  await executeRaw(`DELETE FROM ${quoteIdentifier("host_probe_health")} WHERE ${quoteIdentifier("serviceId")} = ?`, [id]);
   await db.delete(hostProbeServiceStats).where(eq(hostProbeServiceStats.serviceId, id));
   await db.delete(hostProbeServices).where(eq(hostProbeServices.id, id));
 }

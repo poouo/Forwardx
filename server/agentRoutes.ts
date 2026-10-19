@@ -23,6 +23,7 @@ import {
 } from "./agentAuth";
 import { normalizeAgentText } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
+import { scheduleHostDdnsUpdate } from "./hostDdns";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
@@ -384,9 +385,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         ["ipv6", reportedAddress.ipv6],
       ].some(([key, value]) => String(value || "") !== String((existingHost as any)[key as string] || ""));
       await db.updateHost(existingHost.id, {
-        ip: reportedAddress.ip,
-        ipv4: reportedAddress.ipv4,
-        ipv6: reportedAddress.ipv6,
+        ...reportedAddress,
         ...(entryChanged ? {
           geoCountryCode: null,
           geoCountryName: null,
@@ -410,6 +409,8 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
           existingHost,
           "agent-address-changed",
         );
+      } else if (["ipv4Addresses", "ipv6Addresses"].some(key => (reportedAddress as any)[key] !== (existingHost as any)[key])) {
+        scheduleHostDdnsUpdate({ ...existingHost, ...reportedAddress }, "agent-address-inventory-changed");
       }
       if (!wasOnline) {
         await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-reconnected");
@@ -427,9 +428,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     // 创建新主机
     const hostId = await db.createHost({
       name: tokenDescription || `Agent-${token.substring(0, 8)}`,
-      ip: initialReportedAddress.ip,
-      ipv4: initialReportedAddress.ipv4,
-      ipv6: initialReportedAddress.ipv6,
+      ...initialReportedAddress,
       hostType: "slave",
       agentToken: token,
       osInfo: nextOsInfo || null,

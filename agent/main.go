@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.198"
+var Version = "2.2.199"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -849,6 +849,7 @@ type heartbeatResp struct {
 	DNSWatch                []dnsWatchItem           `json:"dnsWatch"`
 	LookingGlassTests       []lookingGlassTask       `json:"lookingGlassTests"`
 	Iperf3Tasks             []iperf3Task             `json:"iperf3Tasks"`
+	IPSwitchTasks           []ipSwitchTask           `json:"ipSwitchTasks"`
 	PluginTasks             []pluginAgentTask        `json:"pluginTasks"`
 	AgentUpgrade            *agentUpgrade            `json:"agentUpgrade"`
 	StateSignatures         map[string]string        `json:"stateSignatures,omitempty"`
@@ -3444,6 +3445,7 @@ func syncPanelURLFromResponse(panelURL string) {
 
 func register(cfg Config) error {
 	ipv4, ipv6 := publicIPs()
+	ipv4Addresses, ipv6Addresses := publicAddressInventory()
 	primaryIP := ipv4
 	if primaryIP == "" {
 		primaryIP = ipv6
@@ -3452,14 +3454,16 @@ func register(cfg Config) error {
 		primaryIP = "unknown"
 	}
 	payload := map[string]any{
-		"token":        cfg.Token,
-		"ip":           primaryIP,
-		"ipv4":         ipv4,
-		"ipv6":         ipv6,
-		"osInfo":       osInfo(),
-		"cpuInfo":      cpuInfo(),
-		"memoryTotal":  memTotal(),
-		"agentVersion": Version,
+		"token":         cfg.Token,
+		"ip":            primaryIP,
+		"ipv4":          ipv4,
+		"ipv6":          ipv6,
+		"osInfo":        osInfo(),
+		"cpuInfo":       cpuInfo(),
+		"memoryTotal":   memTotal(),
+		"agentVersion":  Version,
+		"ipv4Addresses": ipv4Addresses,
+		"ipv6Addresses": ipv6Addresses,
 	}
 	var out map[string]any
 	return post(cfg, "/api/agent/register", payload, &out)
@@ -3485,7 +3489,7 @@ func logHeartbeatResponse(mode string, resp *heartbeatResp, duration time.Durati
 	anomalous = anomalous || resp.ReconciliationCoalesced
 	anomalous = anomalous || resp.AgentUpgrade != nil || resp.PanelMigration != nil
 	anomalous = anomalous || len(resp.Actions) > 0 || len(resp.SelfTests) > 0
-	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.PluginTasks) > 0
+	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.PluginTasks) > 0 || len(resp.IPSwitchTasks) > 0
 	interval := agentHeartbeatSummaryLogInterval
 	if anomalous {
 		interval = agentReportLogInterval
@@ -3802,6 +3806,8 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 	pluginVersions, pluginSyncSignatures := installedPluginInventory()
 	forwardTools, forwardToolsCheckedAt := forwardToolInventory()
 	payload["forwardTools"] = forwardTools
+	payload["ipSwitchSupported"] = true
+	payload["ipv4Addresses"], payload["ipv6Addresses"] = publicAddressInventory()
 	payload["forwardToolsCheckedAt"] = forwardToolsCheckedAt
 	payload["pluginVersions"] = pluginVersions
 	payload["pluginSyncSignatures"] = pluginSyncSignatures
@@ -3875,6 +3881,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 	}
 	for _, task := range resp.Iperf3Tasks {
 		go handleIperf3Task(cfg, task)
+	}
+	for _, task := range resp.IPSwitchTasks {
+		go handleIPSwitchTask(cfg, task)
 	}
 	for _, task := range resp.PluginTasks {
 		enqueuePluginAgentTask(cfg, task)
@@ -3975,6 +3984,7 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 	uptimeValue := uptime()
 	payload := map[string]any{
 		"busy":                      true,
+		"ipSwitchSupported":         true,
 		"agentBootId":               agentBootID,
 		"agentBootedAt":             time.Now().Unix() - uptimeValue,
 		"agentProcessId":            os.Getpid(),
@@ -3986,6 +3996,7 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 		"fxpEndpointEvents":         fxpEndpointEventsSnapshot(),
 	}
 	payload["mimicEnvironment"] = mimicEnvironment(false)
+	payload["ipv4Addresses"], payload["ipv6Addresses"] = publicAddressInventory()
 	if compactAgentReports.Load() {
 		payload["m"] = []any{
 			cpuUsage(),
@@ -14285,6 +14296,7 @@ func publicIPs() (string, string) {
 }
 
 func refreshPublicIPs() {
+	localV4, localV6, localErr := localPublicAddresses()
 	ipv4Ch := make(chan string, 1)
 	ipv6Ch := make(chan string, 1)
 	go func() {
@@ -14295,7 +14307,10 @@ func refreshPublicIPs() {
 		})
 	}()
 	go func() {
-		ipv6 := localPublicIPv6()
+		ipv6 := ""
+		if len(localV6) > 0 {
+			ipv6 = localV6[0]
+		}
 		if ipv6 == "" {
 			ipv6 = fetchPublicIP([]string{
 				"https://api6.ipify.org",
@@ -14315,6 +14330,13 @@ func refreshPublicIPs() {
 		publicIPv6Cache = ipv6
 	}
 	publicIPCheckedAt = time.Now()
+	if localErr == nil {
+		publicIPv4AddressesCache = canonicalPublicAddresses(append(localV4, publicIPv4Cache), false)
+		publicIPv6AddressesCache = canonicalPublicAddresses(append(localV6, publicIPv6Cache), true)
+	} else {
+		publicIPv4AddressesCache = canonicalPublicAddresses(append(publicIPv4AddressesCache, publicIPv4Cache), false)
+		publicIPv6AddressesCache = canonicalPublicAddresses(append(publicIPv6AddressesCache, publicIPv6Cache), true)
+	}
 	publicIPRefreshRunning = false
 	publicIPMu.Unlock()
 }
