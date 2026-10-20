@@ -11,6 +11,7 @@ import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
 import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
 import { databaseHealth } from "./databaseHealthState";
+import { dashboardSummaries, operationsSummaries } from "./backgroundSummaryCache";
 import { seamlessDatabaseOperation } from "./seamlessMigrationState";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
@@ -671,6 +672,10 @@ async function connectDatabaseOnce(config: DatabaseConfig | null) {
 }
 
 export async function closeDatabase() {
+  // A reconnect/switch may reuse numeric user IDs in a different database.
+  // Drop both cached values and in-flight registrations before changing it.
+  dashboardSummaries.clear();
+  operationsSummaries.clear();
   if (_pool) {
     await _pool.end().catch(() => undefined);
   }

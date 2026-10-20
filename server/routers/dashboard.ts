@@ -1,26 +1,20 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
-import { createQueryCache } from "../queryCache";
-
-const dashboardCache = createQueryCache(250);
-
-function cachedDashboardQuery<T>(key: string, ttlMs: number, staleMs: number, load: () => Promise<T>): Promise<T> {
-  return dashboardCache.get(key, { ttlMs, staleMs }, load);
-}
+import { dashboardSummaries } from "../backgroundSummaryCache";
 
 export const dashboardRouter = router({
     stats: protectedProcedure.query(async ({ ctx }) => {
-      return cachedDashboardQuery(
-        `stats:${ctx.user.id}`,
-        5_000,
-        30_000,
-        () => db.getDashboardStats(ctx.user.id, { includeTraffic: false }),
+      const userId = ctx.user.id;
+      return dashboardSummaries.get(
+        `${userId}:stats`,
+        async () => ({ ...await db.getDashboardStats(userId, { includeTraffic: false }), summaryUpdatedAt: new Date() }),
       );
     }),
     trafficTotals: protectedProcedure.query(async ({ ctx }) => {
-      return cachedDashboardQuery(`trafficTotals:${ctx.user.id}`, 5_000, 0, async () => {
-        const traffic = await db.getTotalTraffic(ctx.user.id);
+      const userId = ctx.user.id;
+      return dashboardSummaries.get(`${userId}:trafficTotals`, async () => {
+        const traffic = await db.getTotalTraffic(userId);
         return {
           totalTrafficIn: traffic.totalIn,
           totalTrafficOut: traffic.totalOut,
@@ -36,15 +30,13 @@ export const dashboardRouter = router({
       .query(async ({ input, ctx }) => {
         const hours = input?.hours ?? 24;
         const bucketMinutes = input?.bucketMinutes ?? 60;
-        const since = new Date(Date.now() - hours * 3600 * 1000);
-        return cachedDashboardQuery(
-          `trafficSeries:${ctx.user.id}:${hours}:${bucketMinutes}`,
-          30_000,
-          5 * 60_000,
+        const userId = ctx.user.id;
+        return dashboardSummaries.get(
+          `${userId}:trafficSeries:${hours}:${bucketMinutes}`,
           () => db.getGlobalTrafficSeries({
             bucketMinutes,
-            since,
-            userId: ctx.user.id,
+            since: new Date(Date.now() - hours * 3600 * 1000),
+            userId,
           }),
         );
       }),
@@ -57,14 +49,12 @@ export const dashboardRouter = router({
       .query(async ({ input, ctx }) => {
         const hours = input?.hours ?? 24;
         const limit = input?.limit ?? 30;
-        const since = new Date(Date.now() - hours * 3600 * 1000);
-        return cachedDashboardQuery(
-          `trafficBreakdown:${ctx.user.id}:${hours}:${limit}`,
-          30_000,
-          5 * 60_000,
+        const userId = ctx.user.id;
+        return dashboardSummaries.get(
+          `${userId}:trafficBreakdown:${hours}:${limit}`,
           () => db.getDashboardTrafficBreakdown({
-            userId: ctx.user.id,
-            since,
+            userId,
+            since: new Date(Date.now() - hours * 3600 * 1000),
             limit,
           }),
         );
@@ -78,22 +68,20 @@ export const dashboardRouter = router({
       .query(async ({ input, ctx }) => {
         const hours = input?.hours ?? 24;
         const bucketMinutes = input?.bucketMinutes ?? 1;
-        const since = new Date(Date.now() - hours * 3600 * 1000);
-        return cachedDashboardQuery(
-          `tcpingSeries:${ctx.user.id}:${hours}:${bucketMinutes}`,
-          30_000,
-          2 * 60_000,
+        const userId = ctx.user.id;
+        return dashboardSummaries.get(
+          `${userId}:tcpingSeries:${hours}:${bucketMinutes}`,
           () => db.getGlobalTcpingSeries({
             bucketMinutes,
-            since,
-            userId: ctx.user.id,
+            since: new Date(Date.now() - hours * 3600 * 1000),
+            userId,
           }),
         );
       }),
     /** 用户流量汇总（首页始终只看当前登录用户） */
-    userTraffic: protectedProcedure.query(async ({ ctx }) => cachedDashboardQuery(`userTraffic:${ctx.user.id}`, 10_000, 60_000, async () => {
-      const user = await db.getUserById(ctx.user.id);
-      if (!user) return [];
+    userTraffic: protectedProcedure.query(({ ctx }) => {
+      // Auth already loaded and validated this exact user in this request.
+      const user = ctx.user;
       return [{
         id: user.id,
         username: user.username,
@@ -111,5 +99,5 @@ export const dashboardRouter = router({
         trafficAutoReset: user.trafficAutoReset,
         trafficResetDay: user.trafficResetDay,
       }];
-    })),
+    }),
   });

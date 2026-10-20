@@ -63,11 +63,15 @@ function withComputedOnline<T extends { id?: unknown; isOnline?: boolean; lastHe
   };
 }
 
-export async function getHosts(userId?: number) {
+export async function getHosts(userId?: number, allowedHostIds: number[] = []) {
   const db = await getDb();
   if (!db) return [];
   if (userId) {
-    const rows = await db.select().from(hosts).where(eq(hosts.userId, userId)).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
+    const ids = normalizeIds(allowedHostIds);
+    const rows = await db.select().from(hosts).where(or(
+      eq(hosts.userId, userId),
+      ...(ids.length ? [inArray(hosts.id, ids)] : []),
+    )).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
     return rows.map(withComputedOnline);
   }
   const rows = await db.select().from(hosts).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));

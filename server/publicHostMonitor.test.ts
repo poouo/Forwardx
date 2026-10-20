@@ -25,6 +25,7 @@ test("standalone public monitoring leases realtime metrics only after path autho
       const settings = await import(moduleUrl("server/repositories/settingsRepository.ts"));
       await settings.setSettings({ publicHostMonitorEnabled: "true", publicHostMonitorPath: "dev" });
       await runtime.executeRaw('INSERT INTO hosts (id, name, ip, userId, isOnline) VALUES (?, ?, ?, ?, ?)', [90101, "Public", "192.0.2.1", 1, 1]);
+      await runtime.executeRaw('INSERT INTO host_metrics (hostId, load1, load5, load15) VALUES (?, ?, ?, ?)', [90101, 0, 1.23, 2.34]);
       const events = await import(moduleUrl("server/agentEvents.ts"));
       const { hostsRouter } = await import(moduleUrl("server/routers/hosts.ts"));
       const caller = hostsRouter.createCaller({ user: null, req: { headers: {} }, res: {} });
@@ -42,6 +43,9 @@ test("standalone public monitoring leases realtime metrics only after path autho
       const first = await caller.publicMonitor({path:"dev"});
       assert.equal(first.hosts.length, 1);
       assert.equal(first.hosts[0].id, 90101);
+      assert.deepEqual([first.metrics[0].load1, first.metrics[0].load5, first.metrics[0].load15], [0, 1.23, 2.34]);
+      const detail = await caller.publicMonitorHostDetail({ path: "dev", hostId: 90101 });
+      assert.deepEqual([detail.metric.load1, detail.metric.load5, detail.metric.load15], [0, 1.23, 2.34]);
       assert.ok(first.refreshedAt);
       assert.equal(events.isHostMetricsWatching(90101), true);
       assert.equal(response.writes.length, 1, "first standalone viewer requests immediate metrics");

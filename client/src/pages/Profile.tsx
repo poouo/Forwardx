@@ -6,6 +6,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import DiscordAccountCard from "@/components/DiscordAccountCard";
 import GoogleAccountCard from "@/components/GoogleAccountCard";
 import NotificationPreferencesCard from "@/components/NotificationPreferencesCard";
+import AnimationPreferencesCard from "@/components/AnimationPreferencesCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -565,6 +566,7 @@ function ProfileContent() {
 
         )}
         <NotificationPreferencesCard />
+        <AnimationPreferencesCard />
         <Card className="border-border/50 bg-card/70">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>

@@ -30,6 +30,8 @@ import { withDatabaseTransaction } from "../dbRuntime";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeHostIp, hostAddressOptions, normalizeHostDdnsIpVersion } from "../../shared/hostAddresses";
 import { mergeAgentReportedAddress } from "../agentAddressState";
+import { getMonitorSettings, saveMonitorSettings } from "../operationsMonitor";
+import { operationsMonitorSchema } from "../../shared/operationsMonitor";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -240,6 +242,8 @@ function hostTrafficConfigPayload(input: {
   trafficMeasureMode?: "outbound" | "both" | "max";
   trafficFailoverEnabled?: boolean;
   trafficFailoverThresholdPercent?: number;
+  trafficShutdownEnabled?: boolean;
+  trafficShutdownThresholdPercent?: number;
   telegramTrafficAlertEnabled?: boolean;
   trafficAlertThresholdPercent?: number;
   telegramRenewalReminderEnabled?: boolean;
@@ -262,6 +266,8 @@ function hostTrafficConfigPayload(input: {
     trafficMeasureMode: normalizeHostTrafficMeasureMode(input.trafficMeasureMode),
     trafficFailoverEnabled: !!input.trafficFailoverEnabled,
     trafficFailoverThresholdPercent: input.trafficFailoverThresholdPercent ?? 100,
+    trafficShutdownEnabled: !!input.trafficShutdownEnabled,
+    trafficShutdownThresholdPercent: input.trafficShutdownThresholdPercent ?? 100,
     telegramTrafficAlertEnabled: !!input.telegramTrafficAlertEnabled,
     trafficAlertThresholdPercent: normalizeTrafficAlertThresholdPercent(input.trafficAlertThresholdPercent),
     telegramRenewalReminderEnabled: !!input.telegramRenewalReminderEnabled,
@@ -403,9 +409,9 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
     db.getUserEffectiveAllowedHostIds(user.id),
     db.getUserUsableTrafficBillingResourceIds(user.id),
   ]);
-  const allHosts = await getHostsWithUpgradeStateCleanup();
-  const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
-  const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === user.id);
+  const visibleHosts = await clearCompletedHostAgentUpgradeRequests(
+    await db.getHosts(user.id, [...allowedHostIds, ...billingResourceIds.hostIds]),
+  );
   if (shouldScheduleGeoRefresh) scheduleHostGeoRefresh(visibleHosts);
   return db.orderVisibleHostsForUser(visibleHosts, user.id);
 }
@@ -432,6 +438,9 @@ function compactHostMetricSummary(row: any) {
   return {
     hostId: Number(row?.hostId || 0),
     cpuUsage: row?.cpuUsage ?? null,
+    load1: row?.load1 ?? null,
+    load5: row?.load5 ?? null,
+    load15: row?.load15 ?? null,
     memoryUsage: row?.memoryUsage ?? null,
     memoryUsed: row?.memoryUsed ?? null,
     swapUsage: row?.swapUsage ?? null,
@@ -581,6 +590,14 @@ function scheduleOrphanedAgentHostCleanup() {
 }
 
 export const hostsRouter = router({
+  resourceAlertSettings: adminProcedure.input(z.object({ hostId: z.number().int().positive() })).query(async ({ input }) => {
+    if (!await db.getHostById(input.hostId)) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
+    return getMonitorSettings(input.hostId);
+  }),
+  saveResourceAlertSettings: adminProcedure.input(z.object({ hostId: z.number().int().positive(), settings: operationsMonitorSchema })).mutation(async ({ input }) => {
+    if (!await db.getHostById(input.hostId)) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
+    return saveMonitorSettings(input.hostId, input.settings);
+  }),
     publicMonitor: publicProcedure
       .input(z.object({ path: z.string().max(128).optional() }).optional())
       .query(async ({ input }) => {
@@ -1019,6 +1036,8 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
         trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
+        trafficShutdownEnabled: z.boolean().optional(),
+        trafficShutdownThresholdPercent: z.number().int().min(1).max(100).optional(),
         hostStatusNotifyEnabled: z.boolean().optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
@@ -1052,8 +1071,9 @@ export const hostsRouter = router({
         const agentToken = nanoid(32);
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
-          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", trafficFailoverEnabled: false, trafficFailoverThresholdPercent: 100, telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 3, billingCycleMonths: 1, billingMonth: 1, billingDay: 1, expiryHandling: "none", trafficAutoReset: false, trafficResetDay: 1 };
+          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", trafficFailoverEnabled: false, trafficFailoverThresholdPercent: 100, trafficShutdownEnabled: false, trafficShutdownThresholdPercent: 100, telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 3, billingCycleMonths: 1, billingMonth: 1, billingDay: 1, expiryHandling: "none", trafficAutoReset: false, trafficResetDay: 1 };
         if (trafficConfig.trafficFailoverEnabled && trafficConfig.trafficLimit <= 0) throw new Error("开启流量故障转移需要设置大于 0 的套餐流量");
+        if (trafficConfig.trafficShutdownEnabled && trafficConfig.trafficLimit <= 0) throw new Error("开启流量关机需要设置大于 0 的套餐流量");
         if (ctx.user.role === "admin" && (trafficConfig.telegramTrafficAlertEnabled || trafficConfig.telegramRenewalReminderEnabled)) {
           await assertTelegramBotConfiguredForHostReminder();
         }
@@ -1116,6 +1136,8 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
         trafficFailoverThresholdPercent: z.number().int().min(1).max(100).optional(),
+        trafficShutdownEnabled: z.boolean().optional(),
+        trafficShutdownThresholdPercent: z.number().int().min(1).max(100).optional(),
         hostStatusNotifyEnabled: z.boolean().optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
@@ -1167,9 +1189,16 @@ export const hostsRouter = router({
           const enabled = data.trafficFailoverEnabled ?? (host as any).trafficFailoverEnabled;
           const limit = data.trafficLimit ?? (host as any).trafficLimit;
           if (enabled && Number(limit) <= 0) throw new Error("开启流量故障转移需要设置大于 0 的套餐流量");
+          const shutdownEnabled = data.trafficShutdownEnabled ?? host.trafficShutdownEnabled;
+          if (shutdownEnabled && Number(limit) <= 0) throw new Error("开启流量关机需要设置大于 0 的套餐流量");
+          if (data.trafficShutdownEnabled !== undefined && data.trafficShutdownEnabled !== host.trafficShutdownEnabled) {
+            (data as any).trafficShutdownTriggered = false;
+          }
         } else {
           delete data.trafficFailoverEnabled;
           delete data.trafficFailoverThresholdPercent;
+          delete data.trafficShutdownEnabled;
+          delete data.trafficShutdownThresholdPercent;
           delete data.hostStatusNotifyEnabled;
         }
         let ddnsConfigChanged = false;

@@ -41,10 +41,13 @@ export async function getActiveAuthSession(userId: number, sid: string, kind: Se
   return rows[0];
 }
 
-export async function touchAuthSession(userId: number, sid: string, kind: SessionKind) {
+export async function touchAuthSession(userId: number, sid: string, kind: SessionKind, knownActiveSession?: { userId: number; sid: string; kind: string; lastSeenAt: unknown }) {
   const db = await getDb();
   if (!db) return;
-  const session = await getActiveAuthSession(userId, sid, kind);
+  // Reuse only the exact session just verified by this request. Never cache
+  // authentication across requests or skip the guarded UPDATE/revocation check.
+  const session = knownActiveSession?.userId === userId && knownActiveSession.sid === sid && knownActiveSession.kind === kind
+    ? knownActiveSession : await getActiveAuthSession(userId, sid, kind);
   if (!session) return;
   const lastSeenAt = new Date((session as any).lastSeenAt || 0).getTime();
   if (Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt < SESSION_TOUCH_INTERVAL_MS) return;

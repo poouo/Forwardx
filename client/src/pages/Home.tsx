@@ -617,6 +617,7 @@ function DashboardContent() {
         <div>
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("仪表盘")}</h1>
           <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{translateText("欢迎回来，")}{user?.name || user?.username || translateText("用户")}</p>
+          <p className="mt-1 text-xs text-muted-foreground" title={stats?.summaryUpdatedAt ? translateText("上次更新：{0}", [new Date(stats.summaryUpdatedAt).toLocaleString(getFormatLocale())]) : undefined}>{translateText("统计约每分钟更新，余额与额度实时校验")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="pearl-spec-plate">{new Date().toLocaleDateString(getFormatLocale(), { year: "numeric", month: "short", day: "numeric" })}</div>

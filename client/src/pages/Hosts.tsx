@@ -1,5 +1,6 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
+import { HintSwitch } from "@/components/ui/hint-switch";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
@@ -10,8 +11,11 @@ import DateTimePickerInput, {
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
+import HostLoad from "@/components/hosts/HostLoad";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
 import HostStatusNotificationSetting from "@/components/hosts/HostStatusNotificationSetting";
+import HostReminderSettings from "@/components/hosts/HostReminderSettings";
+import HostTrafficShutdownSetting from "@/components/hosts/HostTrafficShutdownSetting";
 import HostAddressSelectors from "@/components/hosts/HostAddressSelectors";
 import { normalizeHostDdnsIpVersion, type HostDdnsIpVersion } from "@shared/hostAddresses";
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
@@ -611,6 +615,8 @@ type HostFormData = {
   trafficMeasureMode: HostTrafficMeasureMode;
   trafficFailoverEnabled: boolean;
   trafficFailoverThresholdPercent: number;
+  trafficShutdownEnabled: boolean;
+  trafficShutdownThresholdPercent: number;
   billingCycleMonths: HostBillingCycleMonths;
   billingMonth: number;
   billingDay: number;
@@ -649,6 +655,8 @@ const defaultFormData: HostFormData = {
   trafficMeasureMode: "both",
   trafficFailoverEnabled: false,
   trafficFailoverThresholdPercent: 100,
+  trafficShutdownEnabled: false,
+  trafficShutdownThresholdPercent: 100,
   billingCycleMonths: 1,
   billingMonth: 1,
   billingDay: 1,
@@ -1821,6 +1829,8 @@ function HostsContent() {
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
       trafficFailoverEnabled: !!host.trafficFailoverEnabled,
       trafficFailoverThresholdPercent: Math.min(100, Math.max(1, Number(host.trafficFailoverThresholdPercent) || 100)),
+      trafficShutdownEnabled: !!host.trafficShutdownEnabled,
+      trafficShutdownThresholdPercent: Math.min(100, Math.max(1, Number(host.trafficShutdownThresholdPercent) || 100)),
       billingCycleMonths: normalizeHostBillingCycleMonths(host.billingCycleMonths),
       billingMonth: clampBillingMonth(host.billingMonth),
       billingDay: clampBillingDay(host.billingDay),
@@ -1920,6 +1930,10 @@ function HostsContent() {
       return;
     }
     const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
+    if (user?.role === "admin" && form.trafficShutdownEnabled && trafficLimitBytes <= 0) {
+      toast.error(translateText("开启流量关机需要设置大于 0 的套餐流量"));
+      return;
+    }
     const renewalReminderDays = clampRenewalReminderDays(form.renewalReminderDays);
     const canSaveTelegramReminder = telegramBotSettingsLoaded ? telegramBotReady : true;
     const trafficConfigPayload = user?.role === "admin"
@@ -1930,6 +1944,8 @@ function HostsContent() {
           trafficMeasureMode: form.trafficMeasureMode,
           trafficFailoverEnabled: form.trafficFailoverEnabled,
           trafficFailoverThresholdPercent: form.trafficFailoverThresholdPercent,
+          trafficShutdownEnabled: form.trafficShutdownEnabled,
+          trafficShutdownThresholdPercent: form.trafficShutdownThresholdPercent,
           billingCycleMonths: normalizeHostBillingCycleMonths(form.billingCycleMonths),
           billingMonth: clampBillingMonth(form.billingMonth),
           billingDay: clampBillingDay(form.billingDay),
@@ -2726,6 +2742,7 @@ function HostsContent() {
                                 )}
                                 <HostRegionBadge host={host} compact />
                               </div>
+                              <HostLoad metric={latestMetric} />
                               <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={primaryAddressText}>
                                 <RadioTower className="h-3 w-3 shrink-0" />
                                 <span className="min-w-0 truncate font-mono">{primaryAddressText}</span>
@@ -3239,15 +3256,15 @@ function HostsContent() {
                   </div>
                   {user?.role === "admin" ? (
                     <>
-                      <div className="grid min-w-0 gap-2.5 px-1 md:grid-cols-2">
-                        <div className="space-y-1">
+                      <div className="grid min-w-0 grid-cols-2 gap-2.5 px-1">
+                        <div className="col-span-2 min-w-0 space-y-1 sm:col-span-1">
                           <Label className="text-sm">{translateText("机器购买时间")}</Label>
                           <DateTimePickerInput
                             value={form.purchasedAt}
                             onChange={(value) => setForm({ ...form, purchasedAt: value })}
                           />
                         </div>
-                        <div className="space-y-1">
+                        <div className="col-span-2 min-w-0 space-y-1 sm:col-span-1">
                           <Label className="text-sm">{translateText("机器停止时间")}</Label>
                           <DateTimePickerInput
                             value={form.stoppedAt}
@@ -3255,70 +3272,72 @@ function HostsContent() {
                             align="end"
                           />
                         </div>
-                        <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">{translateText("账单周期")}</Label>
-                          <Select
-                            value={String(normalizeHostBillingCycleMonths(form.billingCycleMonths))}
-                            onValueChange={(value) => setForm({ ...form, billingCycleMonths: normalizeHostBillingCycleMonths(value) })}
-                          >
-                            <SelectTrigger className="h-8 min-w-0">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="1">{translateText("月付")}</SelectItem>
-                              <SelectItem value="3">{translateText("季付")}</SelectItem>
-                              <SelectItem value="6">{translateText("半年付")}</SelectItem>
-                              <SelectItem value="12">{translateText("年付")}</SelectItem>
-                              <SelectItem value="24">{translateText("两年付")}</SelectItem>
-                              <SelectItem value="36">{translateText("三年付")}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">{translateText("账单月日")}</Label>
-                          <div className="grid min-w-0 grid-cols-2 gap-2">
+                        <div className="col-span-2 grid min-w-0 grid-cols-2 gap-2.5 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)_minmax(0,1fr)]">
+                          <div className="min-w-0 space-y-1">
+                            <Label className="text-sm">{translateText("账单周期")}</Label>
                             <Select
-                              value={String(clampBillingMonth(form.billingMonth))}
-                              onValueChange={(value) => setForm({ ...form, billingMonth: clampBillingMonth(Number(value)) })}
+                              value={String(normalizeHostBillingCycleMonths(form.billingCycleMonths))}
+                              onValueChange={(value) => setForm({ ...form, billingCycleMonths: normalizeHostBillingCycleMonths(value) })}
                             >
                               <SelectTrigger className="h-8 min-w-0">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
-                                  <SelectItem key={month} value={String(month)}>{month}{translateText(" 月")}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={String(clampBillingDay(form.billingDay))}
-                              onValueChange={(value) => setForm({ ...form, billingDay: clampBillingDay(Number(value)) })}
-                            >
-                              <SelectTrigger className="h-8 min-w-0">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
-                                  <SelectItem key={day} value={String(day)}>{day}{translateText(" 日")}</SelectItem>
-                                ))}
+                                <SelectItem value="1">{translateText("月付")}</SelectItem>
+                                <SelectItem value="3">{translateText("季付")}</SelectItem>
+                                <SelectItem value="6">{translateText("半年付")}</SelectItem>
+                                <SelectItem value="12">{translateText("年付")}</SelectItem>
+                                <SelectItem value="24">{translateText("两年付")}</SelectItem>
+                                <SelectItem value="36">{translateText("三年付")}</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <Label className="text-sm">{translateText("机器到期处理")}</Label>
-                          <Select
-                            value={normalizeHostExpiryAction(form.expiryHandling)}
-                            onValueChange={(value) => setForm({ ...form, expiryHandling: normalizeHostExpiryAction(value) })}
-                          >
-                            <SelectTrigger className="h-8 min-w-0">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none">{translateText("不处理")}</SelectItem>
-                              <SelectItem value="extend_cycle">{translateText("周期顺延")}</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <div className="col-span-2 row-start-2 min-w-0 space-y-1 md:col-span-1 md:row-start-auto">
+                            <Label className="text-sm">{translateText("账单月日")}</Label>
+                            <div className="grid min-w-0 grid-cols-2 gap-2">
+                              <Select
+                                value={String(clampBillingMonth(form.billingMonth))}
+                                onValueChange={(value) => setForm({ ...form, billingMonth: clampBillingMonth(Number(value)) })}
+                              >
+                                <SelectTrigger className="h-8 min-w-0">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+                                    <SelectItem key={month} value={String(month)}>{month}{translateText(" 月")}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Select
+                                value={String(clampBillingDay(form.billingDay))}
+                                onValueChange={(value) => setForm({ ...form, billingDay: clampBillingDay(Number(value)) })}
+                              >
+                                <SelectTrigger className="h-8 min-w-0">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                                    <SelectItem key={day} value={String(day)}>{day}{translateText(" 日")}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <Label className="text-sm">{translateText("机器到期处理")}</Label>
+                            <Select
+                              value={normalizeHostExpiryAction(form.expiryHandling)}
+                              onValueChange={(value) => setForm({ ...form, expiryHandling: normalizeHostExpiryAction(value) })}
+                            >
+                              <SelectTrigger className="h-8 min-w-0">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">{translateText("不处理")}</SelectItem>
+                                <SelectItem value="extend_cycle">{translateText("周期顺延")}</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                         <div className="min-w-0 space-y-1">
                           <Label className="text-sm">{translateText("套餐流量")}</Label>
@@ -3353,116 +3372,77 @@ function HostsContent() {
                           </Select>
                         </div>
                       </div>
-                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">{translateText("流量故障转移")}</Label>
-                          <p className="text-xs text-muted-foreground">{translateText("达量后暂停组内使用，流量重置或关闭此项后恢复；不删除成员。")}</p>
-                          {editingId && displayHosts.find((host: any) => host.id === editingId)?.trafficFailoverExcluded && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400">{translateText("当前已达到流量阈值，已暂停参与组调度（不影响主机在线状态）。")}</p>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background">
-                            <Input className="h-8 rounded-none border-0 px-2 text-right" type="number" min={1} max={100} step={1}
-                              disabled={!form.trafficFailoverEnabled} value={form.trafficFailoverThresholdPercent}
-                              onChange={(e) => setForm({ ...form, trafficFailoverThresholdPercent: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />
-                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
+                      <div className="mt-2.5 grid min-w-0 grid-cols-2 gap-2.5">
+                        <div className="@container min-h-12 min-w-0 rounded-md bg-muted/35 px-3 py-2">
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 @min-[16rem]:grid-cols-[minmax(0,1fr)_auto_auto]">
+                          <div className="min-w-0 space-y-0.5">
+                            <Label className="break-words text-sm font-medium">{translateText("流量故障转移")}</Label>
+                            {editingId && displayHosts.find((host: any) => host.id === editingId)?.trafficFailoverExcluded && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400">{translateText("已达阈值，暂停组调度。")}</p>
+                            )}
                           </div>
-                          <Switch checked={form.trafficFailoverEnabled} onCheckedChange={(checked) => setForm({ ...form, trafficFailoverEnabled: checked })} />
-                        </div>
-                      </div>
-                      <HostStatusNotificationSetting checked={form.hostStatusNotifyEnabled} onChange={(checked) => setForm({ ...form, hostStatusNotifyEnabled: checked })} />
-                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">{translateText("流量耗尽提醒")}</Label>
-                          <p className="text-xs text-muted-foreground">
-                            {telegramBotReady ? translateText("开启后通过所选通知渠道发送提醒。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
-                            <Input
-                              className="h-8 rounded-none border-0 px-2 text-right focus-visible:ring-0 focus-visible:ring-offset-0"
-                              type="number"
-                              min={1}
-                              max={99}
-                              step={1}
-                              value={form.trafficAlertThresholdPercent}
-                              onChange={(e) => setForm({ ...form, trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(Number(e.target.value)) })}
-                            />
-                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
+                          <div className="col-span-2 row-start-2 min-w-0 @min-[16rem]:col-span-1 @min-[16rem]:col-start-2 @min-[16rem]:row-start-1">
+                            <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background">
+                              <Input className="h-8 min-w-0 rounded-none border-0 px-2 text-right" type="number" min={1} max={100} step={1}
+                                disabled={!form.trafficFailoverEnabled} value={form.trafficFailoverThresholdPercent}
+                                onChange={(e) => setForm({ ...form, trafficFailoverThresholdPercent: Math.min(100, Math.max(1, Number(e.target.value) || 1)) })} />
+                              <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
+                            </div>
                           </div>
-                          <Switch
-                            checked={telegramBotReady && form.telegramTrafficAlertEnabled}
-                            disabled={!telegramBotReady}
-                            onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })}
-                          />
-                        </div>
-                      </div>
-                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0 space-y-0.5">
-                          <Label className="text-sm font-medium">{translateText("续费提醒")}</Label>
-                          <p className="text-xs text-muted-foreground">
-                            {telegramBotReady ? translateText("机器剩余日期不足指定天数时通过所选通知渠道提醒。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <div className="flex h-8 w-24 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
-                            <Input
-                              className="h-8 rounded-none border-0 px-2 text-right focus-visible:ring-0 focus-visible:ring-offset-0"
-                              type="number"
-                              min={1}
-                              max={365}
-                              step={1}
-                              value={form.renewalReminderDays}
-                              onChange={(e) => setForm({ ...form, renewalReminderDays: clampRenewalReminderDays(Number(e.target.value)) })}
-                            />
-                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2 text-sm text-muted-foreground">{translateText("天")}</span>
+                          <div className="col-start-2 row-start-1 @min-[16rem]:col-start-3"><HintSwitch hint={translateText("达量暂停组调度，重置或关闭后恢复。")} checked={form.trafficFailoverEnabled} onCheckedChange={(checked) => setForm({ ...form, trafficFailoverEnabled: checked })} /></div>
                           </div>
-                          <Switch
-                            checked={telegramBotReady && form.telegramRenewalReminderEnabled}
-                            disabled={!telegramBotReady}
-                            onCheckedChange={(checked) => setForm({ ...form, telegramRenewalReminderEnabled: checked })}
-                          />
+                        </div>
+                        <HostStatusNotificationSetting checked={form.hostStatusNotifyEnabled} onChange={(checked) => setForm({ ...form, hostStatusNotifyEnabled: checked })} />
+                      </div>
+                      <HostReminderSettings channelReady={telegramBotReady}
+                        trafficEnabled={form.telegramTrafficAlertEnabled} trafficPercent={form.trafficAlertThresholdPercent}
+                        renewalEnabled={form.telegramRenewalReminderEnabled} renewalDays={form.renewalReminderDays}
+                        onTrafficEnabledChange={checked => setForm({ ...form, telegramTrafficAlertEnabled: checked })}
+                        onTrafficPercentChange={value => setForm({ ...form, trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(value) })}
+                        onRenewalEnabledChange={checked => setForm({ ...form, telegramRenewalReminderEnabled: checked })}
+                        onRenewalDaysChange={value => setForm({ ...form, renewalReminderDays: clampRenewalReminderDays(value) })} />
+                      <div className="mt-2.5 grid min-w-0 grid-cols-2 gap-2.5">
+                        <HostTrafficShutdownSetting enabled={form.trafficShutdownEnabled} percent={form.trafficShutdownThresholdPercent}
+                          triggered={!!editingId && !!displayHosts.find((host: any) => host.id === editingId)?.trafficShutdownTriggered}
+                          onEnabledChange={checked => setForm({ ...form, trafficShutdownEnabled: checked })}
+                          onPercentChange={value => setForm({ ...form, trafficShutdownThresholdPercent: value })} />
+                        <div className="@container min-h-12 min-w-0 rounded-md bg-muted/35 px-3 py-2">
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 @min-[16rem]:grid-cols-[minmax(0,1fr)_auto_auto]">
+                          <div className="min-w-0">
+                            <Label className="break-words text-sm font-medium">{translateText("自动重置流量")}</Label>
+                          </div>
+                          <div className="col-span-2 row-start-2 min-w-0 @min-[16rem]:col-span-1 @min-[16rem]:col-start-2 @min-[16rem]:row-start-1">
+                            <Select
+                              value={String(clampMonthlyResetDay(form.trafficResetDay))}
+                              onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
+                            >
+                              <SelectTrigger className="h-8 w-20">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                                  <SelectItem key={day} value={String(day)}>{day}{translateText(" 号")}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="col-start-2 row-start-1 @min-[16rem]:col-start-3"><HintSwitch hint={translateText("无对应日期则月末重置。")} checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} /></div>
+                          </div>
                         </div>
                       </div>
-                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
-                          <Label className="text-sm font-medium">{translateText("自动重置流量")}</Label>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <Select
-                            value={String(clampMonthlyResetDay(form.trafficResetDay))}
-                            onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
-                          >
-                            <SelectTrigger className="h-8 w-24">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
-                                <SelectItem key={day} value={String(day)}>{day}{translateText(" 号")}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
-                        </div>
-                      </div>
-                      <p className="mt-1.5 px-3 text-xs text-muted-foreground">{translateText("当月没有该日期时按最后一天重置。")}</p>
                       <div className="mt-2.5 space-y-2 rounded-md bg-muted/35 px-3 py-2.5">
                         <div className="flex min-h-8 flex-wrap items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
                             <RadioTower className="h-4 w-4 shrink-0 text-muted-foreground" />
                             <Label className="text-sm font-medium">{translateText("DDNS 服务")}</Label>
-                            {!ddnsProviderEnabled ? (
-                              <Badge variant="secondary" className="shrink-0 text-[11px]">{translateText("未配置服务商")}</Badge>
-                            ) : null}
                           </div>
                           <div className="ml-auto flex shrink-0 items-center gap-2">
                             <Select value={form.ddnsAddressMode} disabled={!ddnsProviderEnabled} onValueChange={value => setForm({ ...form, ddnsAddressMode: value === "all" ? "all" : "primary" })}>
                               <SelectTrigger className="h-8 w-auto min-w-[8rem] max-w-[11rem] gap-2 text-xs [&>span]:truncate" aria-label={translateText("DDNS 地址范围")}><SelectValue /></SelectTrigger>
                               <SelectContent><SelectItem value="primary">{translateText("仅记录主 IP")}</SelectItem><SelectItem value="all">{translateText("记录全部检测 IP")}</SelectItem></SelectContent>
                             </Select>
-                            <Switch
+                            <HintSwitch
+                              hint={ddnsProviderEnabled ? translateText("开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。") : translateText("请先在系统设置内启用 DDNS 服务商")}
                               checked={form.ddnsEnabled}
                               disabled={!ddnsProviderEnabled && !form.ddnsEnabled}
                               onCheckedChange={(checked) => setForm({ ...form, ddnsEnabled: checked })}
@@ -3492,7 +3472,6 @@ function HostsContent() {
                             onChange={(e) => setForm({ ...form, ddnsDomain: e.target.value })}
                           />
                         </div>
-                        <p className="text-xs text-muted-foreground">{translateText("开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。")}</p>
                       </div>
                     </>
                   ) : (

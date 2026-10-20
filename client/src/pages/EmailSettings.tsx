@@ -202,8 +202,8 @@ export function EmailSettingsContent() {
             <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-[1fr_120px]">
-            <div className="space-y-2">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_5.5rem] gap-3 md:grid-cols-[minmax(0,1fr)_120px]">
+            <div className="min-w-0 space-y-2">
               <Label>{translateText("SMTP 服务器")}</Label>
               <Input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="smtp.example.com" />
             </div>
@@ -286,13 +286,13 @@ export function EmailSettingsContent() {
             </div>
             <Switch checked={form.expiryReminder} onCheckedChange={(expiryReminder) => setForm({ ...form, expiryReminder })} />
           </div>
-          <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 md:grid-cols-[1fr_180px]">
-            <div className="flex items-center justify-between gap-4">
-              <div>
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6rem] gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 md:grid-cols-[minmax(0,1fr)_180px]">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="min-w-0">
                 <p className="text-sm font-medium">{translateText("流量不足提醒")}</p>
                 <p className="text-xs text-muted-foreground">{translateText("低于阈值时提醒。")}</p>
               </div>
-              <Switch checked={form.trafficReminder} onCheckedChange={(trafficReminder) => setForm({ ...form, trafficReminder })} />
+              <Switch className="shrink-0" checked={form.trafficReminder} onCheckedChange={(trafficReminder) => setForm({ ...form, trafficReminder })} />
             </div>
             <div className="space-y-2">
               <Label>{translateText("剩余阈值（%）")}</Label>

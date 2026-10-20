@@ -1,4 +1,5 @@
 import { t as translateText } from "@/i18n";
+import { useMotionEnabled } from "@/components/MotionPolicy";
 import { manualProbeDeadline } from "@/lib/manualProbe";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -1386,7 +1387,8 @@ function TunnelLatencyDialog({
   const yTicks = useMemo(() => {
     return getLatencyYAxisTicks(yMax);
   }, [yMax]);
-  const shouldAnimateChart = open && chartData.length > 0 && !tunnelLatencyAnimatedKeys.has(tunnelId);
+  const motionEnabled = useMotionEnabled();
+  const shouldAnimateChart = motionEnabled && open && chartData.length > 0 && !tunnelLatencyAnimatedKeys.has(tunnelId);
 
   useEffect(() => {
     if (shouldAnimateChart) {
@@ -3480,9 +3482,9 @@ function TunnelsContent() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid min-w-0 grid-cols-2 gap-2 [&>*]:min-w-0 [&_button]:shrink-0">
                 <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? translateText("仅 GOST 和 Realm 支持") : undefined}>
-                  <span className="min-w-0 truncate text-sm">{translateText("接收 PROXY")}</span>
+                  <span className="min-w-0 text-sm">{translateText("接收 PROXY")}</span>
                   <Switch
                     checked={proxySupported && chainCreateForm.proxyProtocolReceive}
                     disabled={!proxySupported}
@@ -3490,7 +3492,7 @@ function TunnelsContent() {
                   />
                 </label>
                 <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? translateText("仅 GOST 和 Realm 支持") : undefined}>
-                  <span className="min-w-0 truncate text-sm">{translateText("发送 PROXY")}</span>
+                  <span className="min-w-0 text-sm">{translateText("发送 PROXY")}</span>
                   <Switch
                     checked={proxySupported && chainCreateForm.proxyProtocolSend}
                     disabled={!proxySupported}
@@ -3654,7 +3656,7 @@ function TunnelsContent() {
     const shouldCollapseAdvanced = proxySupported && transportTuningSupported;
     const renderProxySwitch = (label: string, field: "proxyProtocolReceive" | "proxyProtocolSend" | "proxyProtocolExitReceive" | "proxyProtocolExitSend") => (
       <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2">
-        <span className="min-w-0 truncate text-sm">{label}</span>
+        <span className="min-w-0 break-words text-sm">{label}</span>
         <Switch
           checked={form[field]}
           onCheckedChange={(checked) => setForm((prev) => ({ ...prev, [field]: checked }))}
@@ -3708,7 +3710,7 @@ function TunnelsContent() {
                 </div>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid min-w-0 grid-cols-2 gap-2 [&>*]:min-w-0">
               {renderProxySwitch(translateText("入口接收上游"), "proxyProtocolReceive")}
               {renderProxySwitch(translateText("入口发送到出口"), "proxyProtocolSend")}
               {renderProxySwitch(translateText("出口接收入口"), "proxyProtocolExitReceive")}
@@ -4800,7 +4802,7 @@ function TunnelsContent() {
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {renderTunnelRuntimeOptions()}
                     {renderForwardXVersionOptions()}
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
                       <div className="space-y-2">
                         <Label>{translateText("出口监听端口")}</Label>
                         <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />
@@ -4825,8 +4827,8 @@ function TunnelsContent() {
                         placeholder={translateText("例如: 华东-香港转发链")}
                       />
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_110px]">
-                      <div className="space-y-2">
+                    <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-[minmax(0,1fr)_120px_110px] [&>*]:min-w-0">
+                      <div className="col-span-2 space-y-2 sm:col-span-1">
                         <Label>{translateText("转发工具")}</Label>
                         <Select
                           value={chainCreateForm.forwardType}
@@ -5107,7 +5109,7 @@ function TunnelsContent() {
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {renderTunnelRuntimeOptions()}
             {renderForwardXVersionOptions()}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
               <div className="space-y-2">
                 <Label>{translateText("出口监听端口")}</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />

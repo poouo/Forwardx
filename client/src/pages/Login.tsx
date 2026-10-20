@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, Loader2, Sun, Moon, UserPlus, LogIn, Send, Settings as SettingsIcon } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useMotionEnabled } from "@/components/MotionPolicy";
 import { toast } from "@/lib/localizedToast";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation, useSearch } from "wouter";
@@ -238,7 +239,7 @@ export default function Login() {
   const referralStatus = trpc.affiliates.registrationStatus.useQuery(undefined, { enabled: hasMobilePanelUrl && mode === "register", staleTime: 30_000 });
   const registrationCaptchaEnabled = emailConfig?.authCaptchaEnabled !== false;
   const siteTitle = publicInfo?.siteTitle?.trim() || "ForwardX";
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = !useMotionEnabled();
 
   useEffect(() => {
     if (mode === "register" && !registrationEnabled) {

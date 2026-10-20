@@ -76,7 +76,7 @@ test("compact service form keeps one inline enabled switch and bounds the host s
   assert.match(manager, /<DialogContent className="[^"]*sm:max-w-xl"/);
   const nameField = manager.slice(manager.indexOf('<Label htmlFor="probe-service-name"'), manager.indexOf('<Label htmlFor="probe-service-method"'));
   assert.doesNotMatch(nameField, /probe-service-enabled/);
-  const methodField = manager.slice(manager.indexOf('<Label htmlFor="probe-service-method"'), manager.indexOf('className={`grid gap-2.5'));
+  const methodField = manager.slice(manager.indexOf('<Label htmlFor="probe-service-method"'), manager.indexOf('className={`grid min-w-0 gap-2.5'));
   assert.match(methodField, /<SelectTrigger id="probe-service-method"/);
   assert.match(methodField, /<Switch id="probe-service-enabled"/);
   assert.ok(methodField.indexOf('</Select>') < methodField.indexOf('<Switch'));

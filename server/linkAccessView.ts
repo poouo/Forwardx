@@ -213,7 +213,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
       return { ok: false as const, value: fallback };
     }
   };
-  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingSnapshot, topologyGroupsResult, topologyMembersResult, topologyTunnels, topologyHops, topologyExits] = await Promise.all([
+  const [ownedHosts, ownedTunnels, ownedForwardGroups, hostPermissions, tunnelPermissions, groupPermissions, subscriptions, billingSnapshot] = await Promise.all([
     safe(db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId)), []),
     safe(db.select({ id: tunnels.id }).from(tunnels).where(eq(tunnels.userId, userId)), []),
     safe(db.select({ id: forwardGroups.id }).from(forwardGroups).where(eq(forwardGroups.userId, userId)), []),
@@ -222,18 +222,60 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     safe(db.select({ id: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId)), []),
     safe(getActiveUserSubscriptions(userId), []),
     getTrafficBillingAccessSnapshot(userId),
-    tracked(db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups), []),
-    tracked(db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers), []),
-    safe(db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId, entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId }).from(tunnels), []),
-    safe(db.select({ tunnelId: tunnelHops.tunnelId, hostId: tunnelHops.hostId }).from(tunnelHops), []),
-    safe(db.select({ tunnelId: tunnelExitNodes.tunnelId, hostId: tunnelExitNodes.hostId, isEnabled: tunnelExitNodes.isEnabled }).from(tunnelExitNodes), []),
   ]);
   const subscriptionHostIds = (subscriptions as any[]).flatMap((subscription) => subscription.hostIds || []).map(Number);
   const subscriptionTunnelIds = (subscriptions as any[]).flatMap((subscription) => subscription.tunnelIds || []).map(Number);
   const subscriptionGroupIds = (subscriptions as any[]).flatMap((subscription) => subscription.forwardGroupIds || []).map(Number);
   const billingResourceIds = billingSnapshot.usableResourceIds;
-  const topologyGroups = topologyGroupsResult.value;
-  const topologyMembers = topologyMembersResult.value;
+  // Walk only this user's authorized graph. A direct-host user needs no
+  // topology queries at all; a shared group only loads its reachable nodes.
+  const pendingGroups = new Set<number>([
+    ...ownedForwardGroups.map((row: any) => row.id), ...groupPermissions.map((row: any) => row.id),
+    ...subscriptionGroupIds, ...billingResourceIds.forwardGroupIds,
+  ].map(positiveId).filter(Boolean));
+  const pendingTunnels = new Set<number>([
+    ...ownedTunnels.map((row: any) => row.id), ...tunnelPermissions.map((row: any) => row.id),
+    ...subscriptionTunnelIds, ...billingResourceIds.tunnelIds,
+  ].map(positiveId).filter(Boolean));
+  const seenGroups = new Set<number>(), seenTunnels = new Set<number>();
+  const topologyGroups: any[] = [], topologyMembers: any[] = [], topologyTunnels: any[] = [];
+  const topologyGroupsResult = { ok: true }, topologyMembersResult = { ok: true };
+  const inBatches = async (ids: number[], load: (batch: number[]) => PromiseLike<any[]>) => {
+    const rows: any[] = [];
+    for (let i = 0; i < ids.length; i += 300) rows.push(...await load(ids.slice(i, i + 300)));
+    return rows;
+  };
+  while (pendingGroups.size || pendingTunnels.size) {
+    const groupIds = [...pendingGroups].filter((id) => !seenGroups.has(id));
+    const tunnelIds = [...pendingTunnels].filter((id) => !seenTunnels.has(id));
+    pendingGroups.clear(); pendingTunnels.clear();
+    for (const id of groupIds) seenGroups.add(id);
+    for (const id of tunnelIds) seenTunnels.add(id);
+    const [groupsResult, membersResult, tunnelRows] = await Promise.all([
+      tracked(inBatches(groupIds, (batch) => db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups).where(inArray(forwardGroups.id, batch))), []),
+      tracked(inBatches(groupIds, (batch) => db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers).where(inArray(forwardGroupMembers.groupId, batch))), []),
+      safe(inBatches(tunnelIds, (batch) => db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId, entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId }).from(tunnels).where(inArray(tunnels.id, batch))), []),
+    ]);
+    topologyGroupsResult.ok &&= groupsResult.ok;
+    topologyMembersResult.ok &&= membersResult.ok;
+    topologyGroups.push(...groupsResult.value); topologyMembers.push(...membersResult.value); topologyTunnels.push(...tunnelRows);
+    for (const row of groupsResult.value) {
+      const id = positiveId(row.entryGroupId);
+      if (id && !seenGroups.has(id)) pendingGroups.add(id);
+    }
+    for (const row of membersResult.value) {
+      const id = row.memberType === "tunnel" && dbBool(row.isEnabled, true) ? positiveId(row.tunnelId) : 0;
+      if (id && !seenTunnels.has(id)) pendingTunnels.add(id);
+    }
+    for (const row of tunnelRows) for (const value of [row.entryGroupId, row.exitGroupId]) {
+      const id = positiveId(value);
+      if (id && !seenGroups.has(id)) pendingGroups.add(id);
+    }
+  }
+  const [topologyHops, topologyExits] = await Promise.all([
+    safe(inBatches([...seenTunnels], (batch) => db.select({ tunnelId: tunnelHops.tunnelId, hostId: tunnelHops.hostId }).from(tunnelHops).where(inArray(tunnelHops.tunnelId, batch))), []),
+    safe(inBatches([...seenTunnels], (batch) => db.select({ tunnelId: tunnelExitNodes.tunnelId, hostId: tunnelExitNodes.hostId, isEnabled: tunnelExitNodes.isEnabled }).from(tunnelExitNodes).where(inArray(tunnelExitNodes.tunnelId, batch))), []),
+  ]);
   const scope = expandLinkAccessScope({
     hostIds: [
       ...(ownedHosts as any[]).map((host) => host.id),

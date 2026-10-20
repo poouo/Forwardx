@@ -110,5 +110,6 @@ test("sidebar connects scroll memory to layout measurement and cleans up listene
   assert.match(source, /scroll\.restore\(\);[\s\S]*const active = content\.querySelector/);
   assert.match(source, /addEventListener\("scroll", scroll\.save, \{ passive: true \}\)/);
   assert.match(source, /return \(\) => \{\s*scroll\.save\(\);\s*content\.removeEventListener\("scroll", scroll\.save\)/);
-  assert.match(source, /\[activeKey, scrollKey, state, isMobile\]/);
+  assert.match(source, /\[activeKey, scrollKey, state, isMobile, motionEnabled\]/);
+  assert.match(source, /&& motionEnabled && !document.hidden/);
 });

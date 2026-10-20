@@ -1,11 +1,14 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
+import HostLoad from "@/components/hosts/HostLoad";
+import { formatHostLoad } from "@shared/hostLoad";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { isMonitorNotFound, latestMonitorMetric, monitorLatencyYMax, PUBLIC_MONITOR_REFRESH_OPTIONS } from "@/lib/publicMonitor";
@@ -339,6 +342,10 @@ function PublicHostCard({
       ? Math.max(totalIn, totalOut)
       : totalIn + totalOut;
   const trafficPercent = trafficLimit > 0 ? Math.round((usedTraffic / trafficLimit) * 100) : 0;
+  const cpuTooltip = [
+    translateText("CPU 使用率 {0}%", [cpuUsage]),
+    `${translateText("负载")} ${formatHostLoad(metric)}`,
+  ].join("\n");
   const metricItems = [
     { key: "cpu", label: "CPU", icon: Cpu, value: cpuUsage, progress: cpuUsage },
     { key: "memory", label: translateText("内存"), icon: MemoryStick, value: memoryUsage, progress: memoryUsage },
@@ -382,18 +389,35 @@ function PublicHostCard({
         </div>
 
         <div className={`rounded-md border border-border/40 bg-muted/20 ${sectionPaddingClass}`}>
-          <div className={compact ? "space-y-1.5" : "space-y-2"}>
-            {metricItems.map((item) => {
-              const Icon = item.icon;
-              return (
-                <div key={item.key} className="grid grid-cols-[18px_minmax(0,1fr)_52px] items-center gap-2 text-xs">
-                  <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-                  <Progress value={item.progress} className={metricUsageProgressClass(item.progress, isOnline)} />
-                  <span className="text-right font-medium tabular-nums">{item.value == null ? "∞" : formatPercent(item.value)}</span>
-                </div>
-              );
-            })}
-          </div>
+          <TooltipProvider delayDuration={120}>
+            <div className={compact ? "space-y-1.5" : "space-y-2"}>
+              {metricItems.map((item) => {
+                const Icon = item.icon;
+                const resourceRow = (
+                  <div className={`grid ${!compact && item.key === "cpu" ? "grid-cols-[18px_auto_minmax(0,1fr)_52px]" : "grid-cols-[18px_minmax(0,1fr)_52px]"} items-center gap-2 text-xs`}>
+                    <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                    {!compact && item.key === "cpu" && <HostLoad metric={metric} showLabel={false} className="text-muted-foreground" />}
+                    <Progress value={item.progress} className={metricUsageProgressClass(item.progress, isOnline)} />
+                    <span className="text-right font-medium tabular-nums">{item.value == null ? "∞" : formatPercent(item.value)}</span>
+                  </div>
+                );
+                return (
+                  <div key={item.key} className="space-y-1.5">
+                    {compact && item.key === "cpu" ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div tabIndex={0} aria-label={cpuTooltip} className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+                            {resourceRow}
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent collisionPadding={12} className="max-w-[240px] whitespace-pre-line text-xs">{cpuTooltip}</TooltipContent>
+                      </Tooltip>
+                    ) : resourceRow}
+                  </div>
+                );
+              })}
+            </div>
+          </TooltipProvider>
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -559,6 +583,7 @@ function PublicHostTable({
                         <span className="shrink-0">{translateText("国家/地区：")}</span>
                         <HostRegionBadge host={host} compact />
                       </div>
+                      <HostLoad metric={metric} />
                     </div>
                   </TableCell>
                   <TableCell className="px-3 py-3">

@@ -40,6 +40,12 @@ test("SQLite host metric summaries seek only the latest two rows per host", asyn
     });
 
     const summaries = await metrics.getLatestHostMetricRows([2, 1]);
+    await runtime.executeRaw('UPDATE host_metrics SET load1 = ?, load5 = ?, load15 = ? WHERE hostId = ? AND recordedAt = ?', [0, 1.23, 2.34, 1, now]);
+    const loadSummaries = await metrics.getLatestHostMetricRows([1, 2]);
+    const withLoad = loadSummaries.find((row: any) => Number(row.hostId) === 1) as any;
+    const withoutLoad = loadSummaries.find((row: any) => Number(row.hostId) === 2) as any;
+    assert.deepEqual([withLoad.load1, withLoad.load5, withLoad.load15], [0, 1.23, 2.34]);
+    assert.deepEqual([withoutLoad.load1, withoutLoad.load5, withoutLoad.load15], [null, null, null]);
     assert.equal(summaries.length, 2);
     const first = summaries.find((row: any) => Number(row.hostId) === 1) as any;
     assert.equal(first.cpuUsage, 20);

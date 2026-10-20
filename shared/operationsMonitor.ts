@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const operationsMonitorSchema = z.object({
   enabled: z.boolean().default(false), notify: z.boolean().default(true),
+  notifyUserId: z.number().int().positive().nullable().default(null),
   cpu: z.number().min(0).max(100).default(90), memory: z.number().min(0).max(100).default(90), disk: z.number().min(0).max(100).default(90),
   durationSeconds: z.number().int().min(60).max(3600).default(300),
   recoverySeconds: z.number().int().min(30).max(600).default(60),

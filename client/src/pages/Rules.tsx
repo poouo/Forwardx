@@ -1,5 +1,6 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
+import { HintSwitch } from "@/components/ui/hint-switch";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { RuleLimitsForm, newRuleLimitsForm, ruleLimitsPayload, type RuleLimitsFormValue } from "@/components/rules/RuleLimitsForm";
@@ -7248,8 +7249,8 @@ function RulesContent() {
                 </div>
               )}
             </RuleRouteTransition>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
+            <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+              <div className="col-span-2 space-y-2 sm:col-span-1">
                 <Label>{translateText("规则名称")}</Label>
                 <Input
                   placeholder={translateText("例如: Web 服务转发")}
@@ -7386,11 +7387,10 @@ function RulesContent() {
                   <div className="flex min-h-10 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0 space-y-0.5">
                       <Label className="text-sm font-medium">{translateText("异常通知")}</Label>
-                      <p className="text-xs text-muted-foreground">
-                        {telegramBotReady ? translateText("规则运行异常时提醒已绑定所选通知渠道的管理员。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
-                      </p>
                     </div>
-                    <Switch
+                    <HintSwitch
+                      aria-label={translateText("异常通知")}
+                      hint={telegramBotReady ? translateText("规则运行异常时提醒已绑定所选通知渠道的管理员。") : translateText("请先在系统设置中配置并启用所选通知渠道。")}
                       checked={telegramBotReady && form.telegramErrorNotifyEnabled}
                       disabled={!telegramBotReady}
                       onCheckedChange={(checked) => setForm({ ...form, telegramErrorNotifyEnabled: checked })}
@@ -7449,7 +7449,7 @@ function RulesContent() {
                       spellCheck={false}
                     />
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 [&>*]:min-w-0">
                     <div className="space-y-2">
                       <Label>{translateText("切换时间（秒）")}</Label>
                       <Input
@@ -7473,7 +7473,7 @@ function RulesContent() {
                       />
                     </div>
                     {form.failoverStrategy === "fallback" && (
-                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                      <div className="col-span-2 flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2 sm:col-span-1">
                         <div>
                           <Label className="text-sm">{translateText("恢复后切回")}</Label>
                         </div>

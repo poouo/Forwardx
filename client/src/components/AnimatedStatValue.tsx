@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { getLanguage } from "@/i18n";
+import { useMotionEnabled } from "./MotionPolicy";
 
 const CACHE_PREFIX = "forwardx.stat.";
 // Pages with account-verified query snapshots do not need a second, unscoped
@@ -63,6 +64,7 @@ export default function AnimatedStatValue({
   title,
 }: AnimatedStatValueProps) {
   const persist = useContext(StatValuePersistenceContext);
+  const motionEnabled = useMotionEnabled();
   if (!persist) { cacheKey = undefined; fallbackCacheKeys = []; mirrorCacheKeys = []; }
   const nextValue = textValue(value);
   const fallback = useMemo(() => textValue(fallbackValue ?? value), [fallbackValue, value]);
@@ -106,6 +108,11 @@ export default function AnimatedStatValue({
   const [animationState, setAnimationState] = useState({ key: 0, changed: false });
 
   useEffect(() => {
+    if (!motionEnabled) {
+      previousDisplayRef.current = displayValue;
+      setAnimationState(state => state.changed ? { ...state, changed: false } : state);
+      return;
+    }
     if (previousDisplayRef.current === displayValue) return;
     previousDisplayRef.current = displayValue;
     if (loading) {
@@ -113,7 +120,7 @@ export default function AnimatedStatValue({
       return;
     }
     setAnimationState((state) => ({ key: state.key + 1, changed: true }));
-  }, [displayValue, loading]);
+  }, [displayValue, loading, motionEnabled]);
 
   return (
     <Component
@@ -121,7 +128,7 @@ export default function AnimatedStatValue({
       title={title}
       data-loading={loading ? "true" : "false"}
       data-empty={isLoadingPlaceholder ? "true" : "false"}
-      data-changing={animationState.changed ? "true" : "false"}
+      data-changing={motionEnabled && animationState.changed ? "true" : "false"}
     >
       <span
         key={animationState.key}

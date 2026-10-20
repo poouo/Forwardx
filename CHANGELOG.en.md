@@ -2,6 +2,18 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Move per-host resource alert configuration and notification recipients to service management; show alerts, China health status and IP switch history at the bottom of Operations.
+- Add a default-on, per-account animation switch in Profile to disable transitions, hover, list and chart animations.
+- Compact host, rule, tunnel, plan, billing, reminder and settings forms: pair short fields on mobile while preserving space for long content; move switch guidance to hover/focus hints and disable unavailable controls.
+- Add 1/5/15-minute load to host management and public monitoring: CPU tooltip in compact cards, CPU section in standard cards, and below region in lists (requires an Agent update).
+- Scope traffic queries and resource loading by user; refresh home/operations summaries in the background and remove duplicate session lookups.
+- Add isolated synthetic-data load tests and a local bottleneck report without touching development or production data.
+- Combine host reminders and simplify copy; add opt-in traffic-threshold shutdown with a once-per-cycle guard (Agent update required).
+- Move dashboard date/user filters and traffic summaries to the top.
+- Fix ticket and affiliate sidebar visibility switches; align affiliate labels in admin navigation and settings.
+
 ## [2.3.286] - 2026-10-19
 
 - Fix Android build collisions from precompressed web assets; support repairing a missing release APK independently.

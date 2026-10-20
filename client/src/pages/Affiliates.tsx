@@ -999,7 +999,7 @@ function AdminAffiliates({ settingsOpen, onSettingsOpenChange }: {
                 setDirty(true);
               }} />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
               <div className="space-y-2">
                 <Label htmlFor="affiliate-rate">{t("默认返佣比例（%）")}</Label>
                 <Input

@@ -3,12 +3,15 @@ import { startTelegramBot } from "./telegramBot";
 import { startDiscordBot } from "./discordBot";
 import { isDevPanelMode } from "./devPanel";
 import { seamlessBackgroundPaused } from "./seamlessMigrationState";
+import { startDashboardSummaryRefresh } from "./dashboardSummaryRefresh";
 
 let backgroundServicesStarted = false;
 
 export function startBackgroundServices() {
   if (seamlessBackgroundPaused()) return false;
   if (backgroundServicesStarted) return false;
+  // Safe local summary work is also needed in dev mode; no probes/notifications.
+  startDashboardSummaryRefresh();
   if (isDevPanelMode()) {
     backgroundServicesStarted = true;
     console.info("[DevPanel] Background scheduler and Telegram bot are disabled in local development panel mode");

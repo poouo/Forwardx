@@ -611,6 +611,7 @@ export const authRouter = router({
       telegramAnnouncementSubscribed: z.boolean().optional(),
       discordAnnouncementSubscribed: z.boolean().optional(),
       supportTicketNotificationSubscribed: z.boolean().optional(),
+      animationsEnabled: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       await db.updateUserProfile(ctx.user.id, {

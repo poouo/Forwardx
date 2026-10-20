@@ -87,7 +87,7 @@ import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REF
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
-import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
+import { getSidebarMenuLabel, isSidebarMenuVisible, normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
 import PanelStartView from "./PanelStartView";
@@ -119,7 +119,7 @@ const adminMenuItems: SidebarNavItem[] = [
   { icon: LayoutDashboard, label: translateText("运维看板"), path: "/operations" },
   { icon: CreditCard, label: translateText("支付对接"), path: "/payments", menuKey: "payments" },
   { icon: WalletCards, label: translateText("账单与兑换"), path: "/billing", menuKey: "billing" },
-  { icon: Handshake, label: translateText("推广管理"), path: "/affiliate-management" },
+  { icon: Handshake, label: translateText(getSidebarMenuLabel("affiliates", true)), path: "/affiliate-management", menuKey: "affiliates" },
   { icon: Package, label: translateText("套餐管理"), path: "/plans", menuKey: "plans" },
   { icon: Users, label: translateText("用户管理"), path: "/users", menuKey: "users" },
   lookingGlassMenuItem,
@@ -478,19 +478,16 @@ function DashboardLayoutContent({
     [publicInfo?.sidebarMenu]
   );
   const { data: ticketStatus } = trpc.supportTickets.status.useQuery(undefined, {
-    enabled: !!user && (isAdmin || sidebarMenuSettings.tickets),
+    enabled: !!user && sidebarMenuSettings.tickets,
     refetchInterval: 60000,
     refetchOnWindowFocus: true,
   });
   const { data: ticketSummary } = trpc.supportTickets.summary.useQuery(undefined, {
-    enabled: !!user && (isAdmin || sidebarMenuSettings.tickets) && ticketStatus?.enabled === true,
+    enabled: !!user && sidebarMenuSettings.tickets && ticketStatus?.enabled === true,
     refetchInterval: 60000,
     refetchOnWindowFocus: true,
     retry: false,
     staleTime: 15000,
-  });
-  const { data: affiliateStatus } = trpc.affiliates.status.useQuery(undefined, {
-    enabled: !!user, refetchInterval: 60_000, refetchOnWindowFocus: true,
   });
   const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
   const [cachedSiteLogo, setCachedSiteLogo] = useState(() => readCachedSiteLogo());
@@ -1117,7 +1114,7 @@ function DashboardLayoutContent({
   const hiddenNormalUserMainPaths = ["/hosts", "/tunnels"];
   const isSidebarNavItemVisible = (item: SidebarNavItem) => {
     if (item.menuKey === "plugins" && publicInfo?.pluginsEnabled !== true) return false;
-    return !item.menuKey || sidebarMenuSettings[item.menuKey] !== false;
+    return isSidebarMenuVisible(sidebarMenuSettings, item.menuKey);
   };
   const filterSidebarNavItems = (items: SidebarNavItem[]) => items.filter(isSidebarNavItemVisible);
   const visibleMainMenuItems = filterSidebarNavItems(
@@ -1157,15 +1154,15 @@ function DashboardLayoutContent({
         path: `/plugins/sidebar/${page.pluginId}`,
       }))
     : [];
-  const ticketMenuItems: SidebarNavItem[] = isAdmin || sidebarMenuSettings.tickets
-    ? [{ icon: LifeBuoy, label: `${translateText("工单支持")}${ticketStatus?.enabled && ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" }]
-    : [];
-  const primaryMenuItems = [
+  const ticketMenuItems = filterSidebarNavItems([
+    { icon: LifeBuoy, label: `${translateText("工单支持")}${ticketStatus?.enabled && ticketSummary?.unread ? ` (${ticketSummary.unread > 99 ? "99+" : ticketSummary.unread})` : ""}`, path: "/tickets", menuKey: "tickets" },
+  ]);
+  const primaryMenuItems = filterSidebarNavItems([
     ...visibleMainMenuItems,
     ...userStoreMenuItems,
-    ...(!isAdmin && (sidebarMenuSettings.affiliates || affiliateStatus?.hasHistory) ? [{ icon: Handshake, label: translateText("推广返佣"), path: "/affiliates", menuKey: "affiliates" as const }] : []),
+    ...(!isAdmin ? [{ icon: Handshake, label: translateText(getSidebarMenuLabel("affiliates")), path: "/affiliates", menuKey: "affiliates" as const }] : []),
     ...visibleAnnouncementsMenuItems,
-  ];
+  ]);
   const otherMenuItems: SidebarNavItem[] = [
     ...(isAdmin && isSidebarNavItemVisible(pluginManagementMenuItem) ? [pluginManagementMenuItem] : []),
     ...pluginPageMenuItems,

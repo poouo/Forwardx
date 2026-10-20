@@ -54,7 +54,7 @@ export function RuleLimitsForm({ value, onChange }: { value: RuleLimitsFormValue
     <div className="mt-4 space-y-4">
       <p className="text-xs text-muted-foreground">{t("0 或留空不限，与账户限额同时生效。")}</p>
       {value.quotaUsedIn !== null && <p className="text-xs text-muted-foreground">{t("已用额度：{0} 字节", [ruleTrafficUsed(value.mode, value.quotaUsedIn || 0, value.quotaUsedOut || 0).toLocaleString()])}</p>}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
         <div className="space-y-2"><Label>{t("速度限制 (Mbps)")}</Label><Input type="number" min="0" max="1000000" step="1" value={value.speed} placeholder="0" onChange={e => patch({ speed: e.target.value })} /></div>
         <div className="space-y-2"><Label>{t("流量额度 (GiB)")}</Label><Input type="number" min="0" step="any" value={value.quota} placeholder="0" onChange={e => patch({ quota: e.target.value })} /></div>
       </div>
@@ -62,7 +62,7 @@ export function RuleLimitsForm({ value, onChange }: { value: RuleLimitsFormValue
         <SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>
           <SelectItem value="outbound">{t("单向（仅出向）")}</SelectItem><SelectItem value="both">{t("双向合计")}</SelectItem><SelectItem value="max">{t("取最大值")}</SelectItem>
         </SelectContent></Select></div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-3 [&>*]:min-w-0">
         <div className="space-y-2"><Label>{t("创建时间")}</Label><DatePickerInput value={value.createdDate} onChange={createdDate => patch({ createdDate })} /><Input aria-label={t("创建时间")} type="time" step="1" value={value.createdTime} onChange={e => patch({ createdTime: e.target.value })} /></div>
         <div className="space-y-2"><Label>{t("到期时间")}</Label><DatePickerInput value={value.expiresDate} placeholder={t("不限制")} onChange={expiresDate => patch({ expiresDate })} /><Input aria-label={t("到期时间")} type="time" step="1" disabled={!value.expiresDate} value={value.expiresTime} onChange={e => patch({ expiresTime: e.target.value })} /></div>
       </div>

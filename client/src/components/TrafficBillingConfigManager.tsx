@@ -671,8 +671,8 @@ export default function TrafficBillingConfigManager({
             <DialogTitle>{configForm.id ? translateText("编辑计费资源") : translateText("新增计费资源")}</DialogTitle>
             <DialogDescription>{translateText("选择资源并设置每 GB 单价；倍率继承资源配置。")}</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-3 sm:col-span-2 sm:grid-cols-[11rem_minmax(0,1fr)]">
+          <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+            <div className="col-span-2 grid min-w-0 gap-3 sm:grid-cols-[11rem_minmax(0,1fr)]">
               <div className="space-y-2">
                 <Label>{translateText("资源类型")}</Label>
                 <Select
@@ -764,7 +764,7 @@ export default function TrafficBillingConfigManager({
                   : translateText("选择资源后显示")}
               </div>
             </div>
-            <div className="space-y-2 sm:col-span-2">
+            <div className="col-span-2 space-y-2">
               <Label>{translateText("说明")}</Label>
               <Textarea
                 value={configForm.description}
@@ -772,14 +772,14 @@ export default function TrafficBillingConfigManager({
                 placeholder={translateText("留空时商店展示系统默认说明")}
               />
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
+            <div className="col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
               <div className="min-w-0">
                 <Label className="text-sm">{translateText("启用计费资源")}</Label>
                 <p className="mt-1 text-xs text-muted-foreground">{translateText("停用后该资源不再作为流量计费资源使用。")}</p>
               </div>
               <Switch className="shrink-0" checked={configForm.enabled} onCheckedChange={(enabled) => setConfigForm((current) => ({ ...current, enabled }))} />
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
+            <div className="col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
               <div className="min-w-0">
                 <Label className="text-sm">{translateText("需要额外计费权限")}</Label>
                 <p className="mt-1 text-xs text-muted-foreground">{translateText("关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。")}</p>

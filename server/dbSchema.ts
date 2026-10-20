@@ -5,7 +5,7 @@ import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { getDatabaseKind, getPool, getPostgresPool, getSqlite } from "./dbRuntime";
 import { normalizeSidebarMenuSettings } from "../shared/sidebarMenu";
 
-export type ColumnType = "id" | "text" | "longtext" | "varchar" | "int" | "bigint" | "bool" | "epoch";
+export type ColumnType = "id" | "text" | "longtext" | "varchar" | "int" | "bigint" | "real" | "bool" | "epoch";
 
 export type ColumnDef = {
   name: string;
@@ -245,6 +245,7 @@ const tables: TableDef[] = [
       c("discordLinkedAt", "epoch"), c("discordLastSeenAt", "epoch"),
       c("discordAnnouncementSubscribed", "bool", { notNull: true, default: false }),
       c("supportTicketNotificationSubscribed", "bool", { notNull: true, default: true }),
+      c("animationsEnabled", "bool", { notNull: true, default: true }),
       c("discordBindCode", "varchar", { length: 64 }), c("discordBindCodeExpiresAt", "epoch"),
       c("discordLoginCode", "varchar", { length: 64 }), c("discordLoginCodeExpiresAt", "epoch"),
       c("telegramLinkedAt", "epoch"), c("telegramLastSeenAt", "epoch"), c("telegramAnnouncementSubscribed", "bool", { notNull: true, default: false }), c("telegramBindCode", "text"),
@@ -290,7 +291,10 @@ const tables: TableDef[] = [
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficMeasureMode", "varchar", { length: 16, notNull: true, default: "both" }),
       c("trafficFailoverEnabled", "bool", { notNull: true, default: false }), c("trafficFailoverThresholdPercent", "int", { notNull: true, default: 100 }),
       c("trafficFailoverExcluded", "bool", { notNull: true, default: false }),
+      c("trafficShutdownEnabled", "bool", { notNull: true, default: false }), c("trafficShutdownThresholdPercent", "int", { notNull: true, default: 100 }),
+      c("trafficShutdownTriggered", "bool", { notNull: true, default: false }),
       c("hostStatusNotifyEnabled", "bool", { notNull: true, default: true }),
+      c("resourceAlertConfig", "text"),
       c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAlertThresholdPercent", "int", { notNull: true, default: 20 }),
       c("telegramRenewalReminderEnabled", "bool", { notNull: true, default: false }), c("renewalReminderDays", "int", { notNull: true, default: 3 }),
       c("trafficAutoReset", "bool", { notNull: true, default: false }), c("trafficResetDay", "int", { notNull: true, default: 1 }),
@@ -461,7 +465,7 @@ const tables: TableDef[] = [
   { name: "tunnel_exit_nodes", columns: [c("id", "id"), c("tunnelId", "int", { notNull: true }), c("seq", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("listenPort", "int", { notNull: true }), c("mimicPort", "int", { notNull: true, default: 0 }), c("connectHost", "text"), c("isEnabled", "bool", { notNull: true, default: true }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["tunnelId", "seq"]], indexes: [["tunnelId"], ["hostId"], ["hostId", "listenPort"]] },
   { name: "tunnel_hops", columns: [c("id", "id"), c("tunnelId", "int", { notNull: true }), c("seq", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("listenPort", "int", { notNull: true, default: 0 }), c("mimicPort", "int", { notNull: true, default: 0 }), c("connectHost", "text")], unique: [["tunnelId", "seq"]], indexes: [["tunnelId"], ["hostId"]] },
   { name: "forward_rule_tunnel_exits", columns: [c("id", "id"), c("ruleId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("exitNodeId", "int", { notNull: true }), c("exitSeq", "int", { notNull: true }), c("exitHostId", "int", { notNull: true }), c("tunnelExitPort", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["ruleId", "exitNodeId"], ["ruleId", "exitSeq"]], indexes: [["ruleId"], ["tunnelId"], ["exitHostId"], ["exitHostId", "tunnelExitPort"]] },
-  { name: "host_metrics", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("cpuUsage", "int"), c("memoryUsage", "int"), c("memoryUsed", "bigint"), c("swapUsage", "int"), c("swapUsed", "bigint"), c("swapTotal", "bigint"), c("networkIn", "bigint"), c("networkOut", "bigint"), c("diskUsage", "int"), c("diskUsed", "bigint"), c("diskTotal", "bigint"), c("uptime", "bigint"), c("recordedAt", "epoch", { notNull: true, default: "now" })], indexes: [["hostId", "recordedAt"], ["recordedAt", "hostId"]] },
+  { name: "host_metrics", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("cpuUsage", "int"), c("load1", "real"), c("load5", "real"), c("load15", "real"), c("memoryUsage", "int"), c("memoryUsed", "bigint"), c("swapUsage", "int"), c("swapUsed", "bigint"), c("swapTotal", "bigint"), c("networkIn", "bigint"), c("networkOut", "bigint"), c("diskUsage", "int"), c("diskUsed", "bigint"), c("diskTotal", "bigint"), c("uptime", "bigint"), c("recordedAt", "epoch", { notNull: true, default: "now" })], indexes: [["hostId", "recordedAt"], ["recordedAt", "hostId"]] },
   { name: "host_traffic_counters", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("bytesIn", "bigint", { notNull: true, default: 0 }), c("bytesOut", "bigint", { notNull: true, default: 0 }), c("lastSystemIn", "bigint"), c("lastSystemOut", "bigint"), c("lastDeltaIn", "bigint", { notNull: true, default: 0 }), c("lastDeltaOut", "bigint", { notNull: true, default: 0 }), c("lastReportedAt", "epoch"), c("resetAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["hostId"]], indexes: [["updatedAt"], ["lastReportedAt"]] },
   { name: "user_traffic_counters", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("bytesIn", "bigint", { notNull: true, default: 0 }), c("bytesOut", "bigint", { notNull: true, default: 0 }), c("connections", "int", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["userId"]], indexes: [["updatedAt"]] },
   { name: "forward_rule_traffic_counters", columns: [c("id", "id"), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("bytesIn", "bigint", { notNull: true, default: 0 }), c("bytesOut", "bigint", { notNull: true, default: 0 }), c("connections", "int", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["ruleId", "hostId"]], indexes: [["userId"], ["ruleId"], ["hostId"], ["updatedAt"]] },
@@ -571,7 +575,7 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
     return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
   }
   const type = kind === "sqlite"
-    ? (column.type === "varchar" || column.type === "text" || column.type === "longtext" ? "TEXT" : "INTEGER")
+    ? (column.type === "varchar" || column.type === "text" || column.type === "longtext" ? "TEXT" : column.type === "real" ? "REAL" : "INTEGER")
     : kind === "postgresql"
       ? ({
         text: "TEXT",
@@ -579,6 +583,7 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
         varchar: `VARCHAR(${column.length || 191})`,
         int: "INTEGER",
         bigint: "BIGINT",
+        real: "DOUBLE PRECISION",
         bool: "BOOLEAN",
         epoch: "INTEGER",
       } as Record<ColumnType, string>)[column.type]
@@ -588,6 +593,7 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
       varchar: `VARCHAR(${column.length || 191})`,
       int: "INT",
       bigint: "BIGINT",
+      real: "DOUBLE",
       bool: "BOOLEAN",
       epoch: "INT",
     } as Record<ColumnType, string>)[column.type];

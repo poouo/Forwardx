@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { parseHostLoadAverage } from "../shared/hostLoad";
 import { observeHostResources } from "./operationsMonitor";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
@@ -1496,6 +1497,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     const heartbeatMetric = (key: string, index: number) => req.body?.[key] ?? compactMetrics[index];
     const cpuUsage = heartbeatMetric("cpuUsage", 0);
+    const loadAverage = parseHostLoadAverage(req.body?.loadAverage);
     const memoryUsage = heartbeatMetric("memoryUsage", 1);
     const memoryUsed = heartbeatMetric("memoryUsed", 2);
     const memoryTotal = heartbeatMetric("memoryTotal", 3);
@@ -1749,6 +1751,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     await db.insertHostMetric({
       hostId: host.id,
       cpuUsage: cpuUsage ?? null,
+      ...loadAverage,
       memoryUsage: memoryUsage ?? null,
       memoryUsed: memoryUsed ?? null,
       swapUsage: swapUsage ?? null,
@@ -1766,6 +1769,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       console.warn(`[OperationsMonitor] resource observation failed host=${host.id}`);
     });
 
+    const trafficShutdownCheck = req.body?.trafficShutdownSupported === true && host.trafficShutdownEnabled && !host.trafficShutdownTriggered;
     if (busyHeartbeat) {
       const panelUrl = await resolveAgentAdvertisedPanelUrl();
       const metricsWatching = isHostMetricsWatching(host.id);
@@ -1785,12 +1789,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         metricsWatching,
         nextInterval: metricsWatching ? 3 : 5,
       });
-      res.json(buildBusyAgentHeartbeatResponse({
+      res.json({ ...buildBusyAgentHeartbeatResponse({
         panelUrl,
         requestLocalState: localRuntimeState.requestLocalState,
         metricsWatching,
         trafficReportInterval: metricsWatching ? 10 : undefined,
-      }));
+      }), trafficShutdownCheck });
       return;
     }
 
@@ -1850,6 +1854,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         iperf3Tasks: [],
         pluginTasks: [],
         agentUpgrade: null,
+        trafficShutdownCheck,
         panelUrl: stablePlan.panelUrl,
         forceTcping: false,
         nextInterval: metricsWatching ? 3 : stablePlan.idleNextInterval,
@@ -6715,6 +6720,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       iperf3Tasks,
       ipSwitchTasks,
       pluginTasks,
+      trafficShutdownCheck,
       agentUpgrade,
       panelUrl,
       panelMigration,

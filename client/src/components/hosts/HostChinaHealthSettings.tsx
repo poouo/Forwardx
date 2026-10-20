@@ -74,7 +74,7 @@ export default function HostChinaHealthSettings({ value, onChange }: { value: Ch
   const showHook = value.replaceHook || !value.hookConfigured && value.autoSwitch;
   if (!value.enabled) return null;
   return <section className="space-y-3 rounded-lg border border-sky-500/25 bg-sky-500/5 p-3">
-      <div className="grid gap-2.5 sm:grid-cols-2">{([
+      <div className="grid min-w-0 grid-cols-2 gap-2.5 [&>*]:min-w-0">{([
         ["failureThreshold", "失败次数", 2, 20], ["failureSeconds", "失败时长（秒）", 30, 3600],
         ["recoveryThreshold", "恢复次数", 2, 20], ["cooldownSeconds", "换 IP 冷却（秒）", 300, 86400],
         ["maxSwitchesPerDay", "24h 换 IP 上限", 1, 10],

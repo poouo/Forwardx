@@ -930,8 +930,8 @@ export default function Billing() {
                 <CardTitle className="flex items-center gap-2"><Gift className="h-5 w-5" />{translateText(" 生成兑换码")}</CardTitle>
                 <CardDescription>{translateText("一次性兑换套餐或余额。")}</CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-4">
-                <div className="space-y-2 md:col-span-2">
+              <CardContent className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-4 [&>*]:min-w-0">
+                <div className="col-span-2 space-y-2">
                   <Label>{translateText("兑换码")}</Label>
                   <div className="flex gap-2">
                     <Input value={redeemCode} onChange={(e) => setRedeemCode(normalizeCodeInput(e.target.value))} placeholder={translateText("留空自动生成")} />
@@ -958,7 +958,7 @@ export default function Billing() {
                   <DatePickerInput value={redeemExpiresAt} onChange={setRedeemExpiresAt} placeholder={translateText("永久有效")} />
                   <p className="text-xs text-muted-foreground">{translateText("不选择则永久有效。")}</p>
                 </div>
-                <div className="flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" />{translateText(" 生成兑换码")}</Button></div>
+                <div className="col-span-2 flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" />{translateText(" 生成兑换码")}</Button></div>
               </CardContent>
             </Card>
             <Card>
@@ -1061,8 +1061,8 @@ export default function Billing() {
                 <CardTitle className="flex items-center gap-2"><TicketPercent className="h-5 w-5" />{translateText(" 新增折扣码")}</CardTitle>
                 <CardDescription>{translateText("购买套餐时抵扣。")}</CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-4">
-                <div className="space-y-2 md:col-span-2">
+              <CardContent className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-4 [&>*]:min-w-0">
+                <div className="col-span-2 space-y-2">
                   <Label>{translateText("折扣码")}</Label>
                   <div className="flex gap-2">
                     <Input value={discountCode} onChange={(e) => setDiscountCode(normalizeCodeInput(e.target.value))} placeholder={translateText("例如 SALE2026")} />
@@ -1081,7 +1081,7 @@ export default function Billing() {
                   <Label>{translateText("失效日期")}</Label>
                   <DatePickerInput value={discountExpiresAt} onChange={setDiscountExpiresAt} placeholder={translateText("永久有效")} />
                 </div>
-                <div className="space-y-2 md:col-span-4">
+                <div className="col-span-2 space-y-2 md:col-span-4">
                   <Label>{translateText("适用套餐")}</Label>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     <button type="button" onClick={() => setDiscountPlanIds([])} className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${discountPlanIds.length === 0 ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"}`}>{translateText("全部套餐")}</button>
@@ -1095,7 +1095,7 @@ export default function Billing() {
                     })}
                   </div>
                 </div>
-                <div className="flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitDiscount} disabled={createDiscountCode.isPending}><TicketPercent className="mr-2 h-4 w-4" />{translateText(" 创建折扣码")}</Button></div>
+                <div className="col-span-2 flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitDiscount} disabled={createDiscountCode.isPending}><TicketPercent className="mr-2 h-4 w-4" />{translateText(" 创建折扣码")}</Button></div>
               </CardContent>
             </Card>
             <Card>

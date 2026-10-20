@@ -15,8 +15,10 @@ See the repository's `THIRD_PARTY_NOTICES.md` for its MIT notice.
 - `PearlSidebarContent`: measures the real active menu item's bounds. Its
   finite slide survives route shell remounts without retaining DOM nodes;
   observers, frames, listeners and animations are cleaned up.
-- `MotionPolicy`: system reduced-motion preferences for Motion components;
-  visibility-aware animation permission for dashboard charts.
+- `MotionPolicy`: account-scoped `animationsEnabled` (default on), system
+  reduced-motion preferences and visibility-aware permission for CSS, Motion,
+  list layout, sidebar and chart animations. Never use a shared system setting
+  or unscoped browser flag for an individual user's animation preference.
 
 ## Extension rules
 

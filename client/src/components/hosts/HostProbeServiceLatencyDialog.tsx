@@ -1,4 +1,5 @@
 import { t as translateText } from "@/i18n";
+import { useMotionEnabled } from "@/components/MotionPolicy";
 import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
@@ -302,7 +303,8 @@ export default function HostProbeServiceLatencyDialog({
     return maxLatency > 0 ? Math.ceil(maxLatency * 1.2) : 120;
   }, [chart, visibleServiceIds]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
-  const shouldAnimateChart = open && hostId > 0 && chart.length > 0 && !hostServiceLatencyAnimatedKeys.has(hostId);
+  const motionEnabled = useMotionEnabled();
+  const shouldAnimateChart = motionEnabled && open && hostId > 0 && chart.length > 0 && !hostServiceLatencyAnimatedKeys.has(hostId);
 
   useEffect(() => {
     if (shouldAnimateChart) {

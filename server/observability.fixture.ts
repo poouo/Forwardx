@@ -8,7 +8,9 @@ import { queryPanelCall } from "./ai/panelTools";
 import { readPanelResources } from "./ai/resources";
 import { createMcpToken, listMcpTokens } from "./mcpTokens";
 import { mcpHttpRouter } from "./mcpRoutes";
-import { observeHostResources, saveMonitorSettings, monitorOverview } from "./operationsMonitor";
+import { observeHostResources, saveMonitorSettings, monitorOverview, getMonitorSettings } from "./operationsMonitor";
+import { hostsRouter } from "./routers/hosts";
+import { hostChinaHealthSchema } from "../shared/hostChinaHealth";
 import { setSetting } from "./repositories/settingsRepository";
 import { diagnoseNetwork } from "./networkDiagnostics";
 import { mcpRouter } from "./routers/mcp";
@@ -41,13 +43,50 @@ try {
   const diagnostic = await diagnoseNetwork({ id: 1, role: "admin" }, { hostId: 1 });
   assert.doesNotMatch(JSON.stringify(diagnostic), /private-agent-token|private-password/);
   assert.ok(diagnostic.checks.some(check => check.status === "unknown"));
-  await saveMonitorSettings({ enabled: true, notify: false, cpu: 90, memory: 90, disk: 90, durationSeconds: 60, recoverySeconds: 30 });
+  await saveMonitorSettings(1, { enabled: true, notify: false, cpu: 90, memory: 90, disk: 90, durationSeconds: 60, recoverySeconds: 30 });
   for (const offset of [0, 30, 60, 90]) await observeHostResources({ id: 1, name: "主机 A" }, { cpu: 95 }, now + offset);
   assert.equal((await monitorOverview()).events.length, 1);
   assert.equal((await monitorOverview()).active.length, 1);
   for (const offset of [120, 150]) await observeHostResources({ id: 1, name: "主机 A" }, { cpu: 80 }, now + offset);
   assert.equal((await monitorOverview()).events.length, 2);
   assert.equal((await monitorOverview()).active.length, 0);
+  // Per-host settings must not change another host's thresholds, pending state or history.
+  await runtime.insertAndGetId("hosts", { id: 2, name: "主机 B", ip: "192.0.2.2", userId: 2, agentToken: "second-private-token" });
+  assert.equal((await getMonitorSettings(2)).enabled, false);
+  assert.equal((await getMonitorSettings(1)).enabled, true);
+  await saveMonitorSettings(2, { enabled: true, notify: false, cpu: 80, memory: 0, disk: 0, durationSeconds: 60, recoverySeconds: 30, notifyUserId: 2 });
+  await observeHostResources({ id: 2 }, { cpu: 85, memory: 100 }, now);
+  await saveMonitorSettings(1, { enabled: false });
+  assert.equal((await runtime.queryRaw<any>("SELECT * FROM operations_alert_state WHERE hostId = 2"))[0]?.phase, "pending");
+  assert.equal((await getMonitorSettings(2)).cpu, 80);
+  for (const offset of [30, 60]) await observeHostResources({ id: 2 }, { cpu: 85, memory: 100 }, now + offset);
+  let monitor = await monitorOverview();
+  assert.equal(monitor.active.length, 1);
+  assert.equal(monitor.active[0].hostId, 2);
+  assert.equal(monitor.events.length, 3); // notify=false still records events; memory=0 never alerts.
+  await saveMonitorSettings(2, { enabled: false, notify: false });
+  assert.equal((await monitorOverview()).active.length, 0);
+  assert.equal((await monitorOverview()).events.length, 3);
+
+  const hostCaller = (id: number, role: string) => hostsRouter.createCaller({ user: { id, role }, req: { headers: {}, socket: {} }, res: {}, authSession: null, authFailureReason: null } as any);
+  await assert.rejects(hostCaller(2, "user").resourceAlertSettings({ hostId: 2 }), (error: any) => error.code === "FORBIDDEN");
+  await assert.rejects(hostCaller(2, "user").saveResourceAlertSettings({ hostId: 2, settings: { enabled: true } } as any), (error: any) => error.code === "FORBIDDEN");
+  assert.equal((await hostCaller(1, "admin").resourceAlertSettings({ hostId: 2 })).enabled, false);
+  await assert.rejects(hostCaller(1, "admin").resourceAlertSettings({ hostId: 99999 }), (error: any) => error.code === "NOT_FOUND");
+  await assert.rejects(saveMonitorSettings(1, { notifyUserId: 99999 }), /通知用户不存在/);
+
+  // Dashboard status/history includes IP changes without exposing any merchant configuration.
+  const serviceId = await runtime.insertAndGetId("host_probe_services", { name: "国内探测", userId: 1, targetIp: "223.5.5.5", hostScope: "specific", hostIds: "[2]" });
+  await runtime.insertAndGetId("host_probe_health", { serviceId, hostId: 2, config: JSON.stringify(hostChinaHealthSchema.parse({ enabled: true, notify: false })), hookCiphertext: "private-provider-credentials", state: JSON.stringify({ phase: "unhealthy", failures: 5, successes: 0, failureSince: now, lastSeen: now, incidentId: "incident", actionAttempted: true }), updatedAt: now });
+  for (let id = 0; id < 25; id++) await runtime.insertAndGetId("host_ip_switch_attempts", { hostId: 2, serviceId, incidentId: `switch-${id}`, status: id === 24 ? "accepted" : "succeeded", newIp: "192.0.2.20", createdAt: now });
+  await runtime.insertAndGetId("host_ip_switch_attempts", { hostId: 2, serviceId, incidentId: "expired-switch", status: "succeeded", createdAt: now - 31 * 86400 });
+  monitor = await monitorOverview();
+  assert.equal(monitor.health[0].state.phase, "unhealthy");
+  assert.equal(monitor.ipTotal, 25);
+  assert.equal(monitor.ipEvents.length, 20);
+  assert.equal(monitor.ipEvents[0].status, "accepted");
+  assert.equal((await monitorOverview(0, 1)).ipEvents.length, 5);
+  assert.doesNotMatch(JSON.stringify(monitor), /private-provider|hookCiphertext|second-private-token|resourceAlertConfig/);
   const callerFor = async (userId: number) => mcpRouter.createCaller({
     user: await getUserById(userId), authSession: null, authFailureReason: null,
     req: { headers: {}, socket: {}, protocol: "https", get: () => undefined },

@@ -79,14 +79,14 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
           <Smartphone className="h-4 w-4" />{translateText("APP 设置")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 p-3">
-            <span className="min-w-0">
+        <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+          <label className="flex flex-wrap content-start items-center justify-between gap-2 rounded-lg border border-border/50 bg-background/35 p-3">
+            <span className="min-w-0 flex-1 basis-20">
               <span className="flex items-center gap-2 text-sm font-medium">
-                <Bell className="h-4 w-4" />{translateText("流量提醒")}</span>
+                <Bell className="h-4 w-4 shrink-0" />{translateText("流量提醒")}</span>
               <span className="mt-1 block text-xs text-muted-foreground">{translateText("低于阈值时提醒。")}</span>
             </span>
-            <Switch checked={settings.trafficEnabled} onCheckedChange={(trafficEnabled) => save({ ...settings, trafficEnabled })} />
+            <Switch className="shrink-0" checked={settings.trafficEnabled} onCheckedChange={(trafficEnabled) => save({ ...settings, trafficEnabled })} />
           </label>
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
             <Label>{translateText("剩余流量阈值 (%)")}</Label>
@@ -105,14 +105,14 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 p-3">
-            <span className="min-w-0">
+        <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+          <label className="flex flex-wrap content-start items-center justify-between gap-2 rounded-lg border border-border/50 bg-background/35 p-3">
+            <span className="min-w-0 flex-1 basis-20">
               <span className="flex items-center gap-2 text-sm font-medium">
-                <Bell className="h-4 w-4" />{translateText("到期提醒")}</span>
+                <Bell className="h-4 w-4 shrink-0" />{translateText("到期提醒")}</span>
               <span className="mt-1 block text-xs text-muted-foreground">{translateText("到期前提醒。")}</span>
             </span>
-            <Switch checked={settings.expiryEnabled} onCheckedChange={(expiryEnabled) => save({ ...settings, expiryEnabled })} />
+            <Switch className="shrink-0" checked={settings.expiryEnabled} onCheckedChange={(expiryEnabled) => save({ ...settings, expiryEnabled })} />
           </label>
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
             <Label>{translateText("提前提醒天数")}</Label>
@@ -131,7 +131,7 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
           <div className="space-y-2 rounded-lg border border-border/50 bg-background/35 p-3">
             <Label>{translateText("提醒时间")}</Label>
             <Input

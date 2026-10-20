@@ -1235,8 +1235,8 @@ export default function Plans() {
 
             <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
               <TabsContent value="settings" className="mt-4 space-y-4">
-                <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2">
+                <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="col-span-2 space-y-2 md:col-span-1">
               <Label>{translateText("套餐名称")}</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如：基础套餐")} />
             </div>

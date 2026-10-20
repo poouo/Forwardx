@@ -4,6 +4,7 @@ import { toast } from "@/lib/localizedToast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { OptimisticSwitch } from "@/components/ui/switch";
+import { SwitchHint } from "@/components/ui/hint-switch";
 import { useId } from "react";
 
 export function NotificationPreferenceRow({ title, description, checked, disabled, onChange }: {
@@ -17,9 +18,10 @@ export function NotificationPreferenceRow({ title, description, checked, disable
   return <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/15 p-3">
     <div className="min-w-0">
       <Label htmlFor={id} className="text-sm font-medium leading-snug">{title}</Label>
-      {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
     </div>
-    <OptimisticSwitch id={id} className="shrink-0" checked={checked} disabled={disabled} onCheckedChangeAsync={onChange} />
+    <SwitchHint hint={description} disabled={disabled}>
+      <OptimisticSwitch id={id} className="shrink-0" checked={checked} disabled={disabled} onCheckedChangeAsync={onChange} />
+    </SwitchHint>
   </div>;
 }
 
@@ -45,17 +47,15 @@ export default function NotificationPreferencesCard() {
     <CardContent className="space-y-3">
       {query.error && <p role="alert" className="text-sm text-destructive">{query.error.message}</p>}
       <NotificationPreferenceRow title={t("公告通知")}
-        description={t("仅在管理员选择推送公告时发送。")}
+        description={preferences && (!preferences.active || !preferences.bound) ? t("通知渠道启用并绑定后才能接收推送。") : t("仅在管理员选择推送公告时发送。")}
         checked={!!preferences?.announcementSubscribed} disabled={!preferences?.bound || update.isPending}
         onChange={(enabled) => update.mutateAsync(preferences?.channel === "discord"
           ? { discordAnnouncementSubscribed: enabled } : { telegramAnnouncementSubscribed: enabled })} />
       <NotificationPreferenceRow title={t("工单通知")}
-        description={preferences?.supportTicketNotificationsEnabled === false
+        description={preferences && (!preferences.active || !preferences.bound) ? t("通知渠道启用并绑定后才能接收推送。") : preferences?.supportTicketNotificationsEnabled === false
           ? t("管理员已关闭工单推送，个人偏好仍会保留。") : t("接收与我相关的工单更新。")}
         checked={preferences?.supportTicketNotificationSubscribed ?? true} disabled={!preferences || update.isPending}
         onChange={(enabled) => update.mutateAsync({ supportTicketNotificationSubscribed: enabled })} />
-      {preferences && (!preferences.active || !preferences.bound) &&
-        <p className="text-xs text-muted-foreground">{t("通知渠道启用并绑定后才能接收推送。")}</p>}
     </CardContent>
   </Card>;
 }

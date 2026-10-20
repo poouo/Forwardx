@@ -17,7 +17,8 @@ test("host notification switch is accessible, bilingual and retains saved checke
         assert.ok(html.includes(`aria-checked="${checked}"`));
         const labelId = html.match(/<label[^>]*for="([^"]+)"/)?.[1];
         assert.ok(labelId && html.includes(`id="${labelId}"`));
-        assert.match(html, /aria-describedby=/);
+        assert.doesNotMatch(html, /<p\b/);
+        assert.match(html, /data-state="closed"/);
         assert.match(html, /min-w-0/);
         assert.match(html, /shrink-0/);
         if (language === "en") assert.doesNotMatch(html, /\p{Script=Han}/u);

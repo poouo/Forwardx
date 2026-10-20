@@ -1,6 +1,6 @@
 ﻿import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { afterDatabaseCommit, executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { queryRaw } from "../dbRuntime";
 import { boolLiteral, boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
@@ -8,6 +8,17 @@ import { sqlBool } from "./repositoryUtils";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { dashboardSummaries } from "../backgroundSummaryCache";
+
+async function invalidateRuleDashboardSummaries(rule: any) {
+  if (!rule) return;
+  const ids = [Number(rule.userId || 0)];
+  if (rule.forwardGroupRuleId) {
+    const parent = await getForwardRuleById(Number(rule.forwardGroupRuleId));
+    if (parent?.isForwardGroupTemplate && parent.forwardGroupId === rule.forwardGroupId) ids.push(Number(parent.userId));
+  }
+  await afterDatabaseCommit(() => dashboardSummaries.clear(ids.filter((id) => id > 0)));
+}
 
 // ==================== Forward Rule Queries ====================
 
@@ -1051,6 +1062,7 @@ export async function createForwardRule(rule: InsertForwardRule) {
   }
   const id = await insertAndGetId("forward_rules", payload);
   const created = await getForwardRuleById(id).catch(() => undefined);
+  await invalidateRuleDashboardSummaries(created);
   await recordConfigAuditEvent({ resourceType: "forward_rule", resourceId: id, hostId: Number((created as any)?.hostId || 0), action: "create", after: created });
   return id;
 }
@@ -1102,6 +1114,8 @@ export async function updateForwardRule(id: number, data: Partial<InsertForwardR
   await db.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
   if (audit && before) {
     const after = await getForwardRuleById(id).catch(() => undefined);
+    await invalidateRuleDashboardSummaries(before);
+    await invalidateRuleDashboardSummaries(after);
     await recordConfigAuditEvent({ resourceType: "forward_rule", resourceId: id, hostId: Number((after as any)?.hostId || (before as any)?.hostId || 0), action: "update", before, after });
   }
 }
@@ -1131,6 +1145,7 @@ export async function deleteForwardRule(id: number) {
     pendingDelete: true,
     updatedAt: nowDate(),
   }).where(eq(forwardRules.id, id));
+  await invalidateRuleDashboardSummaries(before);
   if (before) await recordConfigAuditEvent({ resourceType: "forward_rule", resourceId: id, hostId: Number((before as any).hostId || 0), action: "delete", before });
 }
 

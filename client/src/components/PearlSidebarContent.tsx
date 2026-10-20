@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, type ComponentProps } from "react";
 import { SidebarContent, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { rememberSidebarScroll } from "@/lib/sidebarScroll";
+import { useMotionEnabled } from "./MotionPolicy";
 
 type Marker = { left: number; top: number; width: number; height: number; viewport: number; rail: number; mode: string };
 // The existing page architecture remounts the shell on navigation. Remember only
@@ -12,6 +13,7 @@ export default function PearlSidebarContent({ activeKey, scrollKey, className, c
   const contentRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<HTMLSpanElement>(null);
   const { state, isMobile } = useSidebar();
+  const motionEnabled = useMotionEnabled();
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -82,7 +84,7 @@ export default function PearlSidebarContent({ activeKey, scrollKey, className, c
       animation?.cancel();
       if (first && previous && previous.mode === next.mode && previous.viewport === next.viewport && previous.rail === next.rail
         && (previous.left !== next.left || previous.top !== next.top)
-        && !document.hidden && !reducedMotion.matches
+        && motionEnabled && !document.hidden && !reducedMotion.matches
         && typeof marker.animate === "function") {
         animation = marker.animate([
           { transform: `translate(${previous.left - next.left}px, ${previous.top - next.top}px)` },
@@ -138,7 +140,7 @@ export default function PearlSidebarContent({ activeKey, scrollKey, className, c
       document.removeEventListener("visibilitychange", settle);
       reducedMotion.removeEventListener("change", settle);
     };
-  }, [activeKey, scrollKey, state, isMobile]);
+  }, [activeKey, scrollKey, state, isMobile, motionEnabled]);
 
   return <SidebarContent ref={contentRef} className={cn("pearl-nav-content", className)} {...props}>
     <span ref={markerRef} className="pearl-nav-indicator" aria-hidden="true" hidden />

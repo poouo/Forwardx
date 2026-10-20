@@ -452,6 +452,31 @@
   to { stroke-dashoffset: 0; opacity: .7; }
 }
 
+/* Account opt-out covers portals, CSS keyframes, scrolling and hover movement.
+   Keep state/visibility styles intact so dialogs and disclosures still work. */
+html[data-forwardx-motion-disabled],
+html[data-forwardx-motion-disabled] *,
+html[data-forwardx-motion-disabled] *::before,
+html[data-forwardx-motion-disabled] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+html[data-forwardx-motion-disabled] .pearl-button:hover,
+html[data-forwardx-motion-disabled] .pearl-button:active,
+html[data-forwardx-motion-disabled] .pearl-stat:hover,
+html[data-forwardx-motion-disabled] .pearl-hover-card:hover,
+html[data-forwardx-motion-disabled] .pearl-card:hover {
+  transform: none !important;
+}
+html[data-forwardx-motion-disabled] .auth-network-line-trace { stroke-dashoffset: 0 !important; }
+html[data-forwardx-motion-disabled] [class*="hover:translate-"],
+html[data-forwardx-motion-disabled] [class*="hover:-translate-"],
+html[data-forwardx-motion-disabled] [class*="hover:scale-"] {
+  translate: none !important;
+  scale: none !important;
+}
+
 /* Finite animations only. Respect both OS accessibility and background tabs. */
 @media (prefers-reduced-motion: reduce) {
   [data-sidebar="spacer"], [data-sidebar="container"], [data-mobile-sidebar="true"],

@@ -1,4 +1,6 @@
 import { t as translateText } from "@/i18n";
+import HostLoad from "./HostLoad";
+import { formatHostLoad } from "@shared/hostLoad";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -397,7 +399,11 @@ export default function HostCard({
       value: cpuUsage,
       valueLabel: `${cpuUsage}%`,
       progressClass: metricUsageProgressClass(cpuUsage, isOnline),
-      tooltip: host.cpuInfo ? translateText("CPU 使用率 {0}%\n{1}", [cpuUsage, host.cpuInfo]) : translateText("CPU 使用率 {0}%", [cpuUsage]),
+      tooltip: [
+        translateText("CPU 使用率 {0}%", [cpuUsage]),
+        host.cpuInfo,
+        `${translateText("负载")} ${formatHostLoad(latestMetric)}`,
+      ].filter(Boolean).join("\n"),
     },
     {
       key: "memory",
@@ -605,9 +611,10 @@ export default function HostCard({
           ) : (
           <div className="space-y-3 border-t border-border/30 pt-2">
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
-                <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground flex shrink-0 items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
+                <HostLoad metric={latestMetric} showLabel={false} className="text-muted-foreground" />
+                <span className="ml-auto shrink-0 font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
               </div>
               <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
                 {host.cpuInfo || translateText("未上报 CPU 型号")}

@@ -74,14 +74,13 @@ export default function OperationsPage() {
     { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server, tone: "amber" as const },
   ];
   return <DashboardLayout><div className="mx-auto max-w-[1600px] space-y-6">
-    <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p><p className="mt-1 text-xs text-muted-foreground">{t("流量与财务汇总约每分钟更新")}</p></div>
       <div className="flex flex-wrap items-center gap-3">
         <OperationsRefreshSelect seconds={autoRefresh.seconds} onChange={autoRefresh.onChange} />
         <Button variant="outline" onClick={refresh} disabled={overview.isFetching || sources.isFetching}><RefreshCw className="mr-2 size-4" />{t("刷新")}</Button>
       </div>
     </div>
     {(import.meta as any).env?.VITE_FORWARDX_DEV_PANEL === "1" && <p className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-2 text-sm text-muted-foreground">{t("本地演示数据，不代表真实流量或 IP 位置。")}</p>}
-    <OperationsMonitorPanel interval={refreshInterval} />
     <OperationsDateFilter from={from} to={to} minimum={minimum} today={today} onFromChange={setFrom} onToChange={setTo}
       onApply={() => { setDates({ from, to }); setPage(0); }}
       onToday={() => { const value = operationsDate(); setFrom(value); setTo(value); setDates({ from: value, to: value }); setPage(0); }}
@@ -118,6 +117,7 @@ export default function OperationsPage() {
       <Card><CardHeader><CardTitle className="text-base">{t("主机离线记录")}</CardTitle></CardHeader><CardContent className="space-y-3">{overview.data?.availability.filter(row => Number(row.offlineSeconds) > 0).map(row => <div key={row.hostId} className="flex justify-between gap-3 text-sm"><span className="truncate">{row.name || `#${row.hostId}`}</span><span className="shrink-0 text-muted-foreground">{t("{0} 次 · {1} 分钟", [row.incidents, (Number(row.offlineSeconds) / 60).toFixed(1)])}</span></div>)}<p className="text-xs text-muted-foreground">{t("仅统计已观测到的离线时段，监控中断不视为主机离线。")}</p></CardContent></Card>
     </div>
     <Card><CardHeader><CardTitle className="text-base">{t("转发组事件")}</CardTitle></CardHeader><CardContent className="space-y-3">{overview.data?.events.map(row => <div key={row.id} className="flex flex-col gap-1 border-b pb-3 text-sm last:border-0 sm:flex-row sm:gap-4"><span className="shrink-0 text-xs text-muted-foreground">{time(row.createdAt)}</span><span className="min-w-0 break-words">{row.message || row.type}</span></div>)}{!overview.data?.events.length && <p className="text-sm text-muted-foreground">{t("暂无数据")}</p>}</CardContent></Card>
+    <OperationsMonitorPanel interval={refreshInterval} />
     <Dialog open={confirm !== null} onOpenChange={open => !open && setConfirm(null)}><DialogContent><DialogHeader><DialogTitle>{confirm === "collect" ? t("开启来源采集") : t("补全本地定位")}</DialogTitle><DialogDescription>{confirm === "collect" ? t("将保存入口可见的来源 IP、关联规则和采样字节数，保留 30 天。最多采集每台主机每天 5000 个 IP/规则组合，关闭不影响转发。请确认符合你的隐私政策。") : t("使用内置 IP 库处理当前用户及日期范围内最多 512 个待定位来源，不发送外部请求。内网和库中未知地址不会推测位置。")}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setConfirm(null)}>{t("取消")}</Button><Button onClick={() => { if (confirm === "collect") collection.mutate({ enabled: true }); else resolve.mutate({ ...scopedDates, consent: true, after: geoCursor }); setConfirm(null); }}>{t("确认")}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={!!selectedIp} onOpenChange={open => !open && setSelectedIp("")}><DialogContent className="max-w-2xl"><DialogHeader><DialogTitle>{selectedIp}</DialogTitle><DialogDescription>{t("关联规则与采样流量（最多展示 100 项）")}</DialogDescription></DialogHeader><div className="max-h-[60vh] space-y-3 overflow-y-auto">{details.error && <p className="text-sm text-destructive">{details.error.message}</p>}{details.isLoading && <p>{t("加载中")}</p>}{details.data?.map(row => <div key={`${row.hostId}:${row.ruleId}`} className="rounded-lg border p-3 text-sm"><div className="flex justify-between gap-3"><span>{row.ruleName || `#${row.ruleId}`}</span><span className="shrink-0">{sourceUsage(row)}</span></div><p className="mt-1 text-xs text-muted-foreground">{row.hostName || `#${row.hostId}`} · {row.username || "—"} · {time(row.lastSeen)}</p></div>)}</div></DialogContent></Dialog>
   </div></DashboardLayout>;

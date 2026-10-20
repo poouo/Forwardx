@@ -1,4 +1,5 @@
 import { t as translateText } from "@/i18n";
+import { useMotionEnabled } from "@/components/MotionPolicy";
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -160,7 +161,8 @@ function TcpingDetailDialog({
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
   const tcpingStats = useMemo(() => getLatencyStabilityStats(rawChartData, counterStatistics ?? null), [rawChartData, counterStatistics]);
-  const shouldAnimateChart = open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
+  const motionEnabled = useMotionEnabled();
+  const shouldAnimateChart = motionEnabled && open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
 
   useEffect(() => {
     if (shouldAnimateChart) tcpingAnimatedKeys.add(ruleId);

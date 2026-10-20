@@ -18,7 +18,8 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/localizedToast";
-import HostChinaHealthSettings, { ChinaHealthStatus, createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft } from "./HostChinaHealthSettings";
+import HostChinaHealthSettings, { createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft } from "./HostChinaHealthSettings";
+import HostResourceAlertSettings from "./HostResourceAlertSettings";
 
 type ServiceForm = {
   name: string;
@@ -224,7 +225,6 @@ function ServiceCard({
         <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
           <ServiceActionButtons service={service} onEdit={onEdit} onDelete={onDelete} />
         </div>
-        <ChinaHealthStatus health={service.health} />
       </CardContent>
     </Card>
   );
@@ -296,10 +296,6 @@ export default function HostProbeServiceManager({
   const createMutation = trpc.hosts.createProbeService.useMutation({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success(translateText("服务已添加")); },
     onError: (err) => toast.error(err.message || translateText("添加服务失败")),
-  });
-  const acknowledgeAction = trpc.hosts.acknowledgeProbeHealthAction.useMutation({
-    onSuccess: () => { void utils.hosts.probeServices.invalidate(); toast.success(translateText("已记录商家结果核对")); },
-    onError: error => toast.error(error.message),
   });
   const updateMutation = trpc.hosts.updateProbeService.useMutation({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setEditingId(null); setForm(defaultForm); toast.success(translateText("服务已更新")); },
@@ -427,6 +423,7 @@ export default function HostProbeServiceManager({
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end"><HostResourceAlertSettings hosts={hosts as { id: number; name: string }[]} /></div>
       {!hideViewModeToggle && (
       <div className="flex justify-end">
         <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
@@ -546,7 +543,6 @@ export default function HostProbeServiceManager({
                           <div>
                             <div className="font-medium">{service.name}</div>
                             <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{service.method}</Badge>
-                            <ChinaHealthStatus health={service.health} />
                           </div>
                         </div>
                       </TableCell>
@@ -600,11 +596,11 @@ export default function HostProbeServiceManager({
                 </div>
               </div>
             </div>
-            <div className={`grid gap-2.5 ${form.method === "tcping" ? "sm:grid-cols-[minmax(0,1fr)_8rem]" : ""}`}>
+            <div className={`grid min-w-0 gap-2.5 ${form.method === "tcping" ? "grid-cols-[minmax(0,1fr)_5.5rem] sm:grid-cols-[minmax(0,1fr)_8rem]" : ""}`}>
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("IP 地址 / 域名")}</Label><Input className="h-9 sm:h-8" value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder={translateText("1.1.1.1 或 example.com")} /></div>
               {form.method === "tcping" && <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("目标端口")}</Label><Input className="h-9 sm:h-8" type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
             </div>
-            <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_8rem]">
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6.5rem] gap-2.5 sm:grid-cols-[minmax(0,1fr)_8rem]">
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("选择主机")}</Label><Select disabled={form.health.enabled} value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger className="h-9 sm:h-8"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{translateText("所有主机")}</SelectItem><SelectItem value="exclude">{translateText("排除主机")}</SelectItem><SelectItem value="specific">{translateText("特定主机")}</SelectItem></SelectContent></Select></div>
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("服务运行时间")}</Label><Input className="h-9 sm:h-8" type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
             </div>
@@ -652,20 +648,6 @@ export default function HostProbeServiceManager({
               </div>
             )}
             <HostChinaHealthSettings value={form.health} onChange={health => setForm(previous => ({ ...previous, health }))} />
-            {editingId && (() => {
-              const health = (services as any[]).find(service => Number(service.id) === editingId)?.health;
-              const action = health?.blockedAction || health?.lastAction;
-              if (!form.health.enabled || !health?.enabled) return null;
-              const actionLabels: Record<string, string> = { pending: "换 IP 请求处理中", uncertain: "换 IP 结果不明确", accepted: "商家接口已接收请求", not_executed: "Agent 未执行请求", succeeded: "商家接口确认成功", sync_skipped: "商家成功，面板地址同步已跳过", sync_failed: "商家成功，面板同步失败" };
-              return <div className="space-y-2 rounded-lg border p-3">
-                <ChinaHealthStatus health={health} />
-                {action && <p className="text-xs text-muted-foreground">{translateText(actionLabels[action.status] || action.status)} · {new Date(action.createdAt * 1000).toLocaleString()}{action.newIp ? ` · ${action.newIp}` : ""}</p>}
-                {action && ["pending", "uncertain"].includes(action.status) && !action.acknowledged && <Button variant="outline" size="sm" disabled={acknowledgeAction.isPending || Date.now() / 1000 - action.createdAt < 150} onClick={async () => {
-                  const ok = await confirmDialog({ title: translateText("核对商家换 IP 结果"), description: translateText("请先在商家确认上次请求已结束。此操作只解除未知结果保护，不会重发上次请求；当前故障仍不会重复换 IP。"), confirmText: translateText("已核对，解除保护") });
-                  if (ok) acknowledgeAction.mutate({ serviceId: editingId });
-                }}>{translateText("已核对商家结果")}</Button>}
-              </div>;
-            })()}
           </HostProbeServiceModeTabs>
           <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>{translateText("取消")}</Button>

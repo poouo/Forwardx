@@ -6,6 +6,8 @@ Administrators can open **Management → Operations** to view today or a date ra
 
 Select 5s, 10s, 30s or Off beside Refresh. The default is 30s, remembered per account in this browser. Traffic, source IPs, finance and open details share the selected interval. Refresh pauses when you leave the dashboard or hide the tab, and resumes when you return. Off still allows manual refresh and queries after changing filters.
 
+This interval controls browser reads, not aggregate recomputation. Traffic trends/rankings and financial summaries refresh in the background about once a minute; repeated reads reuse the result for the exact account/date scope. A new scope is computed on first access. Global resource monitoring, source-IP lists and paginated ledgers retain their own query/refresh behavior. Balance checks and billing remain live.
+
 ## Quick workflow
 
 1. Select the Beijing-time date range and user. **Admin** covers only the current administrator's account; choose all users for site-wide totals.

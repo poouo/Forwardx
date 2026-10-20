@@ -151,7 +151,7 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
         failureReason: "session_replaced",
       };
     }
-    await touchAuthSession(found.id, normalized.sid, sessionKind).catch((error) => {
+    await touchAuthSession(found.id, normalized.sid, sessionKind, activeSession).catch((error) => {
       console.warn(`[Auth] session touch failed userId=${found.id} kind=${sessionKind}: ${error instanceof Error ? error.message : String(error)}`);
     });
 

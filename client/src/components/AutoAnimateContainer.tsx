@@ -1,4 +1,4 @@
-import { useAutoAnimate } from "@formkit/auto-animate/react";
+import autoAnimate from "@formkit/auto-animate";
 import {
   type ComponentPropsWithoutRef,
   type ElementType,
@@ -8,6 +8,7 @@ import {
   useRef,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useMotionEnabled } from "./MotionPolicy";
 
 type AutoAnimateContainerProps<T extends ElementType = "div"> = {
   as?: T;
@@ -49,11 +50,6 @@ function getVisibleChildCount(container: Element) {
   return count;
 }
 
-function shouldSkipMotion() {
-  return typeof window === "undefined"
-    || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
 export default function AutoAnimateContainer<T extends ElementType = "div">({
   as,
   children,
@@ -62,24 +58,37 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
   layout,
   ...props
 }: AutoAnimateContainerProps<T>) {
+  const motionEnabled = useMotionEnabled();
   const elementRef = useRef<Element | null>(null);
   const previousRectsRef = useRef<Map<Element, DOMRect>>(new Map());
   const frameRef = useRef<number | null>(null);
   const animationsRef = useRef<WeakMap<Element, Animation>>(new WeakMap());
-  const [parent] = useAutoAnimate<Element>({
-    duration,
-    easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-  });
   const Component = (as || "div") as ElementType;
   const animateLayout = layout ?? standardCardGridClassPattern.test(className || "");
   const setRef = useCallback((node: Element | null) => {
     elementRef.current = node;
-    parent(node);
-  }, [parent]);
+  }, []);
 
   useLayoutEffect(() => {
     const container = elementRef.current;
-    if (!animateLayout || !container || typeof window === "undefined" || typeof ResizeObserver === "undefined") {
+    if (!motionEnabled) {
+      Array.from(container?.children || []).forEach(child => {
+        child.getAnimations?.().forEach(animation => animation.cancel());
+      });
+      return;
+    }
+    if (!(container instanceof HTMLElement)) return;
+    const controller = autoAnimate(container, {
+      duration,
+      easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+    });
+    // Fully release observers and polling when disabled, rather than just hiding motion.
+    return () => controller.destroy?.();
+  }, [duration, motionEnabled, as]);
+
+  useLayoutEffect(() => {
+    const container = elementRef.current;
+    if (!motionEnabled || !animateLayout || !container || typeof window === "undefined" || typeof ResizeObserver === "undefined") {
       previousRectsRef.current = new Map();
       return;
     }
@@ -104,7 +113,7 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
       });
       const nextRects = measureChildren(container);
 
-      if (previousRects.size > 0 && !shouldSkipMotion()) {
+      if (previousRects.size > 0) {
         nextRects.forEach((nextRect, child) => {
           const previousRect = animatedChildren.has(child) ? visibleRects.get(child) : previousRects.get(child);
           if (!previousRect) return;
@@ -164,7 +173,7 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
       previousRectsRef.current = new Map();
       Array.from(container.children).forEach((child) => animationsRef.current.get(child)?.cancel());
     };
-  }, [animateLayout, duration]);
+  }, [animateLayout, duration, motionEnabled]);
 
   return (
     <Component ref={setRef} className={cn(className)} {...props}>

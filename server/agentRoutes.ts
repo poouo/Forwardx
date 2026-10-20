@@ -27,6 +27,7 @@ import { scheduleHostDdnsUpdate } from "./hostDdns";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
+import { registerAgentTrafficShutdownRoutes } from "./hostTrafficShutdown";
 import { invalidateAgentDesiredStateCache, registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
 import { handleHostAddressChanged, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
@@ -454,6 +455,7 @@ registerAgentHeartbeatRoute(agentApiRouter);
 registerAgentStatusRoutes(agentApiRouter);
 registerAgentSelfTestRoutes(agentApiRouter);
 registerAgentReportRoutes(agentApiRouter);
+registerAgentTrafficShutdownRoutes(agentApiRouter);
 
 agentApiRouter.post("/api/agent/migration-rollback", async (req: Request, res: Response) => {
   try {

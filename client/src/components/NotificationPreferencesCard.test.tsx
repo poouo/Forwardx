@@ -18,6 +18,8 @@ test("notification toggles are accessible, bilingual, compact and retain checked
         assert.match(html, /disabled=""/);
         assert.match(html, /<label[^>]*for="([^"]+)"/);
         assert.match(html, /shrink-0/);
+        assert.doesNotMatch(html, /<p\b/);
+        assert.match(html, /tabindex="0"/);
         if (language === "en") assert.doesNotMatch(html, /\p{Script=Han}/u);
       }
       for (const key of ["通知偏好", "通知偏好已保存", "工单通知设置已保存", "关闭后停止所有工单推送，不影响工单和个人偏好。", "管理员已关闭工单推送，个人偏好仍会保留。", "仅在管理员选择推送公告时发送。", "通知渠道启用并绑定后才能接收推送。"])

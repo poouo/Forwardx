@@ -31,6 +31,15 @@ export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
   settings: "系统设置",
 };
 
+export function getSidebarMenuLabel(key: SidebarMenuKey, isAdmin = false): string {
+  return key === "affiliates" && isAdmin ? "推广管理" : SIDEBAR_MENU_LABELS[key];
+}
+
+// Visibility is independent of role, feature enablement and historical records.
+export function isSidebarMenuVisible(settings: SidebarMenuSettings, key?: SidebarMenuKey): boolean {
+  return !key || settings[key] !== false;
+}
+
 export const DEFAULT_SIDEBAR_MENU_SETTINGS: SidebarMenuSettings = SIDEBAR_MENU_KEYS.reduce((acc, key) => {
   acc[key] = key !== "plugins" && key !== "tickets" && key !== "affiliates";
   return acc;
