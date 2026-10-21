@@ -118,7 +118,7 @@ function ChartTooltip({ active, payload, label, services, allServices }: any) {
               </span>
               <span className="text-right">
                 <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
-                  {raw?.isTimeout ? translateText("超时") : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
+                  {raw?.isTimeout ? (service.method === "url" ? translateText("请求失败") : translateText("超时")) : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
                 </span>
                 {Number(raw?.probeCount) > 1 && Number(raw?.probeSuccesses) < Number(raw?.probeCount) ? (
                   <span className="block text-[10px] font-normal text-muted-foreground">
@@ -411,8 +411,9 @@ export default function HostProbeServiceLatencyDialog({
         </div>
         <LatencyStabilityStats stats={stats} sampleLabel={translateText("探测次数")}
           failureLabel={visibleServices.length > 0 && visibleServices.every((service) => service.method === "ping")
-            ? translateText("Ping 丢包率") : visibleServices.length > 0 && visibleServices.every((service) => service.method !== "ping")
-              ? translateText("TCP 连接失败率") : translateText("探测失败率")} />
+            ? translateText("Ping 丢包率") : visibleServices.length > 0 && visibleServices.every((service) => service.method === "url")
+              ? translateText("URL 请求失败率") : visibleServices.length > 0 && visibleServices.every((service) => service.method === "tcping")
+                ? translateText("TCP 连接失败率") : translateText("探测失败率")} />
         <HostAvailabilityHistory days={history.days} selectedDay={history.selectedDay} onSelect={history.setSelectedDay}
           summaries={availability.data?.days} loading={availability.isLoading} error={availability.isError}
           detail={availabilityDetail.data} detailLoading={availabilityDetail.isLoading} detailError={availabilityDetail.isError} />

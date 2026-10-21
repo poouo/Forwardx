@@ -5,7 +5,7 @@ import { getRouteModule } from "@/lib/routeModules";
 
 export function RoutePagePlaceholder() {
   return (
-    <div role="status" aria-label={t("加载中")} className="mx-auto w-full max-w-7xl space-y-4 p-4 sm:p-6">
+    <div role="status" aria-label={t("加载中")} className="w-full min-w-0 space-y-4 p-4 sm:p-6">
       <div className="h-6 w-32 rounded bg-muted" />
       <div className="h-24 rounded-xl border border-border/50 bg-muted/30" />
       <span className="sr-only">{t("加载中")}</span>

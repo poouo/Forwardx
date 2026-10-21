@@ -2000,11 +2000,11 @@ export function ForwardGroupsContent({
           <Card className="hidden border-border/40 bg-card/60 sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <Table>
+              <Table floatingScrollbar>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[44px] px-2" aria-label={translateText("排序")} />
-                    <TableHead>{translateText("状态")}</TableHead>
+                    <TableHead className="w-px whitespace-nowrap">{translateText("状态")}</TableHead>
                     <TableHead>{translateText("名称")}</TableHead>
                     <TableHead>{translateText("成员/链路")}</TableHead>
                     <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? translateText("所属主机") : activeGroupMode === "exit" ? translateText("出口") : activeGroupMode === "entry" ? "DDNS" : translateText("入口")}</TableHead>
@@ -2035,8 +2035,8 @@ export function ForwardGroupsContent({
                           className="mx-auto"
                         />
                       </TableCell>
-                      <TableCell className="py-3">
-                        <div className="flex items-center gap-1.5">
+                      <TableCell className="w-px whitespace-nowrap py-3">
+                        <div className="flex w-max items-center gap-1.5 [&>*]:shrink-0">
                           {renderGroupEnabledSwitch(group)}
                           {groupStatusBadge(group)}
                         </div>
@@ -2054,7 +2054,7 @@ export function ForwardGroupsContent({
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("转发规则中直接选择") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("规则使用时监听入口端口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("隧道出口组") : group.lastDdnsValue || translateText("未切换")}</div>
                       </TableCell>
                       <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : group.trafficSummary?.ruleCount ?? "—"}</TableCell>
-                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} /></TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact table showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} /></TableCell>
                       <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
@@ -2087,7 +2087,7 @@ export function ForwardGroupsContent({
         </Card>
           </>
         )}
-          <PersistentPagination pagination={groupPagination} itemName={paginationItemName} />
+          <PersistentPagination pagination={groupPagination} itemName={paginationItemName} className="mt-5" />
         </>
       ) : (
         <Card className="border-border/40 bg-card/60">

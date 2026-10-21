@@ -13,21 +13,9 @@ import { fetchPublicMonitor, PUBLIC_MONITOR_QUERY_PATHS } from "./lib/publicMoni
 import { fetchManualProbe, MANUAL_PROBE_QUERY_PATHS } from "./lib/manualProbe";
 import { createTRPCQueryUtils } from "@trpc/react-query";
 import { installDashboardCache } from "./lib/dashboardCache";
+import { readSiteBranding, saveSiteBranding } from "./lib/siteBranding";
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
-
-const cachedSiteTitle = (() => {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem("forwardx.siteTitle")?.trim() || "";
-  } catch {
-    return "";
-  }
-})();
-
-if (cachedSiteTitle) {
-  document.title = cachedSiteTitle;
-}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -178,10 +166,15 @@ const trpcClient = trpc.createClient({
 
 async function bootstrap() {
   await mobileAuth.hydrateNative();
+  document.title = readSiteBranding().siteTitle;
   // Start network work while locale detection and the eagerly preloaded App are
   // being prepared. React observes the same queries, so it does not repeat them.
   const api = createTRPCQueryUtils({ queryClient, client: trpcClient });
   if (!mobileAuth.isNative || mobileAuth.hasPanelUrl()) {
+    // Public branding starts alongside auth, not after mounting the sidebar.
+    void api.system.publicInfo.fetch().then(info => {
+      document.title = saveSiteBranding(info).siteTitle;
+    }).catch(() => { /* Preserve the last public branding on transient failures. */ });
     if (!window.location.pathname.startsWith("/login")) void api.setup.status.prefetch();
     void api.auth.me.fetch().then(user => {
       if (!user || window.location.pathname !== "/") return;

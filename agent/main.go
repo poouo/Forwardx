@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.199"
+var Version = "2.2.200"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2442,6 +2442,9 @@ type hostProbeServiceProbe struct {
 	TargetIP        string `json:"targetIp"`
 	TargetPort      int    `json:"targetPort"`
 	Method          string `json:"method"`
+	TargetURL       string `json:"targetUrl"`
+	TimeoutSeconds  int    `json:"timeoutSeconds"`
+	ExpectedStatus  int    `json:"expectedStatus"`
 	IntervalSeconds int    `json:"intervalSeconds"`
 }
 type forwardGroupProbe struct {

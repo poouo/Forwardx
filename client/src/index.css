@@ -615,6 +615,42 @@
   background: transparent;
 }
 
+/* Horizontal control stays reachable while a long table extends below
+   the viewport. The body portal avoids card transforms and overflow clipping. */
+.floating-table-scrollbar {
+  position: fixed;
+  z-index: 35;
+  height: 16px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: pointer;
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 0 0 1px var(--border), 0 2px 8px rgb(0 0 0 / 10%);
+}
+
+.floating-table-scrollbar-thumb {
+  position: absolute;
+  top: 4px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--foreground) 32%, var(--card));
+  cursor: grab;
+}
+
+.floating-table-scrollbar:hover .floating-table-scrollbar-thumb,
+.floating-table-scrollbar:focus-visible .floating-table-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 48%, var(--card));
+}
+
+.floating-table-scrollbar:active .floating-table-scrollbar-thumb { cursor: grabbing; }
+
+.floating-table-scrollbar:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .dialog-scroll-area {
   scrollbar-gutter: stable;
 }
@@ -688,15 +724,16 @@
   }
 
   .rule-card-grid-static {
-    animation: rule-card-grid-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: rule-card-grid-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
     backface-visibility: hidden;
-    contain: layout paint;
+    /* Layout isolation must not clip card shadows or hover/focus rings. */
+    contain: layout;
     transform: none !important;
     will-change: opacity, clip-path, transform;
   }
 
   .rule-card-grid-static > * {
-    animation: rule-card-item-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: rule-card-item-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
     backface-visibility: hidden;
     transform: none !important;
     text-rendering: geometricPrecision;
@@ -720,7 +757,7 @@
     animation-name: rule-card-item-compact-enter;
   }
   .host-management-tabs {
-    contain: layout paint;
+    contain: layout;
   }
 
   .host-management-tabs [role="tab"] {
@@ -732,17 +769,15 @@
   }
 
   .host-card-grid-static {
-    animation: host-card-grid-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: host-card-grid-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
     backface-visibility: hidden;
-    contain: layout paint;
-    margin-top: -4px;
-    padding-top: 4px;
+    contain: layout;
     transform: none !important;
     will-change: opacity, clip-path, transform;
   }
 
   .host-card-grid-static > * {
-    animation: host-card-item-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: host-card-item-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
     animation-delay: var(--host-card-enter-delay, 0ms);
     backface-visibility: hidden;
     transform: none !important;
@@ -780,7 +815,7 @@
   }
 
   .host-card-mode-content {
-    animation: host-card-content-soft-enter 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: host-card-content-soft-enter 190ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
     transform: none !important;
     will-change: opacity, clip-path, transform;
   }
@@ -949,6 +984,7 @@
   }
 
   .dialog-overlay[data-state="open"] {
+    background-color: var(--dialog-overlay-tint);
     animation: dialog-overlay-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
@@ -958,6 +994,8 @@
 
   .dialog-overlay[data-state="open"]::before,
   .dialog-overlay[data-state="open"]::after {
+    opacity: 1;
+    transform: translateY(0);
     animation: dialog-overlay-material-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
@@ -988,6 +1026,9 @@
   }
 
   .dialog-panel[data-state="open"] {
+    /* Open state must stay visible even when account preferences disable keyframes. */
+    opacity: 1;
+    transform: translateY(0);
     animation: dialog-panel-in 190ms cubic-bezier(0.22, 1, 0.36, 1) 10ms both;
   }
 
@@ -1475,7 +1516,7 @@
 
 }
 
-/* Host list: keep pinned columns opaque while preserving one subtle row hover. */
+/* Host list: keep the settings gutter opaque while preserving a subtle row hover. */
 .host-table-shell {
   isolation: isolate;
 }
@@ -1491,34 +1532,4 @@
 
 .host-table-row:hover > .host-table-frozen-cell {
   background: color-mix(in oklab, var(--muted) 28%, var(--card));
-}
-
-.host-table-frozen-left::after,
-.host-table-frozen-right::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 10px;
-  content: "";
-  pointer-events: none;
-}
-
-.host-table-frozen-left::after {
-  right: 0;
-  transform: translateX(100%);
-  background: linear-gradient(to right, rgb(15 23 42 / 8%), transparent);
-}
-
-.host-table-frozen-right::before {
-  left: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(to left, rgb(15 23 42 / 8%), transparent);
-}
-
-.dark .host-table-frozen-left::after {
-  background: linear-gradient(to right, rgb(0 0 0 / 24%), transparent);
-}
-
-.dark .host-table-frozen-right::before {
-  background: linear-gradient(to left, rgb(0 0 0 / 24%), transparent);
 }

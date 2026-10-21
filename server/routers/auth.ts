@@ -28,6 +28,8 @@ import {
 } from "../authRateLimit";
 import { pruneMapEntries, setBoundedMapValue } from "../boundedCache";
 import { getNotificationSettings } from "../notificationSettings";
+import { normalizeRuleTableLayout, ruleTableLayoutSchema } from "../../shared/ruleTableLayout";
+import { normalizeHostTableLayout, hostTableLayoutSchema } from "../../shared/hostTableLayout";
 
 const emailCodeStore = new Map<string, { code: string; expiresAt: number; lastSentAt: number; attempts: number }>();
 const emailSendIpStore = new Map<string, LoginFailEntry>();
@@ -602,6 +604,22 @@ export const authRouter = router({
       supportTicketNotificationSubscribed: user?.supportTicketNotificationSubscribed !== false,
     };
   }),
+
+  updateRuleTableLayout: protectedProcedure
+    .input(z.object({ accountId: z.number().int().positive(), layout: ruleTableLayoutSchema }).strict())
+    .mutation(async ({ input, ctx }) => {
+      if (input.accountId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
+      await db.updateUserProfile(ctx.user.id, { ruleTableLayout: JSON.stringify(normalizeRuleTableLayout(input.layout)) });
+      return { success: true };
+    }),
+
+  updateHostTableLayout: protectedProcedure
+    .input(z.object({ accountId: z.number().int().positive(), layout: hostTableLayoutSchema }).strict())
+    .mutation(async ({ input, ctx }) => {
+      if (input.accountId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
+      await db.updateUserProfile(ctx.user.id, { hostTableLayout: JSON.stringify(normalizeHostTableLayout(input.layout)) });
+      return { success: true };
+    }),
 
   updateProfile: protectedProcedure
     .input(z.object({

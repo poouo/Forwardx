@@ -176,6 +176,7 @@ export const PLUGIN_RESOURCE_COLUMN_TYPES = [
 export type PluginResourceColumnType = typeof PLUGIN_RESOURCE_COLUMN_TYPES[number];
 
 export const PLUGIN_RESOURCE_FIELD_TYPES = [
+  "sysctl",
   "text",
   "textarea",
   "password",

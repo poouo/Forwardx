@@ -73,7 +73,7 @@ export default function OperationsPage() {
     { title: t("来源 IP"), value: String(sources.data?.totals?.ips ?? "—"), icon: Globe2, tone: "violet" as const },
     { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server, tone: "amber" as const },
   ];
-  return <DashboardLayout><div className="mx-auto max-w-[1600px] space-y-6">
+  return <DashboardLayout><div className="w-full min-w-0 space-y-6">
     <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p><p className="mt-1 text-xs text-muted-foreground">{t("流量与财务汇总约每分钟更新")}</p></div>
       <div className="flex flex-wrap items-center gap-3">
         <OperationsRefreshSelect seconds={autoRefresh.seconds} onChange={autoRefresh.onChange} />

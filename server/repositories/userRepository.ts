@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
-import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions } from "../../drizzle/schema";
+import { InsertUser, users, forwardRules, trafficBillingUsage, userSubscriptions, ruleGroups, ruleGroupMembers } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { hashPassword, verifyPassword, verifyPasswordAgainstDummy } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
@@ -121,7 +121,7 @@ export async function verifyUserPassword(userId: number, password: string) {
   return verifyPassword(password, user.password);
 }
 
-export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean; discordAnnouncementSubscribed?: boolean; supportTicketNotificationSubscribed?: boolean; animationsEnabled?: boolean }) {
+export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean; discordAnnouncementSubscribed?: boolean; supportTicketNotificationSubscribed?: boolean; animationsEnabled?: boolean; ruleTableLayout?: string; hostTableLayout?: string }) {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
@@ -679,9 +679,13 @@ export async function updateUserRole(userId: number, role: "user" | "admin") {
 }
 
 export async function deleteUser(userId: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(users).where(eq(users.id, userId));
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return;
+    await db.delete(ruleGroupMembers).where(eq(ruleGroupMembers.userId, userId));
+    await db.delete(ruleGroups).where(eq(ruleGroups.userId, userId));
+    await db.delete(users).where(eq(users.id, userId));
+  });
 }
 
 /** 更新用户流量管理设置（管理员操作） */

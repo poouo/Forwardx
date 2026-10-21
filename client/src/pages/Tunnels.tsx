@@ -4320,7 +4320,7 @@ function TunnelsContent() {
           <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <Table>
+              <Table floatingScrollbar>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[44px] px-2" aria-label={translateText("排序")} />
@@ -4387,7 +4387,7 @@ function TunnelsContent() {
                       <TableCell className="hidden py-3 md:table-cell">
                         {renderTunnelLatencyBreakdown(tunnel, true, 2)}
                       </TableCell>
-                      <TableCell className="py-3"><ResourceTrafficSummary summary={tunnel.trafficSummary} compact /></TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={tunnel.trafficSummary} compact table /></TableCell>
                       <TableCell className="py-3">
                         {supported ? (
                           renderTunnelEnabledSwitch(tunnel)

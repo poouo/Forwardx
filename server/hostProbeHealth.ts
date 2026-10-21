@@ -58,6 +58,7 @@ export async function saveProbeHealth(service: any, input?: HostChinaHealthConfi
   if (config.notifyUserId && !await db.getUserById(config.notifyUserId)) throw new Error("通知用户不存在");
   const hostId = Number(service.hostIds?.[0]);
   if (config.enabled) {
+    if (service.method === "url") throw new Error("国内健康检测仅支持 Ping / TCPing");
     if (service.hostScope !== "specific" || service.hostIds?.length !== 1) throw new Error("国内健康检测必须选择一台特定主机");
     if (!await db.getHostById(hostId)) throw new Error("检测主机不存在");
     if (!isIP(service.targetIp)) throw new Error("国内健康检测请填写固定公网 IP，不使用域名");

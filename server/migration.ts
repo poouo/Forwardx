@@ -720,6 +720,8 @@ const IMPORT_TABLE_ORDER = [
   "forward_groups",
   "forward_group_members",
   "forward_rules",
+  "rule_groups",
+  "rule_group_members",
   "forward_rule_tunnel_exits",
   "tunnel_hops",
   "agent_tokens",
@@ -1169,6 +1171,16 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.groupId = mapRequiredId(maps, "host_groups", source.groupId);
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row, existingWhere: { groupId: row.groupId, hostId: row.hostId } };
+
+    case "rule_groups":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      return { row, existingWhere: { userId: row.userId, name: row.name } };
+
+    case "rule_group_members":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.groupId = mapRequiredId(maps, "rule_groups", source.groupId);
+      return { row, existingWhere: { userId: row.userId, ruleId: row.ruleId, groupId: row.groupId } };
 
     case "tunnels":
       row.entryHostId = mapRequiredId(maps, "hosts", source.entryHostId);

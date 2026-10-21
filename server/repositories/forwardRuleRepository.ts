@@ -1,6 +1,6 @@
 ﻿import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
-import { afterDatabaseCommit, executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels, ruleGroupMembers } from "../../drizzle/schema";
+import { afterDatabaseCommit, executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, withDatabaseTransaction } from "../dbRuntime";
 import { queryRaw } from "../dbRuntime";
 import { boolLiteral, boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
@@ -9,6 +9,7 @@ import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/p
 import { recordConfigAuditEvent, shouldAuditConfigPatch } from "../configAudit";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { dashboardSummaries } from "../backgroundSummaryCache";
+import { replacePersonalRuleGroups, withPersonalRuleGroupLock } from "./ruleGroupRepository";
 
 async function invalidateRuleDashboardSummaries(rule: any) {
   if (!rule) return;
@@ -103,6 +104,8 @@ export type ForwardRuleResourceType = "local" | "tunnel" | "chain" | "group";
 
 export type ForwardRuleListQuery = PageRequest & {
   ownerUserId?: number;
+  personalGroupId?: number | null;
+  personalGroupOwnerId?: number;
   /** Root resources whose related metadata may participate in user search. */
   searchVisibleHostIds?: number[];
   searchVisibleTunnelIds?: number[];
@@ -297,6 +300,21 @@ function buildForwardRuleSqlFilter(
   if (ownerUserId > 0) {
     conditions.push(ruleColumn("r", "userId") + " = ?");
     params.push(ownerUserId);
+  }
+
+  if (input.personalGroupId != null) {
+    // A personal filter must never expose another owner's rules, even if an
+    // administrator requests all users alongside a guessed group ID.
+    const personalOwner = Number(input.personalGroupOwnerId || 0);
+    if (personalOwner <= 0) conditions.push("1 = 0");
+    else {
+      conditions.push(ruleColumn("r", "userId") + " = ?");
+      params.push(personalOwner);
+      const membership = "SELECT 1 FROM " + quoteIdentifier("rule_group_members") + " pm INNER JOIN " + quoteIdentifier("rule_groups") + " pg ON " + ruleColumn("pg", "id") + " = " + ruleColumn("pm", "groupId") + " AND " + ruleColumn("pg", "userId") + " = " + ruleColumn("pm", "userId") + " WHERE " + ruleColumn("pm", "ruleId") + " = " + ruleColumn("r", "id") + " AND " + ruleColumn("pm", "userId") + " = ?";
+      conditions.push((input.personalGroupId === 0 ? "NOT EXISTS (" : "EXISTS (") + membership + (input.personalGroupId === 0 ? ")" : " AND " + ruleColumn("pm", "groupId") + " = ?)") );
+      params.push(personalOwner);
+      if (input.personalGroupId !== 0) params.push(input.personalGroupId);
+    }
   }
 
   if (includeEntryHost && Number(input.entryHostId || 0) > 0) {
@@ -1053,14 +1071,22 @@ export async function getForwardGroupChildRulesForMember(memberId: number) {
     .orderBy(desc(forwardRules.createdAt));
 }
 
-export async function createForwardRule(rule: InsertForwardRule) {
+export async function createForwardRule(rule: InsertForwardRule & { personalGroupIds?: number[] }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const payload = { ...(rule as any) };
+  const personalGroupIds = payload.personalGroupIds;
+  delete payload.personalGroupIds;
   if (payload.sortOrder === undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId) {
     payload.sortOrder = await nextForwardRuleSortOrder(Number(payload.userId || 0), await forwardRuleCategoryForPayload(payload));
   }
-  const id = await insertAndGetId("forward_rules", payload);
+  const id = personalGroupIds !== undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId
+    ? await withPersonalRuleGroupLock(Number(payload.userId), () => withDatabaseTransaction(async () => {
+      const id = await insertAndGetId("forward_rules", payload);
+      await replacePersonalRuleGroups(Number(payload.userId), id, personalGroupIds);
+      return id;
+    }))
+    : await insertAndGetId("forward_rules", payload);
   const created = await getForwardRuleById(id).catch(() => undefined);
   await invalidateRuleDashboardSummaries(created);
   await recordConfigAuditEvent({ resourceType: "forward_rule", resourceId: id, hostId: Number((created as any)?.hostId || 0), action: "create", after: created });
@@ -1106,12 +1132,21 @@ export async function reorderForwardRules(category: ForwardRuleSortCategory, ids
   }
 }
 
-export async function updateForwardRule(id: number, data: Partial<InsertForwardRule>) {
+export async function updateForwardRule(id: number, input: Partial<InsertForwardRule> & { personalGroupIds?: number[] }) {
   const db = await getDb();
   if (!db) return;
+  const { personalGroupIds, ...data } = input;
   const audit = shouldAuditConfigPatch(data as any);
   const before = audit ? await getForwardRuleById(id).catch(() => undefined) : undefined;
-  await db.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  const write = async () => (await getDb())!.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  if (personalGroupIds !== undefined) {
+    const owner = before || await getForwardRuleById(id);
+    if (!owner) throw new Error("规则不存在");
+    await withPersonalRuleGroupLock(Number(owner.userId), () => withDatabaseTransaction(async () => {
+      await write();
+      await replacePersonalRuleGroups(Number(owner.userId), id, personalGroupIds);
+    }));
+  } else await write();
   if (audit && before) {
     const after = await getForwardRuleById(id).catch(() => undefined);
     await invalidateRuleDashboardSummaries(before);
@@ -1175,8 +1210,17 @@ export async function settlePendingForwardGroupTemplates(hostId?: number) {
 }
 
 export async function finalizeForwardRuleDelete(id: number) {
+  return withDatabaseTransaction(() => finalizeForwardRuleDeleteInTransaction(id));
+}
+
+async function finalizeForwardRuleDeleteInTransaction(id: number) {
   const db = await getDb();
   if (!db) return;
+  const before = await getForwardRuleById(id);
+  if (!before?.pendingDelete) return;
+  // Serialize membership cleanup with personal-group writes, including when
+  // the owner has already been removed. SQLite's transaction is exclusive.
+  if (getDatabaseKind() !== "sqlite") await queryRaw(`SELECT ${quoteIdentifier("id")} FROM ${quoteIdentifier("users")} WHERE ${quoteIdentifier("id")} = ? FOR UPDATE`, [before.userId]);
   // A removed parallel entry still owns historical counters. Keep its disabled
   // tombstone as an accounting link until the logical rule is removed; it has
   // no live listener and must never be re-applied or reserve a port.
@@ -1189,6 +1233,7 @@ export async function finalizeForwardRuleDelete(id: number) {
       AND parent.${quoteIdentifier("forwardGroupId")} = g.${quoteIdentifier("id")}
       AND g.${quoteIdentifier("groupMode")} = 'port' LIMIT 1`, [id]);
   if (retained.length) return;
+  await db.delete(ruleGroupMembers).where(eq(ruleGroupMembers.ruleId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
   await db.update(forwardGroupMembers).set({
     ruleId: null,

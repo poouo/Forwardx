@@ -20,12 +20,17 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/localizedToast";
 import HostChinaHealthSettings, { createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft } from "./HostChinaHealthSettings";
 import HostResourceAlertSettings from "./HostResourceAlertSettings";
+import HostUrlProbeFields from "./HostUrlProbeFields";
+import { normalizeHostProbeMethod, urlProbeOptionsSchema, type HostProbeMethod } from "@shared/urlProbe";
 
 type ServiceForm = {
   name: string;
-  method: "tcping" | "ping";
+  method: HostProbeMethod;
   targetIp: string;
   targetPort: string;
+  targetUrl: string;
+  timeoutSeconds: number;
+  expectedStatus: number;
   hostScope: "all" | "exclude" | "specific";
   hostIds: number[];
   excludeHostIds: number[];
@@ -43,6 +48,9 @@ const defaultForm: ServiceForm = {
   method: "tcping",
   targetIp: "",
   targetPort: "",
+  targetUrl: "",
+  timeoutSeconds: 5,
+  expectedStatus: 200,
   hostScope: "all",
   hostIds: [],
   excludeHostIds: [],
@@ -71,7 +79,12 @@ function storeServiceViewMode(viewMode: HostProbeServiceViewMode) {
 }
 
 function serviceTarget(service: any) {
+  if (service.method === "url") return service.targetUrl || "—";
   return service.method === "ping" ? service.targetIp : `${service.targetIp}:${service.targetPort || "-"}`;
+}
+
+function serviceMethodLabel(service: any) {
+  return service.method === "url" ? translateText("URL 连接检测") : service.method;
 }
 
 function scopeText(service: any, hostsById: Map<number, any>) {
@@ -93,7 +106,7 @@ function serviceMatchesSearchQuery(service: any, query: string, hostsById: Map<n
     return [hostId, host?.name, host?.entryIp, host?.ipv4, host?.ipv6, host?.ip];
   });
   const status = service?.isEnabled !== false ? "启用 已启用" : "停用 已停用 禁用";
-  const method = service?.method === "ping" ? "ping" : "tcping tcp";
+  const method = service?.method === "url" ? "url http https " + translateText("URL 连接检测") : service?.method === "ping" ? "ping" : "tcping tcp";
   const haystack = [
     service?.id,
     service?.name,
@@ -130,13 +143,16 @@ function ServiceActionButtons({
 }
 
 function buildServiceUpdatePayload(service: any, isEnabled = service?.isEnabled !== false) {
-  const method: ServiceForm["method"] = service?.method === "ping" ? "ping" : "tcping";
+  const method = normalizeHostProbeMethod(service?.method);
   return {
     id: Number(service?.id),
     name: String(service?.name || "").trim(),
     method,
     targetIp: String(service?.targetIp || "").trim(),
     targetPort: method === "tcping" ? Number(service?.targetPort || 0) : null,
+    targetUrl: method === "url" ? service.targetUrl : null,
+    timeoutSeconds: Number(service.timeoutSeconds ?? 5),
+    expectedStatus: Number(service.expectedStatus ?? 200),
     hostScope: service?.hostScope === "exclude" || service?.hostScope === "specific" ? service.hostScope : "all",
     hostIds: Array.isArray(service?.hostIds) ? service.hostIds.map(Number).filter(Boolean) : [],
     excludeHostIds: Array.isArray(service?.excludeHostIds) ? service.excludeHostIds.map(Number).filter(Boolean) : [],
@@ -196,7 +212,7 @@ function ServiceCard({
               </span>
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium" title={service.name}>{service.name}</p>
-                <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{service.method}</Badge>
+                <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{serviceMethodLabel(service)}</Badge>
               </div>
             </div>
           </div>
@@ -353,16 +369,20 @@ export default function HostProbeServiceManager({
 
   const submit = () => {
     const name = form.name.trim();
-    const targetIp = form.targetIp.trim();
+    let targetIp = form.targetIp.trim();
     const targetPort = Number(form.targetPort);
     if (!name) { toast.error(translateText("请输入服务名称")); return; }
-    if (!targetIp) { toast.error(translateText("请输入 IP 地址")); return; }
+    if (form.method === "url") {
+      const parsed = urlProbeOptionsSchema.safeParse({ targetUrl: form.targetUrl, timeoutSeconds: form.timeoutSeconds, expectedStatus: form.expectedStatus });
+      if (!parsed.success) { toast.error(translateText("请检查检测 URL、超时和预期状态码")); return; }
+      targetIp = new URL(parsed.data.targetUrl!).hostname.replace(/^\[|\]$/g, "");
+    } else if (!targetIp) { toast.error(translateText("请输入 IP 地址")); return; }
     if (form.method === "tcping" && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) { toast.error(translateText("目标端口必须在 1-65535 之间")); return; }
     if (form.hostScope === "specific" && form.hostIds.length === 0) { toast.error(translateText("请选择需要运行服务的主机")); return; }
     if (form.health.enabled && (form.hostScope !== "specific" || form.hostIds.length !== 1)) { toast.error(translateText("国内健康检测必须选择一台特定主机")); return; }
     let health;
     try { health = chinaHealthPayload(form.health); } catch { toast.error(translateText("请检查国内健康检测阈值、接口地址、请求头和成功条件")); return; }
-    const payload = { ...form, health, name, targetIp, targetPort: form.method === "tcping" ? targetPort : null, intervalSeconds: Math.max(5, Number(form.intervalSeconds) || 30) };
+    const payload = { ...form, health, name, targetIp, targetUrl: form.method === "url" ? form.targetUrl.trim() : null, targetPort: form.method === "tcping" ? targetPort : null, intervalSeconds: Math.max(5, Number(form.intervalSeconds) || 30) };
     if (editingId) updateMutation.mutate({ ...payload, id: editingId });
     else createMutation.mutate(payload);
   };
@@ -399,9 +419,12 @@ export default function HostProbeServiceManager({
     setEditingId(Number(service.id));
     setForm({
       name: service.name || "",
-      method: service.method === "ping" ? "ping" : "tcping",
+      method: normalizeHostProbeMethod(service.method),
       targetIp: service.targetIp || "",
       targetPort: service.targetPort ? String(service.targetPort) : "",
+      targetUrl: service.targetUrl || "",
+      timeoutSeconds: Number(service.timeoutSeconds ?? 5),
+      expectedStatus: Number(service.expectedStatus ?? 200),
       hostScope: service.hostScope === "exclude" || service.hostScope === "specific" ? service.hostScope : "all",
       hostIds: Array.isArray(service.hostIds) ? service.hostIds.map(Number).filter(Boolean) : [],
       excludeHostIds: Array.isArray(service.excludeHostIds) ? service.excludeHostIds.map(Number).filter(Boolean) : [],
@@ -542,7 +565,7 @@ export default function HostProbeServiceManager({
                           <Activity className="h-4 w-4 text-muted-foreground" />
                           <div>
                             <div className="font-medium">{service.name}</div>
-                            <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{service.method}</Badge>
+                            <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{serviceMethodLabel(service)}</Badge>
                           </div>
                         </div>
                       </TableCell>
@@ -572,9 +595,12 @@ export default function HostProbeServiceManager({
         <DialogContent className="flex max-h-[88vh] flex-col gap-3 overflow-hidden sm:max-w-xl">
           <DialogHeader className="shrink-0">
             <DialogTitle>{editingId ? translateText("编辑服务") : translateText("添加服务")}</DialogTitle>
-            <DialogDescription>{translateText("配置主机 Ping / TCPing 探测服务")}</DialogDescription>
+            <DialogDescription>{translateText("配置主机 Ping / TCPing / URL 连接检测")}</DialogDescription>
           </DialogHeader>
-          <HostProbeServiceModeTabs mode={form.health.enabled ? "china" : "standard"} onModeChange={mode => setForm(previous => applyHostProbeServiceMode(previous, mode))}>
+          <HostProbeServiceModeTabs mode={form.health.enabled ? "china" : "standard"} onModeChange={mode => setForm(previous => {
+            const next = applyHostProbeServiceMode(previous, mode);
+            return mode === "china" && previous.method === "url" ? { ...next, method: "tcping" } : next;
+          })}>
             <div className="grid gap-2.5 sm:grid-cols-2">
               <div className="min-w-0 space-y-1">
                 <Label htmlFor="probe-service-name" className="flex min-h-5 items-center text-xs">{translateText("服务名")}</Label>
@@ -586,7 +612,7 @@ export default function HostProbeServiceManager({
                   <div className="min-w-0 flex-1">
                     <Select value={form.method} onValueChange={(value) => setForm({ ...form, method: value as ServiceForm["method"] })}>
                       <SelectTrigger id="probe-service-method" className="h-9 sm:h-8"><SelectValue /></SelectTrigger>
-                      <SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem></SelectContent>
+                      <SelectContent><SelectItem value="tcping">TCPing</SelectItem><SelectItem value="ping">Ping</SelectItem>{!form.health.enabled && <SelectItem value="url">{translateText("URL 连接检测")}</SelectItem>}</SelectContent>
                     </Select>
                   </div>
                   <Label htmlFor="probe-service-enabled" className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
@@ -596,10 +622,10 @@ export default function HostProbeServiceManager({
                 </div>
               </div>
             </div>
-            <div className={`grid min-w-0 gap-2.5 ${form.method === "tcping" ? "grid-cols-[minmax(0,1fr)_5.5rem] sm:grid-cols-[minmax(0,1fr)_8rem]" : ""}`}>
+            {form.method === "url" ? <HostUrlProbeFields value={form} onChange={patch => setForm(previous => ({ ...previous, ...patch }))} /> : <div className={`grid min-w-0 gap-2.5 ${form.method === "tcping" ? "grid-cols-[minmax(0,1fr)_5.5rem] sm:grid-cols-[minmax(0,1fr)_8rem]" : ""}`}>
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("IP 地址 / 域名")}</Label><Input className="h-9 sm:h-8" value={form.targetIp} onChange={(e) => setForm({ ...form, targetIp: e.target.value })} placeholder={translateText("1.1.1.1 或 example.com")} /></div>
               {form.method === "tcping" && <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("目标端口")}</Label><Input className="h-9 sm:h-8" type="number" min={1} max={65535} value={form.targetPort} onChange={(e) => setForm({ ...form, targetPort: e.target.value })} placeholder="443" /></div>}
-            </div>
+            </div>}
             <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6.5rem] gap-2.5 sm:grid-cols-[minmax(0,1fr)_8rem]">
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("选择主机")}</Label><Select disabled={form.health.enabled} value={form.hostScope} onValueChange={(value) => setForm({ ...form, hostScope: value as ServiceForm["hostScope"] })}><SelectTrigger className="h-9 sm:h-8"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">{translateText("所有主机")}</SelectItem><SelectItem value="exclude">{translateText("排除主机")}</SelectItem><SelectItem value="specific">{translateText("特定主机")}</SelectItem></SelectContent></Select></div>
               <div className="min-w-0 space-y-1"><Label className="text-xs">{translateText("服务运行时间")}</Label><Input className="h-9 sm:h-8" type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>

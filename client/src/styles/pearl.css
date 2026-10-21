@@ -293,6 +293,12 @@
   .pearl-page-header > .responsive-actions { max-width: 100%; }
   .pearl-eyebrow { margin-bottom: .5rem; color: var(--muted-foreground); font: 600 .65rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .16em; }
   .pearl-spec-plate { padding: .55rem .85rem; border: 1px solid rgb(255 255 255 / 10%); border-radius: 12px; background: #20282c; color: #e4ece7; font: 500 .75rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%); }
+  .pearl-page-header .pearl-spec-plate {
+    padding: .375rem .75rem; border-radius: 999px;
+    border-color: color-mix(in srgb, var(--primary) 12%, var(--border));
+    background: color-mix(in srgb, var(--primary) 4%, var(--card));
+    color: var(--muted-foreground); font-family: inherit; line-height: 1.333333; box-shadow: none;
+  }
   .pearl-stat { position: relative; overflow: hidden; }
   .auth-shell, .dark .auth-shell, .public-home-shell, .dark .public-home-shell, .pearl-setup {
     background: radial-gradient(ellipse at 15% 5%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 55%), var(--background);
@@ -465,9 +471,9 @@ html[data-forwardx-motion-disabled] *::after {
 html[data-forwardx-motion-disabled] .pearl-button:hover,
 html[data-forwardx-motion-disabled] .pearl-button:active,
 html[data-forwardx-motion-disabled] .pearl-stat:hover,
-html[data-forwardx-motion-disabled] .pearl-hover-card:hover,
-html[data-forwardx-motion-disabled] .pearl-card:hover {
-  transform: none !important;
+html[data-forwardx-motion-disabled] .pearl-hover-card:hover {
+  /* Stop decorative hover movement without overriding inline drag transforms. */
+  transform: none;
 }
 html[data-forwardx-motion-disabled] .auth-network-line-trace { stroke-dashoffset: 0 !important; }
 html[data-forwardx-motion-disabled] [class*="hover:translate-"],
@@ -486,7 +492,7 @@ html[data-forwardx-motion-disabled] [class*="hover:scale-"] {
   .pearl-button, .pearl-field, .pearl-select-trigger, .pearl-card, .pearl-hover-card, .pearl-nav-indicator,
   .pearl-disclosure-grid, .pearl-disclosure-chevron, .pearl-disclosure::details-content, .pearl-share-track > div,
   [data-sliding-tabs] > span, .pearl-switch, .pearl-switch > span, .pearl-progress > div { transition: none !important; }
-  .pearl-button:hover, .pearl-button:active, .pearl-stat:hover, .pearl-hover-card:hover { transform: none !important; }
+  .pearl-button:hover, .pearl-button:active, .pearl-stat:hover, .pearl-hover-card:hover { transform: none; }
   .auth-route-enter, .auth-route-enter-left, .auth-route-enter-panel, .auth-mode-panel,
   .route-content-enter, .tab-content-enter, .stagger-card, .forwardx-stat-value-inner { animation: none !important; }
 }

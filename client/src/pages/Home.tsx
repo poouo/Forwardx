@@ -500,8 +500,8 @@ function DashboardContent() {
   const motionEnabled = useMotionEnabled();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const { data: stats, isLoading, isError: statsError, isFetching: statsFetching, dataUpdatedAt: statsAt } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
-  const { data: trafficTotals, isLoading: trafficTotalsLoading, isError: totalsError, isFetching: totalsFetching, dataUpdatedAt: totalsAt } = trpc.dashboard.trafficTotals.useQuery(undefined, {
+  const { data: stats, isLoading, isError: statsError, dataUpdatedAt: statsAt } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
+  const { data: trafficTotals, isLoading: trafficTotalsLoading, isError: totalsError, dataUpdatedAt: totalsAt } = trpc.dashboard.trafficTotals.useQuery(undefined, {
     refetchInterval: pollingInterval("normal"),
     staleTime: 5000,
     placeholderData: (previousData) => previousData,
@@ -510,11 +510,11 @@ function DashboardContent() {
   const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: pollingInterval("slow"), placeholderData: (previousData) => previousData });
-  const { data: trafficBreakdown, isLoading: breakdownLoading, isError: breakdownError, isFetching: breakdownFetching, dataUpdatedAt: breakdownAt } = trpc.dashboard.trafficBreakdown.useQuery(
+  const { data: trafficBreakdown, isLoading: breakdownLoading, isError: breakdownError, dataUpdatedAt: breakdownAt } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 24, limit: 30 },
     { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
-  const { data: trafficSeries, isLoading: trendLoading, isError: trendError, isFetching: trendFetching, dataUpdatedAt: trendAt } = trpc.dashboard.trafficSeries.useQuery(
+  const { data: trafficSeries, isLoading: trendLoading, isError: trendError, dataUpdatedAt: trendAt } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 24, bucketMinutes: 60 },
     { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
@@ -569,7 +569,6 @@ function DashboardContent() {
   const trafficPercent = trafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / trafficLimit) * 100)) : 0;
   const accountTrafficLoading = userTrafficLoading && !currentUserTraffic;
   const accountStatusLoading = accountTrafficLoading || subscriptionsLoading;
-  const dashboardRefreshing = statsFetching || totalsFetching || breakdownFetching || trendFetching;
   const dashboardRefreshFailed = statsError || totalsError || breakdownError || trendError;
   const dashboardUpdatedAt = Math.min(...[statsAt, totalsAt, breakdownAt, trendAt].filter(at => at > 0));
   const accountCacheScope = user?.id ? String(user.id) : "current";
@@ -622,8 +621,8 @@ function DashboardContent() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="pearl-spec-plate">{new Date().toLocaleDateString(getFormatLocale(), { year: "numeric", month: "short", day: "numeric" })}</div>
           <Badge variant="outline" title={Number.isFinite(dashboardUpdatedAt) ? translateText("上次更新：{0}", [new Date(dashboardUpdatedAt).toLocaleString(getFormatLocale())]) : undefined} className={`max-w-full gap-1.5 whitespace-normal px-3 py-1.5 ${dashboardRefreshFailed ? "border-amber-500/30 text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${dashboardRefreshFailed ? "bg-amber-500" : dashboardRefreshing ? "bg-primary" : "bg-emerald-500"}`} />
-            {translateText(dashboardRefreshFailed ? "部分数据更新失败，保留上次结果" : dashboardRefreshing ? "数据更新中" : "系统在线")}</Badge>
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dashboardRefreshFailed ? "bg-amber-500" : "bg-emerald-500"}`} />
+            {translateText(dashboardRefreshFailed ? "部分数据更新失败，保留上次结果" : "系统在线")}</Badge>
         </div>
       </div>
 

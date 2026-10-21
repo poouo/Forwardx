@@ -4,7 +4,8 @@ import { mobileAuth } from "@/lib/mobileAuth";
 const MOBILE_BREAKPOINT = 768;
 
 export function useIsMobile() {
-  const [isMobile, setIsMobile] = useState<boolean>(() => mobileAuth.isNative);
+  const [isMobile, setIsMobile] = useState<boolean>(() => mobileAuth.isNative ||
+    (typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches));
 
   useEffect(() => {
     if (mobileAuth.isNative) {

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { observeProbeHealth, validateIpSwitchClaim } from "./hostProbeHealth";
+import { matchesUrlProbeReport } from "./urlProbe";
 import { claimIpSwitchAgentTask, completeIpSwitchAgentTask } from "./agentIpSwitchTasks";
 import * as db from "./db";
 import { sourceAnalyticsEnabled, parseSourceObservations, recordOperationsTraffic, recordOperationsSources } from "./repositories/operationsRepository";
@@ -1460,6 +1461,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       const serviceId = Number(report.serviceId || 0);
       const expected = expectedServiceById.get(serviceId) as any;
       if (!expected) return [];
+      if (expected.method === "url" ? !matchesUrlProbeReport(report, expected) : report.method === "url") return [];
       if (report.targetIp && !sameProbeTarget(report.targetIp, expected.targetIp)) return [];
       if (report.targetPort && Number(report.targetPort) !== Number(expected.targetPort || 0)) return [];
       return [{

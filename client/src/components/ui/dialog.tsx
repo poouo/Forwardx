@@ -112,7 +112,7 @@ const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive
   <DialogPortal>
     <DialogOverlay />
     <div className="dialog-positioner fixed inset-0 z-50 grid place-items-center p-3 pointer-events-none sm:p-6">
-      <DialogPrimitive.Content ref={ref} data-forwardx-dialog-content="" className={cn("dialog-panel pointer-events-auto grid max-h-[92svh] w-[calc(100vw-1.5rem)] max-w-lg gap-4 overflow-hidden overscroll-contain rounded-[22px] p-4 sm:w-full sm:p-6", className)} {...props}>
+      <DialogPrimitive.Content ref={ref} data-forwardx-dialog-content="" className={cn("dialog-panel pointer-events-auto grid max-h-[min(92svh,calc(100svh-1.5rem))] w-[calc(100vw-1.5rem)] max-w-lg gap-4 overflow-x-hidden overflow-y-auto overscroll-contain rounded-[22px] p-4 sm:max-h-[min(92svh,calc(100svh-3rem))] sm:w-full sm:p-6", className)} {...props}>
         {children}
         <DialogPrimitive.Close className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-70 ring-offset-background transition-colors hover:bg-destructive/10 hover:text-destructive hover:opacity-100 focus:bg-destructive/10 focus:text-destructive focus:outline-none focus:ring-2 focus:ring-destructive/40 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />

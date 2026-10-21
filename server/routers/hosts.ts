@@ -32,6 +32,7 @@ import { normalizeHostIp, hostAddressOptions, normalizeHostDdnsIpVersion } from 
 import { mergeAgentReportedAddress } from "../agentAddressState";
 import { getMonitorSettings, saveMonitorSettings } from "../operationsMonitor";
 import { operationsMonitorSchema } from "../../shared/operationsMonitor";
+import { normalizeHostProbeMethod, urlProbeOptionsSchema } from "../../shared/urlProbe";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -88,8 +89,8 @@ const hostProbeTargetSchema = z.string().trim().min(1).max(253).refine(isValidHo
 const hostProbeIdsSchema = z.array(z.number().int().positive()).max(500).optional();
 const hostProbeServiceInputSchema = z.object({
   name: z.string().trim().min(1).max(128),
-  method: z.enum(["tcping", "ping"]),
-  targetIp: hostProbeTargetSchema,
+  method: z.enum(["tcping", "ping", "url"]),
+  targetIp: z.string().trim().max(253).default(""),
   targetPort: z.number().int().min(1).max(65535).nullable().optional(),
   hostScope: z.enum(["all", "exclude", "specific"]).default("all"),
   hostIds: hostProbeIdsSchema,
@@ -97,7 +98,7 @@ const hostProbeServiceInputSchema = z.object({
   intervalSeconds: z.number().int().min(5).max(86400).default(30),
   isEnabled: z.boolean().optional(),
   health: hostChinaHealthSchema.nullable().optional(),
-});
+}).merge(urlProbeOptionsSchema);
 const hostGroupInputSchema = z.object({
   name: z.string().trim().min(1).max(128),
   hostIds: z.array(z.number().int().positive()).max(500).optional(),
@@ -108,11 +109,15 @@ const reorderIdsSchema = z.array(z.number().int().positive()).min(1).max(2000);
 
 function normalizeHostProbeServiceInput(input: z.infer<typeof hostProbeServiceInputSchema>) {
   if (input.method === "tcping" && !input.targetPort) throw new Error("TCPing 服务需要填写目标端口");
+  if (input.method !== "url") hostProbeTargetSchema.parse(input.targetIp);
+  if (input.method === "url" && !input.targetUrl) throw new Error("请填写检测 URL");
   const hostIds = Array.from(new Set((input.hostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
   const excludeHostIds = Array.from(new Set((input.excludeHostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
   if (input.hostScope === "specific" && hostIds.length === 0) throw new Error("请选择需要运行服务的主机");
   return {
     ...input,
+    targetIp: input.method === "url" ? new URL(input.targetUrl!).hostname.replace(/^\[|\]$/g, "") : input.targetIp,
+    targetUrl: input.method === "url" ? input.targetUrl : null,
     targetPort: input.method === "tcping" ? Number(input.targetPort) : null,
     hostIds: input.hostScope === "specific" ? hostIds : [],
     excludeHostIds: input.hostScope === "exclude" ? excludeHostIds : [],
@@ -521,7 +526,7 @@ function compactPublicProbeService(service: any, latest?: any) {
   return {
     id: Number(service?.id || 0),
     name: String(service?.name || ""),
-    method: service?.method === "ping" ? "ping" : "tcping",
+    method: normalizeHostProbeMethod(service?.method),
     latest: latest ? {
       latencyMs: latest.latencyMs == null ? null : Number(latest.latencyMs),
       isTimeout: latestCounts ? latestCounts.probeSuccesses <= 0 : !!latest.isTimeout,

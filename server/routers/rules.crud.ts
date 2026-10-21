@@ -1,5 +1,6 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { assertNoDirectSelfForwardLoop } from "../directForwardLoop";
 import { ruleLimitInputShape, ruleLimitPatch, hasRuleLimitInput, validateRuleLimitInput, validateRuleRateLimitTargets } from "./ruleLimitInput";
 import { assertRuleWritable, isAdminManagedRule } from "../../shared/ruleLimits";
@@ -29,6 +30,8 @@ import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
 import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
 import { resolveRuleOperationOwner } from "../ruleOperationOwner";
+import { personalRuleGroupIdsSchema } from "../../shared/ruleGroups";
+import { assertPersonalRuleGroups } from "../repositories/ruleGroupRepository";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -983,6 +986,7 @@ export const crudRulesRouter = router({
     .input(z.object({
       ...ruleLimitInputShape,
       userId: z.number().int().positive().optional(),
+      personalGroupIds: personalRuleGroupIdsSchema.optional(),
       hostId: z.number().optional(),
       name: z.string().min(1).max(128),
       forwardType: forwardTypeSchema.default("iptables"),
@@ -1007,7 +1011,11 @@ export const crudRulesRouter = router({
       ...proxyProtocolInputShape,
       ...transportTuningInputShape,
     }))
-    .use(async ({ input, next }) => {
+    .use(async ({ input, ctx, next }) => {
+      if (input.personalGroupIds !== undefined) {
+        if (input.userId && input.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "只能设置自己的规则分组" });
+        await assertPersonalRuleGroups(ctx.user.id, input.personalGroupIds);
+      }
       const result = await next();
       if (result.ok && (hasRuleLimitInput(input) || (input as any).adminManaged)) await reconcileRuleLimits([Number((result.data as any).id)], true);
       return result;
@@ -1136,6 +1144,7 @@ export const crudRulesRouter = router({
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
         const createTemplateRule = () => db.createForwardRule({
           ...ruleLimitPatch(input),
+          personalGroupIds: input.personalGroupIds,
           hostId,
           name: input.name,
           forwardType,
@@ -1205,6 +1214,7 @@ export const crudRulesRouter = router({
     .input(z.object({
       ...ruleLimitInputShape,
       id: z.number(),
+      personalGroupIds: personalRuleGroupIdsSchema.optional(),
       hostId: z.number().optional(),
       name: z.string().min(1).max(128).optional(),
       forwardType: forwardTypeSchema.optional(),
@@ -1230,7 +1240,12 @@ export const crudRulesRouter = router({
       ...transportTuningInputShape,
       isEnabled: z.boolean().optional(),
     }))
-    .use(async ({ input, next }) => {
+    .use(async ({ input, ctx, next }) => {
+      if (input.personalGroupIds !== undefined) {
+        const rule = await db.getForwardRuleById(input.id);
+        if (!rule || rule.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "只能设置自己的规则分组" });
+        await assertPersonalRuleGroups(ctx.user.id, input.personalGroupIds);
+      }
       const result = await next();
       if (result.ok && hasRuleLimitInput(input)) await reconcileRuleLimits([input.id], true);
       return result;
@@ -1512,6 +1527,7 @@ export const crudRulesRouter = router({
             failoverTargets: [],
           }, nextProtocol);
           const data: any = {
+            personalGroupIds: input.personalGroupIds,
             ...ruleLimitPatch(input),
             name: input.name ?? (rule as any).name,
             hostId: nextHostId,
@@ -1773,6 +1789,7 @@ export const crudRulesRouter = router({
         }
         const data: any = {
           name: input.name ?? (rule as any).name,
+          personalGroupIds: input.personalGroupIds,
           ...ruleLimitPatch(input),
           hostId,
           forwardType: nextForwardType,

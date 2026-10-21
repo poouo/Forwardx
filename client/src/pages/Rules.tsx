@@ -5,6 +5,13 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { RuleLimitsForm, newRuleLimitsForm, ruleLimitsPayload, type RuleLimitsFormValue } from "@/components/rules/RuleLimitsForm";
 import { RuleUsageSummary } from "@/components/rules/RuleUsageSummary";
+import { RuleGroupBar, RuleGroupMultiSelect, RuleGroupBulkEditor } from "@/components/rules/PersonalRuleGroups";
+import { RulePersonalGroupBadges } from "@/components/rules/RulePersonalGroupBadges";
+import { RuleCardMetadata } from "@/components/rules/RuleCardMetadata";
+import ListSettings from "@/components/ListSettings";
+import ColumnResizeHandle from "@/components/ColumnResizeHandle";
+import { useRuleTableLayout } from "@/hooks/useRuleTableLayout";
+import type { RuleTableColumnId } from "@shared/ruleTableLayout";
 import { NyanpassImportPreview } from "@/components/rules/NyanpassImportPreview";
 import { isAdminManagedRule } from "../../../shared/ruleLimits";
 import { forwardGroupRouteMembers, forwardGroupSelfTestSource } from "../../../shared/forwardGroup";
@@ -135,7 +142,7 @@ import {
 } from "@shared/forwardTypes";
 import { ruleLatencyProbeMethodForRule } from "@shared/latencyProbe";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
-import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode, type CSSProperties } from "react";
 import { ContentTransition } from "@/components/ui/content-transition";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import { toast } from "@/lib/localizedToast";
@@ -316,7 +323,7 @@ type RuleCategory = "all" | "local" | "tunnel" | "chain" | "group";
 type RuleCategoryCounts = Record<RuleCategory, number>;
 type RuleTransferScopeType = Exclude<RuleCategory, "all">;
 type RuleResourceFilter = "all" | `${RuleTransferScopeType}` | `${RuleTransferScopeType}:${number}`;
-type RuleBatchManageMode = "copy" | "edit" | "export" | "import";
+type RuleBatchManageMode = "copy" | "edit" | "export" | "import" | "groups";
 type BatchEditFormData = Pick<RuleFormData, "routeMode" | "forwardType" | "tunnelId" | "forwardGroupId" | "targetIp" | "targetPort">;
 
 const RULE_CATEGORIES = ["all", "local", "tunnel", "chain", "group"] as const;
@@ -581,13 +588,26 @@ function RuleGroupItems({
   children: ReactNode;
   layout?: boolean;
 }) {
+  const motionEnabled = useMotionEnabled();
+  const [expanded, setExpanded] = useState(open);
+
+  useEffect(() => {
+    if (!open || !motionEnabled) {
+      setExpanded(open);
+      return;
+    }
+    // Clip only while expanding/collapsing, not the resting cards' shadows.
+    const timer = window.setTimeout(() => setExpanded(true), 320);
+    return () => window.clearTimeout(timer);
+  }, [open, motionEnabled]);
+
   return (
     <div
       aria-hidden={!open}
       inert={!open}
       className={`pearl-disclosure-grid grid transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
     >
-      <AutoAnimateContainer layout={layout} className={`min-h-0 overflow-hidden ${className}`}>
+      <AutoAnimateContainer layout={layout} className={cn("min-h-0", open && (!motionEnabled || expanded) ? "overflow-visible" : "overflow-hidden", className)}>
         {children}
       </AutoAnimateContainer>
     </div>
@@ -2104,6 +2124,7 @@ function normalizeFailoverTargetsForSubmit(text: string) {
 function RulesContent() {
   const confirmDialog = useConfirmDialog();
   const { user } = useAuth();
+  const tableLayout = useRuleTableLayout(user);
   const [, setLocation] = useLocation();
   const search = useSearch();
   const isMobile = useIsMobile();
@@ -2158,6 +2179,9 @@ function RulesContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [formGroupIds, setFormGroupIds] = useState<number[]>([]);
+  const [editingRuleOwnerId, setEditingRuleOwnerId] = useState<number | null>(null);
+  const [personalGroupFilter, setPersonalGroupFilter] = useState<number | null>(null);
   const [editingOriginalProtocol, setEditingOriginalProtocol] = useState<RuleProtocol | null>(null);
   const [legacyLocalRuleEditId, setLegacyLocalRuleEditId] = useState<number | null>(null);
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
@@ -2215,6 +2239,14 @@ function RulesContent() {
     return Object.keys(input).length ? input : undefined;
   }, [filterUser, user?.id, user?.role]);
   const effectiveRulesQuery = selectedRulesQuery || undefined;
+  const isOwnRuleScope = user?.role !== "admin" || filterUser === "self" || Number(filterUser) === Number(user?.id);
+  const personalGroupsQuery = trpc.rules.personalGroups.useQuery(undefined, {
+    enabled: !!user?.id,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const activePersonalGroupId = isOwnRuleScope ? personalGroupFilter : null;
+  useEffect(() => { setPersonalGroupFilter(null); }, [user?.id]);
   const createOwnerUserId = user?.role === "admin" && filterUser !== "self" && filterUser !== "all"
     ? Number(filterUser)
     : undefined;
@@ -2276,7 +2308,7 @@ function RulesContent() {
   const importingRulesRef = useRef(false);
   const rulePageRequest = usePersistentPageRequest("forwardx.rules.page");
   const rulePageResource = parseRuleResourceFilter(filterResource);
-  const rulePageFilterKey = [filterUser, filterResource, ruleCategory, ruleSearchQuery.trim(), rulePageSize].join(":");
+  const rulePageFilterKey = [filterUser, filterResource, ruleCategory, ruleSearchQuery.trim(), rulePageSize, activePersonalGroupId].join(":");
   const previousRulePageFilterKey = useRef(rulePageFilterKey);
   useEffect(() => {
     if (previousRulePageFilterKey.current === rulePageFilterKey) return;
@@ -2284,6 +2316,7 @@ function RulesContent() {
     rulePageRequest.setPage(1);
   }, [rulePageFilterKey, rulePageRequest.setPage]);
   const rulePageQuery = trpc.rules.listPage.useQuery({
+    personalGroupId: activePersonalGroupId,
     ...(effectiveRulesQuery || {}),
     page: rulePageRequest.page,
     pageSize: rulePageSize,
@@ -2299,6 +2332,7 @@ function RulesContent() {
   });
   const isRuleGlobeView = effectiveViewMode === "globe";
   const ruleMapQuery = trpc.rules.mapItems.useInfiniteQuery({
+    personalGroupId: activePersonalGroupId,
     ...(effectiveRulesQuery || {}),
     limit: 100,
     resourceType: rulePageResource.type,
@@ -2332,7 +2366,7 @@ function RulesContent() {
       if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle);
     };
   }, [isRuleGlobeView, ruleMapQuery.fetchNextPage, ruleMapQuery.hasNextPage, ruleMapQuery.isFetchingNextPage]);
-  const needsFullRuleList = showCopyDialog
+  const needsFullRuleList = (showCopyDialog && copyManageMode !== "groups")
     || showExportDialog
     || showImportDialog;
   const fullRulesQuery = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
@@ -2343,7 +2377,7 @@ function RulesContent() {
     placeholderData: (previousData: any) => previousData,
   });
   useEffect(() => {
-    if (!showCopyDialog) return;
+    if (!showCopyDialog || copyManageMode === "groups") return;
     void fullRulesQuery.refetch();
   }, [showCopyDialog]);
   const {
@@ -2351,6 +2385,7 @@ function RulesContent() {
     isLoading: ruleListSummaryInitialLoading,
     isPlaceholderData: ruleListSummaryPlaceholder,
   } = trpc.rules.listSummary.useQuery({
+    personalGroupId: activePersonalGroupId,
     ...(effectiveRulesQuery || {}),
     resourceType: rulePageResource.type,
     resourceId: rulePageResource.id,
@@ -2395,6 +2430,7 @@ function RulesContent() {
 
   const createMutation = trpc.rules.create.useMutation({
     onSuccess: (data) => {
+      utils.rules.personalGroups.invalidate();
       utils.rules.list.invalidate();
       utils.rules.listPage.invalidate();
       utils.rules.mapItems.invalidate();
@@ -2409,6 +2445,7 @@ function RulesContent() {
 
   const updateMutation = trpc.rules.update.useMutation({
     onSuccess: (_data, variables) => {
+      utils.rules.personalGroups.invalidate();
       invalidateRuleProbeStatuses([Number(variables.id)]);
       utils.rules.list.invalidate();
       utils.rules.listPage.invalidate();
@@ -2423,6 +2460,7 @@ function RulesContent() {
 
   const deleteMutation = trpc.rules.delete.useMutation({
     onSuccess: (_data, variables) => {
+      utils.rules.personalGroups.invalidate();
       invalidateRuleProbeStatuses([Number(variables.id)]);
       utils.rules.list.invalidate();
       utils.rules.listPage.invalidate();
@@ -2573,6 +2611,8 @@ function RulesContent() {
   };
 
   const resetForm = () => {
+    setFormGroupIds([]);
+    setEditingRuleOwnerId(null);
     setForm({ ...defaultForm, failoverTargetsText: "" });
     setEditingId(null);
     setEditingOriginalProtocol(null);
@@ -2582,6 +2622,7 @@ function RulesContent() {
 
   const openCreate = (preferredRouteMode?: RuleRouteMode) => {
     resetForm();
+    setFormGroupIds(activePersonalGroupId && isOwnRuleScope ? [activePersonalGroupId] : []);
     const firstPortGroup = canUseSavedLocalForward ? availablePortForwardGroups[0] : null;
     const firstLocalForwardType = firstPortGroup ? getForwardGroupRuleForwardType(firstPortGroup, defaultForm.forwardType) : null;
     const firstBillingHost = canUseBillingHostLocalForward ? availableTrafficBillingHosts[0] : null;
@@ -2683,6 +2724,8 @@ function RulesContent() {
   };
 
   const openEdit = (rule: any) => {
+    setFormGroupIds(rule.personalGroupIds || []);
+    setEditingRuleOwnerId(Number(rule.userId));
     const editForwardGroup = rule.forwardGroupId
       ? (forwardGroups || []).find((group: any) => Number(group.id) === Number(rule.forwardGroupId))
       : null;
@@ -3409,6 +3452,7 @@ function RulesContent() {
         utils.rules.mapItems.invalidate(),
         utils.rules.listSummary.invalidate(),
         utils.rules.trafficSummary.invalidate(),
+        utils.rules.personalGroups.invalidate(),
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       const failures = results.filter((result) => result.status === "rejected");
@@ -3469,6 +3513,7 @@ function RulesContent() {
         utils.rules.mapItems.invalidate(),
         utils.rules.listSummary.invalidate(),
         utils.rules.trafficSummary.invalidate(),
+        utils.rules.personalGroups.invalidate(),
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       const failures = results.filter((result) => result.status === "rejected");
@@ -3539,6 +3584,7 @@ function RulesContent() {
         utils.rules.mapItems.invalidate(),
         utils.rules.listSummary.invalidate(),
         utils.rules.trafficSummary.invalidate(),
+        utils.rules.personalGroups.invalidate(),
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       if (failures.length > 0) {
@@ -3691,6 +3737,7 @@ function RulesContent() {
     if (editingId) {
       updateMutation.mutate({
         id: editingId,
+        ...(editingRuleOwnerId === Number(user?.id) ? { personalGroupIds: formGroupIds } : {}),
         hostId: isForwardGroupRouteMode ? undefined : form.hostId!,
         name: form.name,
         forwardType: submitForwardType,
@@ -3711,6 +3758,7 @@ function RulesContent() {
     } else {
       createMutation.mutate({
         userId: createOwnerUserId,
+        ...(!createOwnerUserId || createOwnerUserId === Number(user?.id) ? { personalGroupIds: formGroupIds } : {}),
         hostId: isForwardGroupRouteMode ? undefined : form.hostId!,
         name: form.name,
         forwardType: submitForwardType,
@@ -3821,6 +3869,7 @@ function RulesContent() {
   const isBatchCopyMode = copyManageMode === "copy";
   const isBatchExportMode = copyManageMode === "export";
   const isBatchImportMode = copyManageMode === "import";
+  const isBatchGroupMode = copyManageMode === "groups" && isOwnRuleScope;
   const selectedBatchRuleCount = copySelectedRules.length;
   const selectedBatchTargetCount = selectedCopyTargetResources.length;
   const allVisibleCopyRulesSelected = copyableSourceRules.length > 0
@@ -4068,7 +4117,6 @@ function RulesContent() {
     return map;
   }, [ruleTargetGeoRows]);
   const trafficRangeLabel = translateText("近 24h");
-  const trafficMetricHeaderLabels = [translateText("累计"), "24H", translateText("延迟")];
 
   const { data: totalTrafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
@@ -4287,9 +4335,10 @@ function RulesContent() {
       ruleFilterCacheScope,
       filterResource,
       ruleCategory,
+      `personal-${activePersonalGroupId ?? "all"}`,
       ruleSearchQuery.trim() || "search-all",
     ].join("."),
-    [filterResource, ruleCategory, ruleFilterCacheScope, ruleSearchQuery],
+    [filterResource, ruleCategory, ruleFilterCacheScope, ruleSearchQuery, activePersonalGroupId],
   );
   const trafficTotalsLastCacheScope = user?.role === "admin"
     ? `admin-${user?.id || "self"}`
@@ -4318,6 +4367,7 @@ function RulesContent() {
   });
   const pagedRules = rulePagination.items;
   const ruleSortingEnabled = isCompleteRuleSortScope(ruleCategory, filterResource)
+    && activePersonalGroupId === null
     && (user?.role === "admin" || !pagedRules.some(isAdminManagedRule))
     && effectiveViewMode !== "globe"
     && ruleSearchQuery.trim().length === 0
@@ -5847,7 +5897,7 @@ function RulesContent() {
     return (
       <Badge
         variant="outline"
-        className={`w-fit whitespace-nowrap text-[10px] ${forwardToolBadgeClass(forwardType)}`}
+        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[10px] [&>svg]:shrink-0 ${forwardToolBadgeClass(forwardType)}`}
         title={translateText("转发工具：{0}", [label])}
       >
         {forwardType === "iptables" || forwardType === "nftables" ? (
@@ -5859,7 +5909,7 @@ function RulesContent() {
         ) : (
           <Zap className="mr-1 h-3 w-3" />
         )}
-        {label}
+        <span className="truncate">{label}</span>
       </Badge>
     );
   };
@@ -5884,7 +5934,7 @@ function RulesContent() {
         <AlertCircle className="mr-1 h-3 w-3" />{translateText("跨 IPv4/IPv6 风险")}</Badge>
     );
   };
-  const renderRouteBadge = (rule: any, compactRow = false) => {
+  const renderRouteBadge = (rule: any, compactRow = false, badgesOnly = false) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const groupMode = normalizeForwardGroupModeForRule(group);
@@ -5892,10 +5942,18 @@ function RulesContent() {
     const GroupRouteIcon = groupMode === "port" ? ArrowRightLeft : Layers3;
     const kernelWarning = getRuleKernelForwardWarning(rule);
     const warningBadge = renderKernelForwardWarningBadge(kernelWarning);
+    const routeLabel = rule.forwardGroupId ? groupRouteLabel
+      : tunnel ? getTunnelDisplay(tunnel, nginxTunnelEnabled).badgeLabel
+      : forwardTypeDisplayLabel(rule.forwardType);
+    const RouteIcon = rule.forwardGroupId ? GroupRouteIcon
+      : tunnel || rule.forwardType === "gost" ? Network
+      : rule.forwardType === "iptables" || rule.forwardType === "nftables" ? Shield
+      : rule.forwardType === "socat" ? ArrowRightLeft : Zap;
     const badge = (
       <Badge
         variant="outline"
-        className={`w-fit whitespace-nowrap text-[10px] ${
+        title={routeLabel}
+        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[10px] ${
           rule.forwardGroupId
             ? "border-emerald-500/30 text-emerald-600"
             : rule.forwardType === "iptables" || rule.forwardType === "nftables"
@@ -5907,25 +5965,10 @@ function RulesContent() {
             : "border-chart-3/30 text-chart-3"
         }`}
       >
-        {rule.forwardGroupId ? (
-          <><GroupRouteIcon className="h-3 w-3 mr-1" />{groupRouteLabel}</>
-        ) : tunnel ? (
-          <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel, nginxTunnelEnabled).badgeLabel}</>
-        ) : rule.forwardType === "iptables" ? (
-          <><Shield className="h-3 w-3 mr-1" />iptables</>
-        ) : rule.forwardType === "nftables" ? (
-          <><Shield className="h-3 w-3 mr-1" />nftables</>
-        ) : rule.forwardType === "nginx" ? (
-          <><Zap className="h-3 w-3 mr-1" />{forwardTypeDisplayLabel(rule.forwardType)}</>
-        ) : rule.forwardType === "socat" ? (
-          <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
-        ) : rule.forwardType === "gost" ? (
-          <><Network className="h-3 w-3 mr-1" />gost</>
-        ) : (
-          <><Zap className="h-3 w-3 mr-1" />realm</>
-        )}
+        <RouteIcon className="mr-1 h-3 w-3 shrink-0" /><span className="truncate">{routeLabel}</span>
       </Badge>
     );
+    if (badgesOnly) return <>{badge}{!!rule.forwardGroupId && renderForwardToolBadge(rule, group)}</>;
     if (rule.forwardGroupId) {
       return (
         <div className={`flex min-w-0 items-center gap-1 ${compactRow ? "overflow-hidden" : "flex-wrap"}`}>
@@ -5962,6 +6005,18 @@ function RulesContent() {
         </div>
       </div>
     );
+  };
+
+  const renderRuleCardMetadata = (rule: any) => {
+    const tunnel = !rule.forwardGroupId && rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    return <RuleCardMetadata
+      routeBadges={renderRouteBadge(rule, false, true)}
+      protocol={formatForwardRuleProtocol(rule.protocol)}
+      groupIds={rule.personalGroupIds}
+      groups={personalGroupsQuery.data?.groups || []}
+      path={tunnel ? renderTunnelRoute(tunnel, false) : null}
+      warning={<>{renderKernelForwardWarningBadge(getRuleKernelForwardWarning(rule))}{!isRuleSupported(rule) && <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[10px] text-destructive">{protocolUnsupportedLabel(getRuleProtocolKey(rule))}{translateText(" 不支持")}</Badge>}</>}
+    />;
   };
 
   const renderUnsupportedHint = (children: ReactNode, title = unsupportedProtocolTitle) => (
@@ -6264,75 +6319,56 @@ function RulesContent() {
     );
   };
 
+  const renderRuleTableCell = (rule: any, column: RuleTableColumnId) => {
+    switch (column) {
+      case "status": return <div className="flex justify-center">{isRuleSupported(rule) ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}</div>;
+      case "name": {
+        const warning = [!isRuleSupported(rule) && `${protocolUnsupportedLabel(getRuleProtocolKey(rule))}${translateText(" 当前不支持")}`, rule.protocolBlockReason || (rule.resourceAccessAllowed === false && revokedResourceTitle)].filter(Boolean).join(" · ");
+        return <><span className="block truncate font-medium" title={rule.name}>{rule.name}</span>{warning && <span className="mt-1 block truncate text-[11px] leading-4 text-destructive" title={warning}>{warning}</span>}</>;
+      }
+      case "owner": return <span className="block truncate text-sm text-muted-foreground" title={getRuleOwnerName(rule)}>{getRuleOwnerName(rule)}</span>;
+      case "resource": return <span className="block truncate text-sm text-muted-foreground" title={getRuleResourceName(rule)}>{getRuleResourceName(rule)}</span>;
+      case "groups": return <RulePersonalGroupBadges groupIds={rule.personalGroupIds} groups={personalGroupsQuery.data?.groups || []} emptyPlaceholder />;
+      case "entry": return renderTableTransferEntry(rule);
+      case "exit": return renderTableTransferExit(rule);
+      case "route": return renderRouteBadge(rule, true);
+      case "protocol": return <Badge variant="secondary" className="max-w-full truncate whitespace-nowrap text-[10px]" title={formatForwardRuleProtocol(rule.protocol)}>{formatForwardRuleProtocol(rule.protocol)}</Badge>;
+      case "total": return renderTableRuleTotalTraffic(rule);
+      case "quota": return isAdminManagedRule(rule) ? <RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} compact /> : <span className="text-muted-foreground">—</span>;
+      case "daily": return renderTableRuleDailyTraffic(rule);
+      case "latency": return renderTableRuleLatency(rule);
+      case "enabled": return <div className="flex justify-center">{renderRuleEnabledSwitch(rule)}</div>;
+      case "actions": return renderRuleActions(rule);
+    }
+  };
+
   const renderRuleTableRow = (rule: any, sortable?: RuleSortableRenderState) => {
     const supported = isRuleSupported(rule);
-    const protocolKey = getRuleProtocolKey(rule);
     return (
       <TableRow
         key={rule.id}
         {...(sortable?.itemProps || {})}
         className={cn(
-          "group/sortable animate-in fade-in-0 duration-150",
+          "group/sortable h-16 animate-in fade-in-0 duration-150",
           !supported && "opacity-70",
           sortable?.isDragging && "opacity-55",
           sortable?.isDropTarget && "bg-primary/5",
         )}
         title={!supported ? unsupportedProtocolTitle : undefined}
       >
-        {sortable && (
-          <TableCell className="w-[44px] px-2 py-2">
+        <TableCell className="w-[44px] px-2 py-2">
+          {sortable && (
             <SortableDragHandle
               dragHandleProps={sortable.handleProps}
               visible={sortable.isDragging}
               busy={ruleReorderPending}
               className="mx-auto"
             />
-          </TableCell>
-        )}
-        <TableCell className="px-3 py-2">
-          <div className="flex items-center justify-center">
-            {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
-          </div>
-        </TableCell>
-        <TableCell className="px-3 py-2">
-          <span className="block truncate font-medium" title={rule.name}>{rule.name}</span>
-          {!supported && (
-            <span className="mt-1 block text-[11px] text-destructive">
-              {protocolUnsupportedLabel(protocolKey)}{translateText(" 当前不支持")}</span>
-          )}
-          {(rule.protocolBlockReason || rule.resourceAccessAllowed === false) && (
-            <span className="mt-1 block text-[11px] leading-4 text-destructive">
-              {rule.protocolBlockReason || revokedResourceTitle}
-            </span>
           )}
         </TableCell>
-        {user?.role === "admin" && (
-          <TableCell className="px-3 py-2">
-            <span className="block truncate text-sm text-muted-foreground" title={getRuleOwnerName(rule)}>
-              {getRuleOwnerName(rule)}
-            </span>
-          </TableCell>
-        )}
-        <TableCell className="px-3 py-2">
-          <span className="block truncate text-sm text-muted-foreground" title={getRuleResourceName(rule)}>
-            {getRuleResourceName(rule)}
-          </span>
-        </TableCell>
-        <TableCell className="px-3 py-2">{renderTableTransferEntry(rule)}</TableCell>
-        <TableCell className="px-3 py-2">{renderTableTransferExit(rule)}</TableCell>
-        <TableCell className="px-3 py-2">{renderRouteBadge(rule, true)}</TableCell>
-        <TableCell className="px-3 py-2 text-center">
-          <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
-        </TableCell>
-        <TableCell className="px-3 py-2">{renderTableRuleTotalTraffic(rule)}<RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} /></TableCell>
-        <TableCell className="overflow-hidden px-3 py-2">{renderTableRuleDailyTraffic(rule)}</TableCell>
-        <TableCell className="overflow-hidden px-3 py-2">{renderTableRuleLatency(rule)}</TableCell>
-        <TableCell className="px-3 py-2">
-          <div className="flex justify-center">
-            {renderRuleEnabledSwitch(rule)}
-          </div>
-        </TableCell>
-        <TableCell className="px-3 py-2 text-right">{renderRuleActions(rule)}</TableCell>
+        {tableLayout.columns.map(column => <TableCell key={column.id} className={cn("overflow-hidden px-3 py-2", ["status", "protocol", "enabled"].includes(column.id) && "text-center", column.id === "actions" && "text-right")}>
+          {renderRuleTableCell(rule, column.id)}
+        </TableCell>)}
       </TableRow>
     );
   };
@@ -6384,16 +6420,7 @@ function RulesContent() {
               {renderTransfer(rule, true)}
             </div>
 
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-              {renderRouteBadge(rule)}
-              <Badge variant="secondary" className="h-5 whitespace-nowrap px-1.5 text-[10px]">
-                {formatForwardRuleProtocol(rule.protocol)}
-              </Badge>
-              {!supported && (
-                <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[10px] text-destructive">
-                  {protocolUnsupportedLabel(protocolKey)}{translateText(" 不支持")}</Badge>
-              )}
-            </div>
+            {renderRuleCardMetadata(rule)}
 
             {(rule.protocolBlockReason || rule.resourceAccessAllowed === false) && (
               <div className="line-clamp-2 text-[11px] leading-4 text-destructive">
@@ -6403,7 +6430,7 @@ function RulesContent() {
 
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-border/40 pt-1.5 text-xs">
               <div className="min-w-0">
-                <div className="mb-0.5 text-[10px] text-muted-foreground">{translateText("累计流量")}</div>
+                <div className="mb-0.5 flex h-4 items-center gap-1 text-[10px] text-muted-foreground">{translateText("累计流量")}<RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} iconOnly /></div>
                 {renderMobileRuleTotalTraffic(rule)}
               </div>
               <div className="min-w-0 text-right">
@@ -6415,7 +6442,6 @@ function RulesContent() {
               </div>
             </div>
 
-            <RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} />
             <div className="action-card-footer flex justify-end border-t border-border/40 pt-1.5">
               {renderRuleActions(rule)}
             </div>
@@ -6477,16 +6503,7 @@ function RulesContent() {
           <div className="min-w-0">
             {renderTransfer(rule, true)}
           </div>
-          <div className="grid grid-cols-2 gap-3 text-xs">
-            <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">{translateText("链路")}</div>
-              {renderRouteBadge(rule)}
-            </div>
-            <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">{translateText("协议")}</div>
-              <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
-            </div>
-          </div>
+          {renderRuleCardMetadata(rule)}
           <div className="pearl-readout grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl border border-border/40 p-2.5 text-xs">
             <div className="min-w-0">
               <div className="mb-1 text-muted-foreground">{translateText("24H 入向")}</div>
@@ -6497,7 +6514,7 @@ function RulesContent() {
               {renderRuleDailyTrafficValue(rule, "out")}
             </div>
             <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">{translateText("累计流量")}</div>
+              <div className="mb-1 flex h-4 items-center gap-1 text-muted-foreground">{translateText("累计流量")}<RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} iconOnly /></div>
               {renderMobileRuleTotalTraffic(rule)}
             </div>
             <div className="min-w-0">
@@ -6505,7 +6522,6 @@ function RulesContent() {
               {renderLatestLatency(rule)}
             </div>
           </div>
-          <RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} />
           <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
             {renderRuleActions(rule)}
           </div>
@@ -6860,6 +6876,7 @@ function RulesContent() {
         </Card>
       </div>
 
+      {isOwnRuleScope && <RuleGroupBar value={activePersonalGroupId} onChange={setPersonalGroupFilter} />}
       <RuleContentTransition transitionKey={ruleContentTransitionKey}>
       {isLoading || (!ruleStatusSnapshotReady && !hasCachedRuleStatus) ? (
         <DataSectionLoading label={isLoading ? translateText("正在加载转发规则") : translateText("正在加载规则状态")} />
@@ -6941,39 +6958,27 @@ function RulesContent() {
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
-                    <Table className={cn(ruleSortingEnabled ? (user?.role === "admin" ? "min-w-[1764px]" : "min-w-[1654px]") : (user?.role === "admin" ? "min-w-[1720px]" : "min-w-[1610px]"), "table-fixed")}>
+                    <Table floatingScrollbar className="table-fixed" style={{
+                      ...Object.fromEntries(tableLayout.columns.map(column => [`--list-col-${column.id}`, `${column.width}px`])),
+                      width: `max(100%, calc(${["44px", ...tableLayout.columns.map(column => `var(--list-col-${column.id})`)].join(" + ")}))`,
+                    } as CSSProperties}>
                       <colgroup>
-                        {ruleSortingEnabled && <col className="w-[44px]" />}
-                        <col className="w-[56px]" />
-                        <col className="w-[110px]" />
-                        {user?.role === "admin" && <col className="w-[110px]" />}
-                        <col className="w-[100px]" />
-                        <col className="w-[285px]" />
-                        <col className="w-[190px]" />
-                        <col className="w-[170px]" />
-                        <col className="w-[96px]" />
-                        <col className="w-[120px]" />
-                        <col className="w-[120px]" />
-                        <col className="w-[120px]" />
-                        <col className="w-[70px]" />
-                        <col className="w-[154px]" />
+                        <col className="w-[44px]" />
+                        {tableLayout.columns.map(column => <col key={column.id} style={{ width: column.id === tableLayout.columns.at(-1)?.id ? undefined : `var(--list-col-${column.id})` }} />)}
                       </colgroup>
                       <TableHeader>
                         <TableRow className="hover:bg-transparent">
-                          {ruleSortingEnabled && <TableHead className="w-[44px] px-2" aria-label={translateText("排序")} />}
-                          <TableHead className="whitespace-nowrap text-center">{translateText("状态")}</TableHead>
-                          <TableHead>{translateText("规则")}</TableHead>
-                          {user?.role === "admin" && <TableHead>{translateText("用户")}</TableHead>}
-                          <TableHead>{translateText("所属资源")}</TableHead>
-                          <TableHead>{translateText("转发入口")}</TableHead>
-                          <TableHead>{translateText("转发出口")}</TableHead>
-                          <TableHead>{translateText("链路")}</TableHead>
-                          <TableHead className="text-center">{translateText("协议")}</TableHead>
-                          {trafficMetricHeaderLabels.map((label) => (
-                            <TableHead key={label} className="whitespace-nowrap">{label}</TableHead>
-                          ))}
-                          <TableHead className="text-center">{translateText("开关")}</TableHead>
-                          <TableHead className="text-right">{translateText("操作")}</TableHead>
+                          <TableHead className="sticky left-0 z-20 w-[44px] bg-card px-2 text-center" style={{ background: "color-mix(in srgb, var(--muted) 70%, var(--card))" }}>
+                            <ListSettings columns={tableLayout.allColumns} layout={tableLayout.layout} onChange={tableLayout.setLayout} onReset={tableLayout.reset} />
+                          </TableHead>
+                          {tableLayout.columns.map(column => <TableHead key={column.id} className={cn("relative overflow-hidden whitespace-nowrap px-3 pr-4", ["status", "protocol", "enabled"].includes(column.id) && "text-center", column.id === "actions" && "text-right")}>
+                            <span className="block truncate" title={translateText(column.label)}>{translateText(column.label)}</span>
+                            <ColumnResizeHandle column={column} onResize={width => tableLayout.setLayout({ ...tableLayout.layout, widths: { ...tableLayout.layout.widths, [column.id]: width } })} onReset={() => {
+                              const widths = { ...tableLayout.layout.widths };
+                              delete widths[column.id];
+                              tableLayout.setLayout({ ...tableLayout.layout, widths });
+                            }} />
+                          </TableHead>)}
                         </TableRow>
                       </TableHeader>
                       {shouldGroupRuleCards ? (
@@ -6983,7 +6988,7 @@ function RulesContent() {
                             return (
                               <Fragment key={group.type}>
                                 <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/50">
-                                  <TableCell colSpan={user?.role === "admin" ? 13 : 12} className="p-1">
+                                  <TableCell colSpan={tableLayout.columns.length + 1} className="p-1">
                                     {renderRuleGroupHeader(group, true)}
                                   </TableCell>
                                 </TableRow>
@@ -7009,7 +7014,7 @@ function RulesContent() {
               </Card>
             </>
           )}
-          <PersistentPagination pagination={rulePagination} itemName={translateText("条规则")} />
+          <PersistentPagination pagination={rulePagination} itemName={translateText("条规则")} className="mt-5" />
         </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -7488,6 +7493,7 @@ function RulesContent() {
               )}
             </div>
             )}
+            {(editingId ? editingRuleOwnerId === Number(user?.id) : !createOwnerUserId || createOwnerUserId === Number(user?.id)) && <RuleGroupMultiSelect value={formGroupIds} onChange={setFormGroupIds} />}
             {user?.role === "admin" && <RuleLimitsForm key={`${showDialog}-${editingId}`} value={form.limits} onChange={limits => setForm(prev => ({ ...prev, limits }))} />}
           </div>
           <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 pt-3">
@@ -7655,7 +7661,7 @@ function RulesContent() {
           </DialogHeader>
           <div className="max-h-[72vh] space-y-4 overflow-y-auto pr-1">
             <div className={segmentedControlClassName}>
-              <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+              <div className={cn("grid grid-cols-2 gap-1", isOwnRuleScope ? "sm:grid-cols-5" : "sm:grid-cols-4")}>
                 <button
                   type="button"
                   className={routeModeOptionClass(isBatchCopyMode, copyActionPending)}
@@ -7696,10 +7702,11 @@ function RulesContent() {
                   <Upload className="h-4 w-4 shrink-0" />
                   <span className="truncate">{translateText("批量导入")}</span>
                 </button>
+                {isOwnRuleScope && <button type="button" className={routeModeOptionClass(isBatchGroupMode, copyActionPending)} aria-pressed={isBatchGroupMode} onClick={() => switchCopyManageMode("groups")} disabled={copyActionPending}><Layers3 className="h-4 w-4 shrink-0" /><span className="truncate">{translateText("调整分组")}</span></button>}
               </div>
             </div>
 
-            {isBatchImportMode ? (
+            {isBatchGroupMode ? <RuleGroupBulkEditor /> : isBatchImportMode ? (
               <>
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_3.5rem_minmax(0,0.82fr)] lg:items-start">
                 <div className="space-y-3 rounded-md border border-border/60 bg-background/55 p-3">
@@ -8259,7 +8266,7 @@ function RulesContent() {
             )}
           </div>
           <DialogFooter className="gap-2 sm:justify-between">
-            {isBatchImportMode ? (
+            {isBatchGroupMode ? <Button variant="outline" onClick={() => setShowCopyDialog(false)}>{translateText("关闭")}</Button> : isBatchImportMode ? (
               <>
                 <div />
                 <div className="flex flex-wrap gap-2">

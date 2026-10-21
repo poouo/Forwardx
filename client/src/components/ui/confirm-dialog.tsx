@@ -69,7 +69,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
               </DialogDescription>
             </div>
           </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
+          <DialogFooter>
             <Button variant="outline" onClick={() => close(false)}>{pending?.cancelText || translateText("取消")}</Button>
             <Button
               variant={pending?.tone === "destructive" ? "destructive" : "default"}

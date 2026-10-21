@@ -140,7 +140,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.120"
+	fxpRuntimeVersion    = "2.2.121"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -1007,20 +1007,18 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 	defer client.Close()
 	var first []byte
 	proxyInfo := proxyProtocolInfoFromConn(client)
-	initialTimeout := 150 * time.Millisecond
 	if cfg.ProxyProtocolReceive {
-		initialTimeout = 5 * time.Second
-	}
-	initial, err := readInitialTCPPayload(client, initialTimeout)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil
+		// Only PROXY header parsing requires a pre-read. Otherwise establish
+		// the downstream immediately, including for server-first protocols.
+		initialTimeout := 5 * time.Second
+		initial, err := readInitialTCPPayload(client, initialTimeout)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
-		return err
-	}
-	first = initial
-	if cfg.ProxyProtocolReceive {
-		parsed, remaining, ok, err := consumeProxyProtocolFromConn(client, first, initialTimeout)
+		parsed, remaining, ok, err := consumeProxyProtocolFromConn(client, initial, initialTimeout)
 		if err != nil {
 			return err
 		}
@@ -1681,8 +1679,10 @@ func (s *udpEntrySession) writeLoop() {
 }
 
 func (s *udpEntrySession) readLoop() {
+	reader := &secureFrameReader{conn: s.sec}
+	defer reader.release()
 	for {
-		frame, err := s.sec.readFrame()
+		frame, err := reader.readFrame()
 		if err != nil {
 			if !isClosedErr(err) {
 				log.Printf("entry udp read failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
@@ -1928,8 +1928,10 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 	touch := func() { lastActivity.Store(time.Now().UnixNano()) }
 	errCh := make(chan error, 2)
 	go func() {
+		reader := &secureFrameReader{conn: sec}
+		defer reader.release()
 		for {
-			frame, err := sec.readFrame()
+			frame, err := reader.readFrame()
 			if err != nil {
 				errCh <- err
 				return
@@ -2186,8 +2188,10 @@ func relayBidir(up *secureConn, down *secureConn) error {
 }
 
 func relayCopy(src, dst *secureConn) error {
+	reader := &secureFrameReader{conn: src}
+	defer reader.release()
 	for {
-		frame, err := src.readFrame()
+		frame, err := reader.readFrame()
 		if err != nil {
 			return err
 		}
@@ -2317,8 +2321,10 @@ func copyPlainToSecureWithPolicy(dst *secureConn, src net.Conn, limiter *limiter
 }
 
 func copySecureToPlain(dst net.Conn, src *secureConn, limiter *limiter, counter *atomic.Uint64) error {
+	reader := &secureFrameReader{conn: src}
+	defer reader.release()
 	for {
-		frame, err := src.readFrame()
+		frame, err := reader.readFrame()
 		if err != nil {
 			if errors.Is(err, io.EOF) && !src.logicalFrames {
 				return nil

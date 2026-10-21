@@ -1218,7 +1218,7 @@ export default function AffiliatesPage({ admin = false }: { admin?: boolean }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   return (
     <DashboardLayout>
-      <div className="mx-auto w-full min-w-0 max-w-7xl space-y-6">
+      <div className="w-full min-w-0 space-y-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight">

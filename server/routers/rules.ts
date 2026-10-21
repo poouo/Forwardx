@@ -8,13 +8,22 @@ import { trafficRulesRouter } from "./rules.traffic";
 import { canUseForwardRuleResource, getLinkAccessScope } from "../linkAccessView";
 import { isManagedForwardGroupChildRule } from "../forwardRuleVisibility";
 import { assertRuleWritable } from "../../shared/ruleLimits";
+import { personalRuleGroupsRouter } from "./rules.groups";
+import { ruleGroupFilterSchema } from "../../shared/ruleGroups";
+import { getRulePersonalGroupIds } from "../repositories/ruleGroupRepository";
 
 async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
-  if (user.role === "admin") return value;
-  const scope = await getLinkAccessScope(user);
+  const scope = user.role === "admin" ? null : await getLinkAccessScope(user);
+  const rules: any[] = Array.isArray(value) ? value : value && Array.isArray((value as any).items) ? (value as any).items : value ? [value] : [];
+  const ownIds = rules.filter(rule => Number(rule.userId) === user.id).map(rule => Number(rule.id));
+  const groups = new Map<number, number[]>();
+  for (let offset = 0; offset < ownIds.length; offset += 400) {
+    for (const [id, ids] of await getRulePersonalGroupIds(user.id, ownIds.slice(offset, offset + 400))) groups.set(id, ids);
+  }
   const decorate = (rule: any) => ({
     ...rule,
-    resourceAccessAllowed: canUseForwardRuleResource(rule, scope),
+    personalGroupIds: groups.get(Number(rule.id)) || [],
+    ...(scope ? { resourceAccessAllowed: canUseForwardRuleResource(rule, scope) } : {}),
   });
   if (Array.isArray(value)) return value.map(decorate) as T;
   if (value && Array.isArray((value as any).items)) {
@@ -27,6 +36,7 @@ async function withRuleResourceAccess<T extends any>(value: T, user: { id: numbe
 type RuleListCategory = "all" | "local" | "tunnel" | "chain" | "group";
 type RuleResourceType = "local" | "tunnel" | "chain" | "group";
 type RuleListFilters = {
+  personalGroupId?: number | null;
   userId?: number;
   scope?: "self" | "all";
   entryHostId?: number | null;
@@ -49,6 +59,8 @@ async function getRuleListRepositoryInput(
     : user.id;
   return {
     ownerUserId,
+    personalGroupId: input.personalGroupId,
+    personalGroupOwnerId: user.id,
     searchVisibleHostIds: accessScope
       ? Array.from(accessScope.useHostIds || accessScope.hostIds)
       : undefined,
@@ -91,6 +103,7 @@ export const rulesRouter = router({
     }),
   listPage: protectedProcedure
     .input(z.object({
+      personalGroupId: ruleGroupFilterSchema,
       page: z.number().int().positive().default(1),
       pageSize: z.number().int().min(1).max(100).default(12),
       userId: z.number().optional(),
@@ -108,6 +121,7 @@ export const rulesRouter = router({
     }),
   mapItems: protectedProcedure
     .input(z.object({
+      personalGroupId: ruleGroupFilterSchema,
       cursor: z.number().int().min(0).optional(),
       limit: z.number().int().min(20).max(250).default(100),
       userId: z.number().optional(),
@@ -125,6 +139,7 @@ export const rulesRouter = router({
     }),
   listSummary: protectedProcedure
     .input(z.object({
+      personalGroupId: ruleGroupFilterSchema,
       userId: z.number().optional(),
       scope: z.enum(["self", "all"]).optional(),
       entryHostId: z.number().int().positive().nullable().optional(),
@@ -189,6 +204,7 @@ export const rulesRouter = router({
       return { success: true };
     }),
   ...portsRulesRouter._def.procedures,
+  ...personalRuleGroupsRouter._def.procedures,
   ...crudRulesRouter._def.procedures,
   ...trafficRulesRouter._def.procedures,
   ...selfTestRulesRouter._def.procedures,

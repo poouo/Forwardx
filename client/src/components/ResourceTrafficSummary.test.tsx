@@ -44,3 +44,14 @@ test("resource summaries can omit a duplicate count and translate rule scope", a
     await initializeLanguage();
   }
 });
+
+test("table summaries stay on two compact lines and keep complete values in a tooltip", () => {
+  const summary = { bytesIn: 1024, bytesOut: 2048, totalBytes: 3072, ruleCount: 321 };
+  const html = renderToStaticMarkup(<ResourceTrafficSummary summary={summary} compact table />);
+  assert.doesNotMatch(html, /flex-wrap|min-w-\[10rem\]/);
+  assert.match(html, /whitespace-nowrap/);
+  assert.match(html, /引用规则.*321/);
+  assert.match(html, /title="[^"]*入向 1\.00 KB · 出向 2\.00 KB/);
+  assert.match(html, /3\.00 KB/);
+  assert.doesNotMatch(renderToStaticMarkup(<ResourceTrafficSummary summary={summary} table showRuleCount={false} />), /引用规则/);
+});

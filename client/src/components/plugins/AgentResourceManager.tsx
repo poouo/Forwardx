@@ -42,6 +42,8 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "@/lib/localizedToast";
+import SysctlEditor from "./SysctlEditor";
+import { parseSysctlConfig } from "@shared/sysctlConfig";
 import {
   failedResourceSnapshot,
   hydrateCachedResourceSnapshot,
@@ -683,6 +685,11 @@ export function AgentResourceManager({
 
   const validateForm = () => {
     for (const field of view.fields || []) {
+      if (field.type === "sysctl" && conditionsMatch(field.visibleWhen, conditionContext)) {
+        try {
+          if (!parseSysctlConfig(String(form[field.key] ?? "")).size) throw new Error(translateText("请至少填写一个参数"));
+        } catch (error) { toast.error((error as Error).message); return false; }
+      }
       if (!conditionsMatch(field.visibleWhen, conditionContext) || !field.required) continue;
       const value = form[field.key];
       const empty = Array.isArray(value) ? value.length === 0 : String(value ?? "").trim() === "";
@@ -697,12 +704,17 @@ export function AgentResourceManager({
   const operationInput = (row?: any) => {
     const resourceId = row ? valueAtPath(row, view.rowKey || "id") : valueAtPath(form, view.rowKey || "id");
     const idInputKey = view.idInputKey || view.rowKey || "id";
+    // sysctl views can include large, read-only runtime/saved comparisons.
+    // Do not duplicate those snapshots into write requests or script arguments.
+    const inputForm = view.fields?.some((field) => field.type === "sysctl")
+      ? Object.fromEntries(Object.entries(form).filter(([key]) => !view.fields?.some((field) => field.key === key && field.readOnly)))
+      : form;
     return {
-      ...form,
+      ...inputForm,
       [idInputKey]: resourceId ?? "",
       [view.rowKey || "id"]: resourceId ?? "",
       resourceId: resourceId ?? "",
-      payload: form,
+      payload: inputForm,
       selected: row || selectedRow || {},
     };
   };
@@ -799,11 +811,13 @@ export function AgentResourceManager({
     const value = form[field.key];
     const setValue = (next: unknown) => setForm((current) => ({ ...current, [field.key]: next }));
     const options = dynamicOptions(field);
-    const wide = field.type === "textarea" || field.type === "multi-select" || field.type === "boolean";
+    const wide = field.type === "sysctl" || field.type === "textarea" || field.type === "multi-select" || field.type === "boolean";
     return (
       <div key={field.key} className={cn("space-y-2", wide && "sm:col-span-2")}>
         {field.type !== "boolean" && <Label>{field.label}{field.required ? " *" : ""}</Label>}
-        {field.type === "textarea" ? (
+        {field.type === "sysctl" ? (
+          <SysctlEditor value={String(value ?? "")} onChange={setValue} disabled={disabled} />
+        ) : field.type === "textarea" ? (
           <Textarea value={String(value ?? "")} disabled={disabled} placeholder={field.placeholder} className="min-h-24" onChange={(event) => setValue(event.target.value)} />
         ) : field.type === "boolean" ? (
           <div className="flex min-h-10 items-center justify-between gap-4 rounded-md border border-border/50 px-3 py-2">

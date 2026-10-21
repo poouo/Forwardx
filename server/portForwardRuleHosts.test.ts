@@ -112,8 +112,17 @@ test("pending rule cleanup never remains an active host delete blocker", () => {
     await runtime.executeRaw('CREATE TABLE "forward_group_members" ("id" INTEGER PRIMARY KEY, "groupId" INTEGER NOT NULL, "memberType" TEXT NOT NULL, "hostId" INTEGER, "priority" INTEGER NOT NULL, "ruleId" INTEGER, "updatedAt" INTEGER)');
     await runtime.executeRaw('CREATE TABLE "forward_rules" ("id" INTEGER PRIMARY KEY, "hostId" INTEGER NOT NULL, "userId" INTEGER NOT NULL, "forwardGroupId" INTEGER, "forwardGroupRuleId" INTEGER, "forwardGroupMemberId" INTEGER, "isForwardGroupTemplate" INTEGER NOT NULL, "isEnabled" INTEGER NOT NULL, "pendingDelete" INTEGER NOT NULL, "isRunning" INTEGER NOT NULL, "updatedAt" INTEGER NOT NULL)');
     await runtime.executeRaw('CREATE TABLE "forward_rule_tunnel_exits" ("id" INTEGER PRIMARY KEY, "ruleId" INTEGER NOT NULL)');
-    await runtime.executeRaw('INSERT INTO "users" ("id", "username", "name") VALUES (99, \'customer-a\', \'Customer A\')');
-    await runtime.executeRaw('INSERT INTO "forward_rules" ("id", "hostId", "userId", "forwardGroupId", "forwardGroupRuleId", "forwardGroupMemberId", "isForwardGroupTemplate", "isEnabled", "pendingDelete", "isRunning", "updatedAt") VALUES (10, 2, 99, NULL, NULL, NULL, 0, 1, 0, 1, 1)');
+    // Exercise the real upgrade path from the minimal legacy schema above,
+    // including the personal-group tables used during final deletion.
+    await (await import(moduleUrl("server/dbSchema.ts"))).ensureDatabaseSchema();
+    await runtime.insertAndGetId("users", { id: 99, username: "customer-a", name: "Customer A", password: "unused", role: "user" });
+    await runtime.insertAndGetId("forward_rules", {
+      id: 10, name: "Cleanup rule", hostId: 2, userId: 99, sourcePort: 10000,
+      targetIp: "192.0.2.1", targetPort: 443, isEnabled: true, isRunning: true,
+      isForwardGroupTemplate: false, pendingDelete: false, updatedAt: new Date(1000),
+    });
+    await runtime.insertAndGetId("rule_groups", { id: 123, userId: 99, name: "Cleanup group" });
+    await runtime.insertAndGetId("rule_group_members", { userId: 99, ruleId: 10, groupId: 123 });
 
     assert.deepEqual(await hostRepository.getHostRuleDeleteBlockers(2), {
       ruleCount: 1,
@@ -146,6 +155,8 @@ test("pending rule cleanup never remains an active host delete blocker", () => {
 
     assert.equal(await ruleRepository.purgeSettledPendingForwardRuleDeletes(), 1);
     assert.deepEqual(await runtime.queryRaw('SELECT "id" FROM "forward_rules" WHERE "id" = 10'), []);
+    assert.deepEqual(await runtime.queryRaw('SELECT "id" FROM "rule_group_members" WHERE "ruleId" = 10'), []);
+    assert.equal((await runtime.queryRaw('SELECT "id" FROM "rule_groups" WHERE "id" = 123')).length, 1);
     await runtime.closeDatabase();
   `;
 

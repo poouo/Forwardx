@@ -12,8 +12,10 @@ import { normalizeAgentProbeCounts } from "../../shared/agentDtos";
 import { LATENCY_HISTORY_HOURS } from "../../shared/latencyHistory";
 import { deleteExpiredHistoryRows } from "./historyRetention";
 import { latencyDayBucketExpression, queryLatestHistoryRows } from "./latencyHistoryRepository";
+import { normalizeHostProbeMethod, type HostProbeMethod } from "../../shared/urlProbe";
+import { urlProbeKey } from "../urlProbe";
 
-export type HostProbeMethod = "tcping" | "ping";
+export type { HostProbeMethod } from "../../shared/urlProbe";
 export type HostProbeScope = "all" | "exclude" | "specific";
 
 export type HostProbeServiceInput = {
@@ -21,6 +23,9 @@ export type HostProbeServiceInput = {
   method: HostProbeMethod;
   targetIp: string;
   targetPort?: number | null;
+  targetUrl?: string | null;
+  timeoutSeconds?: number;
+  expectedStatus?: number;
   hostScope: HostProbeScope;
   hostIds?: number[];
   excludeHostIds?: number[];
@@ -64,13 +69,16 @@ function normalizeSortOrder(value: unknown) {
 }
 
 function normalizeServiceInput(input: HostProbeServiceInput): InsertHostProbeService {
-  const method = input.method === "ping" ? "ping" : "tcping";
+  const method = normalizeHostProbeMethod(input.method);
   const hostScope = input.hostScope === "exclude" || input.hostScope === "specific" ? input.hostScope : "all";
   const payload = {
     name: input.name.trim(),
     method,
     targetIp: input.targetIp.trim(),
     targetPort: method === "tcping" ? Number(input.targetPort) : null,
+    targetUrl: method === "url" ? input.targetUrl?.trim() || null : null,
+    timeoutSeconds: input.timeoutSeconds ?? 5,
+    expectedStatus: input.expectedStatus ?? 200,
     hostScope,
     hostIds: hostScope === "specific" ? serializeIds(input.hostIds) : null,
     excludeHostIds: hostScope === "exclude" ? serializeIds(input.excludeHostIds) : null,
@@ -89,6 +97,8 @@ export function mapHostProbeService(row: any) {
     ...row,
     id: Number(row?.id || 0),
     targetPort: row?.targetPort == null ? null : Number(row.targetPort),
+    timeoutSeconds: Number(row?.timeoutSeconds ?? 5),
+    expectedStatus: Number(row?.expectedStatus ?? 200),
     intervalSeconds: normalizeIntervalSeconds(row?.intervalSeconds),
     isEnabled: rowBool(row?.isEnabled),
     sortOrder: normalizeSortOrder(row?.sortOrder),
@@ -188,12 +198,18 @@ export async function getHostProbeTasksForHost(hostId: number) {
     .filter((service: any) => serviceAppliesToHost(service, hostId))
     .map((service: any) => ({
       serviceId: service.id,
-      method: service.method === "ping" ? "ping" : "tcping",
+      method: normalizeHostProbeMethod(service.method),
       targetIp: service.targetIp,
       targetPort: service.method === "tcping" ? Number(service.targetPort || 0) : 0,
+      ...(service.method === "url" ? {
+        targetUrl: service.targetUrl,
+        timeoutSeconds: service.timeoutSeconds,
+        expectedStatus: service.expectedStatus,
+        probeKey: urlProbeKey({ serviceId: service.id, ...service }),
+      } : {}),
       intervalSeconds: service.intervalSeconds,
     }))
-    .filter((task: any) => task.serviceId > 0 && task.targetIp && (task.method === "ping" || task.targetPort > 0));
+    .filter((task: any) => task.serviceId > 0 && task.targetIp && (task.method === "url" ? !!task.targetUrl : task.method === "ping" || task.targetPort > 0));
 }
 
 export async function insertHostProbeServiceStats(stats: InsertHostProbeServiceStat[]) {

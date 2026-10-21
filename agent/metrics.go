@@ -506,6 +506,9 @@ type tcpingTask struct {
 	Method          string
 	TargetIP        string
 	TargetPort      int
+	TargetURL       string
+	TimeoutSeconds  int
+	ExpectedStatus  int
 	HopIndex        int
 	HopCount        int
 	FailoverSeconds int
@@ -1376,6 +1379,14 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 			continue
 		}
 		method := strings.ToLower(strings.TrimSpace(probe.Method))
+		if method == "url" {
+			serviceTasks = append(serviceTasks, tcpingTask{
+				Kind: "service", ServiceID: probe.ServiceID, Method: "url", TargetIP: probe.TargetIP,
+				TargetURL: probe.TargetURL, TimeoutSeconds: probe.TimeoutSeconds, ExpectedStatus: probe.ExpectedStatus,
+				ProbeKey: urlProbeKey(probe.ServiceID, probe.TargetURL, probe.TimeoutSeconds, probe.ExpectedStatus),
+			})
+			continue
+		}
 		if method == "ping" {
 			serviceTasks = append(serviceTasks, tcpingTask{
 				Kind:      "service",
@@ -1873,6 +1884,8 @@ func executeTCPingTaskWithProbes(
 		if measurement.Reachable {
 			measurement.ProbeSuccesses = 1
 		}
+	} else if task.Kind == "service" && task.Method == "url" {
+		measurement = urlConnectionProbe(task.TargetURL, task.TimeoutSeconds, task.ExpectedStatus)
 	} else {
 		measurement = tcpLatencyWithProbes(task.TargetIP, task.TargetPort, tcpingProbeTimeout, tcpingTCPProbeCount)
 	}

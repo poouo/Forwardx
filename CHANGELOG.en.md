@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [2.3.287] - 2026-10-21
+
+- Make affiliate management, referral and operations pages fill the dashboard content width.
+- Add author support under Open Source & Contact in Settings, with the README's wallet addresses and copy actions.
+- Fix clipped card shadows in rules, host management and public monitoring while preserving hover and group disclosure effects.
+- Add private rule groups with multi-group assignment, direct member selection, sorting and bulk editing; align card route/protocol/group badges in one row with a separate path; add a configurable group column, with Ungrouped last.
+- Add floating horizontal scrollbars to wide host, rule, tunnel and forwarding-group lists without scrolling to the table bottom.
+- Decrypt V1 forwarding frames in place with pooled buffers to reduce allocations and GC; skip payload pre-reads without PROXY reception to avoid a roughly 150ms delay for server-first connections.
+- Add the official BBR manager with per-host parameters, visual/text editing, BBR + FQ preset and restore; add BBR and Live2D logos.
+- Move rule quotas to an optional column and show card quota details in an info popover without increasing row or card height.
+- Fill host and rule tables to the container width, using the last visible column to remove trailing blank space.
+- Keep list settings panels within the available viewport height with scrollable options.
+- Add per-account host list columns, ordering and resizable widths; split details for shorter rows and remove pinned edge columns and shadows.
+- Prevent squeezed status badges and switches in link resource tables.
+- Fix clipped dialog content and unreachable save actions in short browser windows.
+- Fix invisible dialogs, blocked interactions and overridden drag transforms when interface animations are disabled.
+- Save rule list columns, order and widths per account; compact quota and resource traffic summaries to prevent oversized rows.
+- Keep the dashboard online indicator steady during background refreshes and give the date a subtle, theme-aware style.
+- Add host URL connection checks with HTTP/HTTPS, timeout and status validation, measuring fresh-connection time to first byte (requires an Agent update).
+- Fix custom branding and sidebar flashes on refresh, and overlapping confirmation actions in Chinese and English.
 - Move per-host resource alert configuration and notification recipients to service management; show alerts, China health status and IP switch history at the bottom of Operations.
 - Add a default-on, per-account animation switch in Profile to disable transitions, hover, list and chart animations.
 - Compact host, rule, tunnel, plan, billing, reminder and settings forms: pair short fields on mobile while preserving space for long content; move switch guidance to hover/focus hints and disable unavailable controls.
@@ -13,6 +33,8 @@
 - Combine host reminders and simplify copy; add opt-in traffic-threshold shutdown with a once-per-cycle guard (Agent update required).
 - Move dashboard date/user filters and traffic summaries to the top.
 - Fix ticket and affiliate sidebar visibility switches; align affiliate labels in admin navigation and settings.
+
+- Versions: panel `2.3.287`, Android / iOS `2.4.5`, Agent `2.2.200`, ForwardX FXP runtime `2.2.121`. URL checks and V1 optimizations require an Agent/runtime update.
 
 ## [2.3.286] - 2026-10-19
 
@@ -197,236 +219,3 @@ Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are
 ### Versions
 
 - Panel/APK release: 2.3.278; Agent: 2.2.192; ForwardX FXP runtime: 2.2.116; Android: 2.3.97.
-
-## [2.3.277] - 2026-08-23
-
-### Fixes and improvements
-
-- Fix local development proxies, automatic sign-in and shutdown cleanup to reduce disconnect noise.
-- Improve Agent/FXP state, traffic/connection counters and rule recovery.
-- Fix whitelist-plugin nftables error handling; improve login challenges and installation/upgrade scripts.
-
-### Versions
-
-- Panel/APK release: 2.3.277; Agent: 2.2.191; ForwardX FXP runtime: 2.2.115; Android: 2.3.97.
-
-## [2.3.276] - 2026-08-14
-
-### Added
-
-- Add interactive local/container administrator password-reset commands that revoke existing sessions.
-
-### Fixes and improvements
-
-- Harden disabled accounts, 2FA, Telegram login, payment callbacks, billing and concurrent port allocation.
-- Optimize port policies, logs, state caches and Agent/FXP scheduling to reduce CPU, memory and process use.
-- Fix traffic-cycle boundaries, multi-range port policies, loopback validation, custom HTML, Markdown links and capacity display.
-
-### Versions
-
-- Panel/APK release: 2.3.276; Agent: 2.2.190; ForwardX FXP runtime: 2.2.114; Android: 2.3.97.
-
-## [2.3.275] - 2026-08-13
-
-### Fixes and improvements
-
-- Restore failover members by priority and switch back to higher-priority recovered members.
-- Preserve previous state during rule-page refresh and fix ordinary-user entry-domain inconsistencies.
-- Add GitHub download acceleration, installer support, deployment documentation and upgrade verification.
-
-### Versions
-
-- Panel/APK release: 2.3.275; Agent: 2.2.189; ForwardX FXP runtime: 2.2.113; Android: 2.3.97.
-
-## [2.3.274] - 2026-08-09
-
-### Added
-
-- Support multiple simultaneous plans, combined entitlements and separate plan/manual/add-on traffic display.
-
-### Fixes and improvements
-
-- Fix resource reclamation, cycle display and Agent refresh after plan expiry, resets and renewals.
-- Fix Agent/FXP traffic/connection accounting and improve UDP buffer cleanup and offline heartbeat retries.
-
-### Versions
-
-- Panel/APK release: 2.3.274; Agent: 2.2.188; ForwardX FXP runtime: 2.2.113; Android: 2.3.97.
-
-## [2.3.273] - 2026-08-07
-
-### Added
-
-- Add resource speed limits to port forwarding, chains and groups across GOST, ForwardX, iptables, nftables, Realm, Socat and Nginx.
-
-### Fixed
-
-- Fix Agent offline decisions and DDNS failover delays, with bounded retries on failed transitions.
-- Fix listener handover, restart recovery and state synchronization for ForwardX, mimic and failover.
-- Fix monthly plan reset days, subsequent traffic cycles and recovery after over-quota suspension.
-- Fix truncated long-range host latency charts, shifted time axes and initial display state.
-- Allow deleting saved AI API keys.
-
-### Versions
-
-- Panel/APK release: 2.3.273; Agent: 2.2.187; ForwardX FXP runtime: 2.2.112; Android: 2.3.97.
-
-## [2.3.272] - 2026-08-04
-
-### Fixed
-
-- Fix a WireGuard UDP shutdown deadlock between queue cleanup and the write loop.
-- Fix older nftables parsing, forwarding-chain accepts and missing fallback after MASQUERADE failure.
-
-### Versions
-
-- Panel/APK release: 2.3.272; Agent: 2.2.186; ForwardX FXP runtime: 2.2.112; Android: 2.3.97.
-
-## [2.3.271] - 2026-08-04
-
-### Fixed
-
-- Fix incomplete signed paths under mounted Agent/FXP report routes causing repeated 401 responses, and lost forced refreshes during busy probes.
-- Repair confirmable historical group child/member/deletion leftovers that hide rules or block host deletion.
-- Fix tunnel probe success reported with only exit results, stale results for missing first hops, tunnel timeout state and total latency display.
-- Fix the WireGuard UDP queue-cleanup/write-loop shutdown deadlock.
-- Fix older nftables parsing, forwarding-chain accepts and missing MASQUERADE fallback.
-
-### Versions
-
-- Panel/APK release: 2.3.271; Agent: 2.2.186; ForwardX FXP runtime: 2.2.112; Android: 2.3.97.
-
-## [2.3.270] - 2026-08-04
-
-### Fixed
-
-- Stop reusing stale Agent/FXP processes after upgrades/configuration changes when forwarding works but traffic reports do not.
-- Fix missing short-lived GOST/process connections leaving 24-hour counts at zero.
-- Add FXP traffic-report throttling diagnostics and idempotent failed-batch retries.
-- Fix early GOST/ForwardX UDP session closure and interrupted rebuilt sessions; reduce high-packet-rate overhead and bound queues/fragments.
-- Use one bounded heartbeat retry queue and cancel retries immediately after any successful heartbeat.
-- Fix pending-cleanup rules blocking Token deletion; show owning users for genuine rule conflicts.
-
-### Versions
-
-- Panel/APK release: 2.3.270; Agent: 2.2.184; ForwardX FXP runtime: 2.2.112; Android: 2.3.97.
-
-## [2.3.269] - 2026-08-02
-
-### Fixed
-
-- Fix ordinary-user group traffic/connection ownership and cumulative Agent/FXP connection counts.
-- Fix repeated restarts or counting interruptions during access-limit and TCP/UDP counting-chain recovery.
-- Fix entry-port false conflicts and concurrent allocation during batch imports, copies and cross-group moves.
-- Fix misleading “waiting for probe” tunnel segments and exit-group wording.
-
-### Versions
-
-- Panel/APK release: 2.3.269; Agent: 2.2.183; ForwardX FXP runtime: 2.2.111; Android: 2.3.97.
-
-## [2.3.268] - 2026-08-01
-
-### Added
-
-- Separate plan and usage-billed traffic statistics and reset display baselines.
-- Add custom-menu panel routes, embedded pages and new-window modes.
-- Add tunnel/multi-entry latency details and troubleshooting screenshots.
-
-### Fixed
-
-- Fix Agent/FXP recovery/listener validation after restarts, upgrades and V1/V2/WireGuard/GOST transitions.
-- Preserve firewall counters and avoid duplicate cleanup/count loss during recovery and rule repair.
-- Fix topology matching, concurrent refresh, timeouts and stale-result reuse in tunnel/chain/multi-entry probes.
-- Fix latency-node attribution, ordinary-user traffic display and custom-menu embedding.
-
-### Versions
-
-- Panel/APK release: 2.3.268; Agent: 2.2.182; ForwardX FXP runtime: 2.2.110; Android: 2.3.97.
-
-## [2.3.267] - 2026-08-01
-
-### Fixed
-
-- Prevent payment callbacks reactivating closed orders, and enable PostgreSQL TLS certificate validation.
-
-### Versions
-
-- Panel/APK release: 2.3.267; Agent: 2.2.181; ForwardX FXP runtime: 2.2.110; Android: 2.3.97.
-
-## [2.3.266] - 2026-07-30
-
-### Added
-
-- Allow correcting host cumulative traffic to a specified actual value.
-
-### Fixed
-
-- Fix six native GOST transports, UDP-only rule protocols and multi-hop relay authentication.
-- Fix stale FXP state/authentication after switching to GOST, with transactional handover, rollback and recovery.
-- Fix ordinary-user rule isolation and returning from empty filtered results.
-
-### Improved
-
-- Adjust host card/list actions, remove instantaneous traffic animations and clarify Token creation times.
-
-### Versions
-
-- Panel/APK release: 2.3.266; Agent: 2.2.181; ForwardX FXP runtime: 2.2.110; Android: 2.3.97.
-
-## [2.3.265] - 2026-07-30
-
-### Fixed
-
-- Stabilize Agent handover, listener readiness and recovery between ForwardX V1/V2, WireGuard and GOST/Nginx.
-- Support independent host port ranges per chain member; fix synchronization rollback, probes and traffic ownership.
-- Verify Docker images and running versions before reporting a successful upgrade.
-- Build/verify native amd64/arm64 images before merging manifests to avoid missing ARM64 images after QEMU failures.
-- Fix occasional duplicate tunnel-latency queries at timeout boundaries.
-
-### Versions
-
-- Panel/APK release: 2.3.265; Agent: 2.2.180; ForwardX FXP runtime: 2.2.110; Android: 2.3.96.
-
-## [2.3.264] - 2026-07-29
-
-### Added
-
-- Support drag/drop or multi-file upload of Nginx Stream PEM certificate chains and private keys.
-
-### Fixed
-
-- Fix memory, connection and stale-state cleanup for V1/V2 sessions, queues, handshakes and rule replacement.
-- Fix Nginx Stream TCP long-connection timeouts, entry certificates and stale-certificate cleanup; add session diagnostics.
-
-### Improved
-
-- Optimize large merged V1/V2 entry configurations to reduce Agent CPU/GC overhead.
-- Improve Token notes and standardize tunnel probe timeout messages.
-
-### Validation
-
-- Type checks, frontend build, Agent/FXP tests, race tests and go vet passed.
-
-### Versions
-
-- Panel/APK release: 2.3.264; Agent: 2.2.179; ForwardX FXP runtime: 2.2.110; Android: 2.3.96.
-
-## [2.3.263] - 2026-07-29
-
-### Fixed
-
-- Fix stale state, incorrect cleanup and unready WireGuard peers with FXP multi-entry and mixed V1/V2.
-- Stabilize group health switching against brief timeouts and panel communication fluctuations.
-- Fix inconsistent permissions during revocation, migration and usage billing, and prevent stale cleanup deleting a new rule on the same port.
-- Separate port-forwarding and network-test host permissions; hide unauthorized underlying hosts.
-- Preserve last valid domain addresses on expiry/DNS failures to avoid repeated resolution and runtime churn.
-- Fix duplicate, mixed or missing traffic accounting across iptables, nftables, Realm, Socat, GOST, Nginx and ForwardX.
-- Reduce firewall counter scanning/rebuilds with large rule sets, DNS changes and Agent restarts; support Alpine/BusyBox.
-
-### Validation
-
-- Server tests 427/427, Agent/FXP tests, types, production and documentation builds passed. Docker builds were not run.
-
-### Versions
-
-- Panel/APK release: 2.3.263; Agent: 2.2.178; ForwardX FXP runtime: 2.2.109; Android: 2.3.96.

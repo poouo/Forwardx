@@ -1,7 +1,65 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-22",
+  "updatedAt": "2026-10-21",
   "items": [
+    {
+      "id": "bbr-manager",
+      "name": "ForwardX BBR 管理",
+      "description": "按主机读取、配置和还原 BBR / TCP 参数，支持图形化与高级 sysctl 文本。",
+      "detailsMarkdown": "管理员可按主机读取真实拥塞控制算法、默认队列及现有网卡队列。支持图形化与高级文本双向编辑、BBR + FQ 预设、持久化和原参数还原。\n\n仅使用 Agent 上的 Python 3 标准库与系统 sysctl，不安装内核、不下载第三方脚本、不重建网卡队列。仅在管理员保存后修改参数，安装或启用插件不自动启用 BBR。",
+      "version": "1.0.0",
+      "releaseDate": "2026-10-21",
+      "updatedAt": "2026-10-21",
+      "changelog": "新增按主机 BBR / TCP 参数读取、双模式配置、BBR + FQ 预设及还原。",
+      "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+CiAgPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiIiB4MT0iMTIiIHkxPSI5IiB4Mj0iNTQiIHkyPSI1OSIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIHN0b3AtY29sb3I9IiMzOGJkZjgiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyNTYzZWIiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icyIgeDE9IjE4IiB5MT0iMjgiIHgyPSI0OCIgeTI9IjQxIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHN0b3Agc3RvcC1jb2xvcj0iIzY3ZThmOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2ZmZiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgogIDxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWZmNmZmIi8+CiAgPHJlY3QgeD0iNiIgeT0iNiIgd2lkdGg9IjUyIiBoZWlnaHQ9IjUyIiByeD0iMTUiIGZpbGw9InVybCgjYikiLz4KICA8cGF0aCBkPSJNMTcgNDNhMTkgMTkgMCAxIDEgMzAgMCIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utb3BhY2l0eT0iLjg1IiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Im0zMiAzNCAxMi0xMiIgc3Ryb2tlPSJ1cmwoI3MpIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9IjMyIiBjeT0iMzQiIHI9IjUiIGZpbGw9IiNmZmYiLz4KICA8cGF0aCBkPSJNMjAgNDdoMjRNMTcgMzRoM20yNCAwaDNNMzIgMTZ2MyIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
+      "features": [
+        {
+          "title": "真实参数",
+          "description": "读取内核拥塞算法、默认队列和现有接口队列。"
+        },
+        {
+          "title": "双模式编辑",
+          "description": "图形化与高级文本共用配置，保留自定义参数及注释。"
+        },
+        {
+          "title": "通用预设",
+          "description": "提供仅包含 BBR + FQ 的简洁预设。"
+        },
+        {
+          "title": "安全还原",
+          "description": "写入校验、失败回滚，支持恢复插件修改前的参数。"
+        }
+      ],
+      "tags": [
+        "bbr",
+        "tcp",
+        "sysctl",
+        "agent"
+      ],
+      "license": "AGPL-3.0-only",
+      "repository": "https://github.com/poouo/Forwardx",
+      "branch": "main",
+      "manifestPath": "plugins/bbr-manager/forwardx-plugin.json",
+      "homepage": "https://github.com/poouo/Forwardx",
+      "author": "ForwardX",
+      "packageRepository": "https://github.com/poouo/Forwardx",
+      "packageBranch": "main",
+      "packagePath": "plugins/packages/bbr-manager.tar.gz",
+      "bundledPath": "plugins/bbr-manager",
+      "category": "automation",
+      "permissions": [
+        "read:hosts",
+        "agent:read",
+        "agent:write",
+        "ui:interactive",
+        "ui:page"
+      ],
+      "extensionPoints": [
+        "sidebar.page"
+      ],
+      "official": true,
+      "builtIn": true
+    },
     {
       "id": "china-region-whitelist",
       "name": "ForwardX 中国区域白名单",
@@ -52,10 +110,11 @@
       "name": "ForwardX Live2D 看板娘",
       "description": "在面板中按需启用并配置 stevenjoezhang/live2d-widget 看板娘。",
       "detailsMarkdown": "ForwardX Live2D 看板娘是 `stevenjoezhang/live2d-widget` 的官方适配插件。\n\n插件默认关闭；安装并启用后，浏览器才会按设置加载固定版本的上游运行时和模型资源。面板端不执行插件包内的任意 JavaScript。\n\n- 可设置显示范围、移动端显示、模型 CDN、默认模型和停靠位置。\n- 可选择一言、切换模型、换装、拍照、项目说明和关闭等工具。\n- 可设置拖动、关闭后的重新唤起方式和日志等级。\n- ForwardX 不打包 Live2D 模型；模型资源的许可由所配置的模型仓库单独决定。",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "releaseDate": "2026-07-24",
-      "updatedAt": "2026-07-24",
-      "changelog": "首个版本：提供声明式配置、按需加载、桌面与移动端显示控制及许可证说明。",
+      "updatedAt": "2026-10-21",
+      "changelog": "补充原创看板娘 Logo。",
+      "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+CiAgPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJoIiB4MT0iMTIiIHkxPSIxMiIgeDI9IjUxIiB5Mj0iNTQiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj48c3RvcCBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZWM0ODk5Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+CiAgPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTgiIGZpbGw9IiNmYWY1ZmYiLz4KICA8cGF0aCBkPSJNMTIgNDVWMjlDMTIgMTcgMjEgMTAgMzIgMTBzMjAgNyAyMCAxOXYxNmwtOCA3SDIwbC04LTdaIiBmaWxsPSJ1cmwoI2gpIi8+CiAgPHBhdGggZD0iTTE5IDMwYzYgMCAxMi00IDE1LTkgMiA1IDcgOCAxMSA5djhjMCA4LTYgMTQtMTMgMTRzLTEzLTYtMTMtMTR2LThaIiBmaWxsPSIjZmZmMWYyIi8+CiAgPHBhdGggZD0iTTI0IDM0djRtMTYtNHY0IiBzdHJva2U9IiM2ZDI4ZDkiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHBhdGggZD0iTTI5IDQzYzIgMiA0IDIgNiAwIiBzdHJva2U9IiNkYjI3NzciIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPGNpcmNsZSBjeD0iMjMiIGN5PSI0MSIgcj0iMiIgZmlsbD0iI2Y5YThkNCIvPjxjaXJjbGUgY3g9IjQxIiBjeT0iNDEiIHI9IjIiIGZpbGw9IiNmOWE4ZDQiLz4KICA8cGF0aCBkPSJtNDkgOSAyIDUgNSAyLTUgMi0yIDUtMi01LTUtMiA1LTIgMi01WiIgZmlsbD0iIzM4YmRmOCIgc3Ryb2tlPSIjZmFmNWZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KICA8cGF0aCBkPSJtMTMgNDkgMiAzLTIgMy0yLTMgMi0zWiIgZmlsbD0iI2E3OGJmYSIvPgo8L3N2Zz4K",
       "features": [
         { "title": "按需加载", "description": "插件关闭时不加载 Live2D 脚本、模型或周期任务。" },
         { "title": "完整配置", "description": "管理模型来源、默认模型、工具、拖动和关闭行为。" },

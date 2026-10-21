@@ -91,9 +91,9 @@ import { getSidebarMenuLabel, isSidebarMenuVisible, normalizeSidebarMenuSettings
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
 import PanelStartView from "./PanelStartView";
+import { readSiteBranding } from "@/lib/siteBranding";
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
-const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
 type SidebarNavItem = {
   icon: LucideIcon;
   label: string;
@@ -234,15 +234,6 @@ function clearUpgradeAnnouncementDisplaySession(userId?: number | null) {
     window.sessionStorage.removeItem(upgradeAnnouncementDisplaySessionKey(userId));
   } catch {
     // Ignore storage failures.
-  }
-}
-
-function readCachedSiteLogo() {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(SITE_LOGO_CACHE_KEY)?.trim() || "";
-  } catch {
-    return "";
   }
 }
 
@@ -489,10 +480,10 @@ function DashboardLayoutContent({
     retry: false,
     staleTime: 15000,
   });
-  const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
-  const [cachedSiteLogo, setCachedSiteLogo] = useState(() => readCachedSiteLogo());
+  const [cachedBranding] = useState(() => readSiteBranding());
+  const siteTitle = publicInfo ? publicInfo.siteTitle?.trim() || "ForwardX" : cachedBranding.siteTitle;
   const defaultLogoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
-  const logoSrc = publicInfo?.siteLogoDataUrl || (publicInfo ? defaultLogoSrc : cachedSiteLogo);
+  const logoSrc = publicInfo?.siteLogoDataUrl || (publicInfo ? defaultLogoSrc : cachedBranding.siteLogoDataUrl);
   const [displayLogoSrc, setDisplayLogoSrc] = useState(logoSrc);
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
   const logoMark = logoLoadFailed ? (
@@ -671,21 +662,6 @@ function DashboardLayoutContent({
   }, [showUpgradeAnnouncement, upgradeAnnouncement?.id]);
 
   useEffect(() => {
-    if (!publicInfo) return;
-    const nextLogo = publicInfo.siteLogoDataUrl || "";
-    setCachedSiteLogo(nextLogo);
-    try {
-      if (nextLogo) {
-        window.localStorage.setItem(SITE_LOGO_CACHE_KEY, nextLogo);
-      } else {
-        window.localStorage.removeItem(SITE_LOGO_CACHE_KEY);
-      }
-    } catch {
-      // Logo caching only prevents refresh flicker; it is safe to skip when storage is unavailable.
-    }
-  }, [publicInfo]);
-
-  useEffect(() => {
     setLogoLoadFailed(false);
     if (!logoSrc) {
       setDisplayLogoSrc("");
@@ -710,11 +686,6 @@ function DashboardLayoutContent({
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.title = siteTitle;
-    }
-    try {
-      window.localStorage.setItem("forwardx.siteTitle", siteTitle);
-    } catch {
-      // Title caching only prevents refresh flicker; it is safe to skip when storage is unavailable.
     }
   }, [siteTitle]);
 

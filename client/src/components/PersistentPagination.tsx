@@ -2,6 +2,7 @@ import { t as translateText } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { cn } from "@/lib/utils";
 
 type PersistentPaginationOptions = {
   storageKey: string;
@@ -160,15 +161,17 @@ export function usePersistentPagination<T>(
 export function PersistentPagination<T>({
   pagination,
   itemName = translateText("项"),
+  className,
 }: {
   pagination: PersistentPaginationState<T>;
   itemName?: string;
+  className?: string;
 }) {
   if (pagination.totalItems <= pagination.pageSize) return null;
   const pages = getPageWindow(pagination.currentPage, pagination.totalPages);
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-card/60 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+    <div className={cn("flex flex-col gap-3 rounded-lg border border-border/40 bg-card/60 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between", className)}>
       <div className="text-xs tabular-nums text-muted-foreground">{translateText("{0}–{1} / {2} {3}", [pagination.startItem, pagination.endItem, pagination.totalItems, itemName])}</div>
       <div className="flex items-center justify-between gap-1 sm:justify-end">
         <Button

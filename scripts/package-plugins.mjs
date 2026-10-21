@@ -43,7 +43,7 @@ async function collectFiles(dir, relativeDir = "") {
   for (const entry of entries) {
     const relativePath = normalizeEntryPath(path.posix.join(relativeDir.replace(/\\/g, "/"), entry.name));
     if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "build") continue;
+      if (["node_modules", "dist", "build", "tests", "__pycache__"].includes(entry.name)) continue;
       files.push(...await collectFiles(dir, relativePath));
       continue;
     }
@@ -116,10 +116,15 @@ async function createTarGz(sourceDir, outputFile) {
 
 async function main() {
   await fs.mkdir(packagesRoot, { recursive: true });
+  const requestedIds = new Set(process.argv.slice(2));
   const entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
   const pluginDirs = entries
     .filter((entry) => entry.isDirectory() && entry.name !== "packages")
+    .filter((entry) => requestedIds.size === 0 || requestedIds.has(entry.name))
     .map((entry) => path.join(pluginsRoot, entry.name));
+  for (const id of requestedIds) {
+    if (!pluginDirs.some((dir) => path.basename(dir) === id)) throw new Error(`Unknown plugin: ${id}`);
+  }
   for (const pluginDir of pluginDirs) {
     const manifestPath = path.join(pluginDir, manifestName);
     try {

@@ -16,6 +16,16 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 面板安装本身不会自动安装任何插件。插件入口默认隐藏，管理员开启后再到插件商店手动安装。
 
+## 官方 BBR 管理
+
+在官方商店安装并启用「ForwardX BBR 管理」，授权后进入使用页，选择在线主机读取参数。点击编辑可在图形化与高级 sysctl 文本间切换，自定义参数和注释不会因切换丢失；保存并确认后才会下发。也可直接应用两项 `BBR + FQ` 预设。
+
+支持拥塞控制、默认队列、TCP 缓冲、MTU 探测、Fast Open 等字段；高级文本支持 `net.ipv4.tcp_*` 及插件说明中列出的 `net.core` 参数。每台主机独立管理，普通用户无权操作。
+
+Agent 需要 Linux、root、Python 3.8+ 和 sysctl。插件只加载系统已有模块，不安装内核、不重启；不支持所选算法时返回错误。默认 FQ 与现有网卡队列分开展示，插件不会强制重建队列；BBR 主要作用于新 TCP 连接，不直接优化 UDP。
+
+配置保存在 `/etc/sysctl.d/90-forwardx-bbr.conf`，原参数保存在 `/var/lib/forwardx-agent/plugin-state/bbr-manager/original.json`。应用失败时尝试回滚，可通过「还原原参数」恢复插件修改前的状态。停用/卸载前如需恢复，应先执行还原；其他 sysctl 配置文件不会被修改。完整说明可在插件详情的「使用说明」页查看。
+
 ## Manifest
 
 插件仓库推荐在根目录提供 `forwardx-plugin.json`。面板也会尝试读取 `plugin.json` 和 `.forwardx/plugin.json`。
@@ -465,6 +475,8 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 因此插件不需要让用户手工填写或复制节点编号、名称和端口。动作参数可以使用 <code v-pre>{{input.serviceId}}</code> 和 <code v-pre>{{input.payload}}</code>。
 
 `refreshAfter` 指定动作成功后自动重新加载的数据源。`sources` 还可以声明 `onOpen`、`onHostSelected` 或 `manual` 触发方式；字段的 `optionsSource` 可从任意已加载数据源生成实时选择项。
+
+动态资源表单支持 `sysctl` 字段，用于受控的图形化 / 高级文本 TCP 参数编辑，最多 12000 UTF-8 字节。此类表单的只读对照字段不会放入动作输入，避免重复发送大段快照；脚本可通过 <code v-pre>{{input.configText}}</code> 接收原始文本并再次校验，不能按 Shell 执行。
 
 `multi-select` 的静态选项可以声明 `"exclusive": true`。选中该选项时会清除其他值；选择普通选项时也会自动取消已有的互斥值，适合"全国"与"按省份"这类选择。
 

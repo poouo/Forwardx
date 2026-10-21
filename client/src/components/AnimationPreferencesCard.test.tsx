@@ -62,3 +62,28 @@ test("all motion implementations share the personal policy instead of only hidin
   assert.match(card, /context\?\.previous\?\.id === utils.auth.me.getData\(\)\?\.id/);
   assert.doesNotMatch(card, /localStorage|system\.update|userId:/);
 });
+
+test("open dialogs and backdrops have visible state styles independent of animation keyframes", () => {
+  const css = readFileSync("client/src/index.css", "utf8");
+  const panel = css.match(/\.dialog-panel\[data-state="open"\]\s*\{([^}]+)\}/)?.[1] || "";
+  assert.match(panel, /opacity:\s*1\s*;/);
+  assert.match(panel, /transform:\s*translateY\(0\)\s*;/);
+  const overlay = css.match(/\.dialog-overlay\[data-state="open"\]\s*\{([^}]+)\}/)?.[1] || "";
+  assert.match(overlay, /background-color:\s*var\(--dialog-overlay-tint\)\s*;/);
+  const material = css.match(/\.dialog-overlay\[data-state="open"\]::before,\s*\.dialog-overlay\[data-state="open"\]::after\s*\{([^}]+)\}/)?.[1] || "";
+  assert.match(material, /opacity:\s*1\s*;/);
+  // Disabled animation must not retain an invisible full-screen interaction blocker.
+  assert.doesNotMatch(panel, /pointer-events:\s*none|visibility:\s*hidden/);
+});
+
+test("disabling decorative movement preserves functional inline drag transforms", () => {
+  const css = readFileSync("client/src/styles/pearl.css", "utf8");
+  const disabled = css.slice(css.indexOf('html[data-forwardx-motion-disabled],'), css.indexOf('/* Finite animations only.'));
+  assert.doesNotMatch(disabled, /transform:\s*none\s*!important/);
+  assert.doesNotMatch(disabled, /\.pearl-card:hover/);
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.doesNotMatch(reduced, /transform:\s*none\s*!important/);
+  // Dnd-kit uses direct transforms while dragging, not a decorative animation.
+  const sortable = readFileSync("client/src/components/SortableDragHandle.tsx", "utf8");
+  assert.match(sortable, /transform: transform \? CSS\.Translate\.toString\(transform\)/);
+});

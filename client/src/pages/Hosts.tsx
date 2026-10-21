@@ -6,6 +6,10 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
+import ListSettings from "@/components/ListSettings";
+import ColumnResizeHandle from "@/components/ColumnResizeHandle";
+import { useHostTableLayout } from "@/hooks/useHostTableLayout";
+import type { HostTableColumnId } from "@shared/hostTableLayout";
 import DateTimePickerInput, {
   formatDateInputValue as formatDateTimeLocal,
   parseDateInputValue as parseDateTimeLocal,
@@ -108,10 +112,9 @@ import {
   XCircle,
   ActivitySquare,
   FolderKanban,
-  Wifi,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { toast } from "@/lib/localizedToast";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
@@ -891,52 +894,6 @@ function HostListResourceRow({
   );
 }
 
-function HostListResourceBundle({
-  cpuValue,
-  cpuDetail,
-  memoryValue,
-  memoryDetail,
-  diskValue,
-  diskDetail,
-  isOnline,
-}: {
-  cpuValue: unknown;
-  cpuDetail?: string;
-  memoryValue: unknown;
-  memoryDetail?: string;
-  diskValue: unknown;
-  diskDetail?: string;
-  isOnline: boolean;
-}) {
-  return (
-    <TooltipProvider delayDuration={120}>
-      <div className="grid min-w-[300px] grid-cols-3 gap-1.5">
-        <HostListResourceRow
-          icon={Cpu}
-          label="CPU"
-          value={cpuValue}
-          detail={cpuDetail}
-          isOnline={isOnline}
-        />
-        <HostListResourceRow
-          icon={MemoryStick}
-          label="RAM"
-          value={memoryValue}
-          detail={memoryDetail}
-          isOnline={isOnline}
-        />
-        <HostListResourceRow
-          icon={HardDrive}
-          label="Disk"
-          value={diskValue}
-          detail={diskDetail}
-          isOnline={isOnline}
-        />
-      </div>
-    </TooltipProvider>
-  );
-}
-
 function HostListFlowPair({
   inValue,
   outValue,
@@ -1344,6 +1301,7 @@ function HostGroupFilterBar({
 
 function HostsContent() {
   const { user } = useAuth();
+  const tableLayout = useHostTableLayout(user);
   const utils = trpc.useUtils();
   const pageVisible = usePageVisible();
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
@@ -2272,6 +2230,65 @@ function HostsContent() {
     }
   };
 
+  const renderHostTableCell = (host: any, column: HostTableColumnId) => {
+    const metric = hostLatestMetricById.get(host.id);
+    switch (column) {
+      case "name": {
+        const title = [
+          String(host.name || ""),
+          host.agentBootId ? `Boot ID: ${host.agentBootId}` : "",
+          host.agentProcessId ? `Agent PID: ${host.agentProcessId}` : "",
+          host.agentRecoveryStartedAt ? translateText("恢复开始: {0}", [formatHostDateTimeText(host.agentRecoveryStartedAt)]) : "",
+          host.agentRecoveryCompletedAt ? translateText("恢复完成: {0}", [formatHostDateTimeText(host.agentRecoveryCompletedAt)]) : "",
+          Number(host.agentRecoveryExpected || 0) > 0 ? translateText("恢复进度: {0}/{1}", [Number(host.agentRecoveryReady || 0), Number(host.agentRecoveryExpected || 0)]) : "",
+          host.mimicRuntimeStatus ? `Mimic: ${host.mimicRuntimeStatus}` : "",
+          host.mimicRuntimeMessage ? String(host.mimicRuntimeMessage) : "",
+        ].filter(Boolean).join("\n");
+        return <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/20 text-muted-foreground"><Server className="h-3.5 w-3.5" /></span>
+          <span className="min-w-0 truncate font-semibold" title={title}>{host.name}</span>
+        </div>;
+      }
+      case "status": return <HostListStatusBadge host={host} />;
+      case "region": return <div className="min-w-0 overflow-hidden text-xs"><HostRegionBadge host={host} compact /></div>;
+      case "address": return <span className="block truncate font-mono text-xs text-muted-foreground" title={hostPrimaryAddressText(host)}>{hostPrimaryAddressText(host)}</span>;
+      case "version": {
+        const timedOut = isAgentUpgradeTimedOut(host);
+        return <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <span className="font-mono text-xs text-muted-foreground">{host.agentVersion ? `v${host.agentVersion}` : "—"}</span>
+          {host.agentUpgradeRequested ? <Badge variant="outline" className={cn("shrink-0 whitespace-nowrap px-1 py-0 text-[10px]", timedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary")}>{timedOut ? translateText("升级失败") : translateText("升级中")}</Badge>
+            : isAgentVersionBehind(host.agentVersion, latestAgentVersion) && <Badge variant="outline" className="shrink-0 whitespace-nowrap border-amber-500/30 px-1 py-0 text-[10px] text-amber-500">{translateText("新版本")}</Badge>}
+        </div>;
+      }
+      case "load": return <HostLoad metric={metric} showLabel={false} className="overflow-hidden" />;
+      case "uptime": {
+        const text = metric?.uptime == null ? "--" : formatUptime(metric.uptime);
+        return <span className="block truncate text-xs tabular-nums text-muted-foreground" title={formatHostUptimeTitle(metric?.uptime, text)}>{text}</span>;
+      }
+      case "expiry": {
+        const remaining = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
+        return <span className={cn("block truncate text-xs font-medium tabular-nums", hostRemainingClass(remaining))} title={formatHostExpiryTitle(host.stoppedAt, remaining)}>{remaining}</span>;
+      }
+      case "cpu": return <HostListResourceRow icon={Cpu} label="CPU" value={metric?.cpuUsage} detail={host.cpuInfo ? String(host.cpuInfo) : undefined} isOnline={!!host.isOnline} />;
+      case "memory": return <HostListResourceRow icon={MemoryStick} label="RAM" value={metric?.memoryUsage} detail={formatMetricSizeDetail(metric?.memoryUsed, host.memoryTotal)} isOnline={!!host.isOnline} />;
+      case "disk": return <HostListResourceRow icon={HardDrive} label="Disk" value={metric?.diskUsage} detail={formatMetricSizeDetail(metric?.diskUsed, metric?.diskTotal)} isOnline={!!host.isOnline} />;
+      case "total": {
+        const traffic = hostTrafficById.get(host.id);
+        const inText = formatBytes(Number(traffic?.bytesIn || 0)), outText = formatBytes(Number(traffic?.bytesOut || 0));
+        return <HostListFlowPair inValue={inText} outValue={outText} inTitle={translateText("累计入向：{0}", [inText])} outTitle={translateText("累计出向：{0}", [outText])} />;
+      }
+      case "network": return <HostListFlowPair inValue={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} outValue={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} inTitle={translateText("实时入向")} outTitle={translateText("实时出向")} />;
+      case "system": return <HostListFlowPair inValue={formatOptionalBytes(metric?.networkIn)} outValue={formatOptionalBytes(metric?.networkOut)} inTitle={systemNetworkTotalTitle(metric)} outTitle={systemNetworkTotalTitle(metric)} />;
+      case "actions": return <HostActionButtons
+        host={host} onEdit={openEdit} onDelete={setDeletingHostId} onUpgrade={requestAgentUpgrade}
+        onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+        onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
+        onViewProbeLatency={setProbeLatencyHost}
+        resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+        canUpgrade={user?.role === "admin"} className="flex items-center justify-end gap-0.5" buttonClassName="h-8 w-8"
+      />;
+    }
+  };
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -2646,180 +2663,57 @@ function HostsContent() {
             )}
             <Card className="host-table-shell hidden overflow-hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
-                <Table className="host-management-table w-full min-w-[1340px] table-fixed">
+                <TooltipProvider delayDuration={120}>
+                <Table floatingScrollbar className="host-management-table table-fixed" style={{
+                  ...Object.fromEntries(tableLayout.columns.map(column => [`--list-col-${column.id}`, `${column.width}px`])),
+                  width: `max(100%, calc(${["44px", ...tableLayout.columns.map(column => `var(--list-col-${column.id})`)].join(" + ")}))`,
+                } as CSSProperties}>
                   <colgroup>
-                    <col className="w-[320px]" />
-                    <col className="w-[128px]" />
-                    {/* The center columns divide only the width left after the pinned columns. */}
-                    <col style={{ width: "calc(25% + 5px)" }} />
-                    <col style={{ width: "calc(25% - 191px)" }} />
-                    <col style={{ width: "calc(25% - 191px)" }} />
-                    <col style={{ width: "calc(25% - 191px)" }} />
-                    <col className="w-[120px]" />
+                    <col className="w-[44px]" />
+                    {tableLayout.columns.map(column => <col key={column.id} style={{ width: column.id === tableLayout.columns.at(-1)?.id ? undefined : `var(--list-col-${column.id})` }} />)}
                   </colgroup>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-30 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card">{translateText("设备名称")}</TableHead>
-                      <TableHead className="w-[128px] whitespace-nowrap text-center">{translateText("运行信息")}</TableHead>
-                      <TableHead className="min-w-[204px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5" />{translateText("资源")}</span>
+                      <TableHead className="host-table-frozen-cell sticky left-0 z-30 w-[44px] bg-card px-2 text-center">
+                        <ListSettings columns={tableLayout.allColumns} layout={tableLayout.layout} onChange={tableLayout.setLayout} onReset={tableLayout.reset} />
                       </TableHead>
-                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="h-3.5 w-3.5" />{translateText("累计流量")}</span>
-                      </TableHead>
-                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />{translateText("实时网络")}</span>
-                      </TableHead>
-                      <TableHead className="w-[128px] whitespace-nowrap px-3 text-center">
-                        <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{translateText("系统累计")}</span>
-                      </TableHead>
-                      <TableHead className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-30 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 text-right">{translateText("操作")}</TableHead>
+                      {tableLayout.columns.map(column => <TableHead key={column.id} className={cn("relative overflow-hidden whitespace-nowrap px-3 pr-4", column.id === "actions" && "text-right")}>
+                        <span className="block truncate" title={translateText(column.label)}>{translateText(column.label)}</span>
+                        <ColumnResizeHandle column={column} onResize={width => tableLayout.setLayout({ ...tableLayout.layout, widths: { ...tableLayout.layout.widths, [column.id]: width } })} onReset={() => {
+                          const widths = { ...tableLayout.layout.widths };
+                          delete widths[column.id];
+                          tableLayout.setLayout({ ...tableLayout.layout, widths });
+                        }} />
+                      </TableHead>)}
                     </TableRow>
                   </TableHeader>
                   <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
                   <TableBody>
-                    {pagedHosts.map((host) => {
-                      const traffic = hostTrafficById.get(host.id);
-                      const latestMetric = hostLatestMetricById.get(host.id);
-                      const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
-                      const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
-                      const remainingDays = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
-                      const primaryAddressText = hostPrimaryAddressText(host);
-                      const uptimeText = latestMetric?.uptime == null ? "--" : formatUptime(latestMetric.uptime);
-                      const uptimeTitle = formatHostUptimeTitle(latestMetric?.uptime, uptimeText);
-                      const expiryTitle = formatHostExpiryTitle(host.stoppedAt, remainingDays);
-                      const memoryDetail = formatMetricSizeDetail(latestMetric?.memoryUsed, host.memoryTotal);
-                      const diskDetail = formatMetricSizeDetail(latestMetric?.diskUsed, latestMetric?.diskTotal);
-                      const recoveryStartedText = formatHostDateTimeText(host.agentRecoveryStartedAt);
-                      const recoveryCompletedText = formatHostDateTimeText(host.agentRecoveryCompletedAt);
-                      const hostRuntimeTitle = [
-                        String(host.name || ""),
-                        host.agentBootId ? `Boot ID: ${host.agentBootId}` : "",
-                        host.agentProcessId ? `Agent PID: ${host.agentProcessId}` : "",
-                        recoveryStartedText ? translateText("恢复开始: {0}", [recoveryStartedText]) : "",
-                        recoveryCompletedText ? translateText("恢复完成: {0}", [recoveryCompletedText]) : "",
-                        Number(host.agentRecoveryExpected || 0) > 0 ? translateText("恢复进度: {0}/{1}", [Number(host.agentRecoveryReady || 0), Number(host.agentRecoveryExpected || 0)]) : "",
-                        host.mimicRuntimeStatus ? `Mimic: ${host.mimicRuntimeStatus}` : "",
-                        host.mimicRuntimeMessage ? String(host.mimicRuntimeMessage) : "",
-                      ].filter(Boolean).join("\n");
-                      return (
+                    {pagedHosts.map((host) => (
                       <SortableItem key={host.id} id={Number(host.id)} disabled={hostSortable.disabled} itemKind="row">
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                       <TableRow
                         {...itemProps}
                         className={cn(
-                          "group/sortable host-table-row align-middle hover:bg-transparent",
+                          "group/sortable host-table-row h-16 align-middle hover:bg-transparent",
                           isDragging && "opacity-55 ring-1 ring-primary/35",
                           isDropTarget && "ring-1 ring-primary/45",
                         )}
                       >
-                        <TableCell className="host-table-frozen-cell host-table-frozen-left sticky left-0 z-20 w-[320px] min-w-[320px] max-w-[320px] border-r border-border/60 bg-card px-3 py-2.5">
-                          <div className="flex min-w-0 items-center gap-2">
-                            {hostSortingEnabled && (
-                              <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={hostReorderPending} className="shrink-0" />
-                            )}
-                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-muted/20 text-muted-foreground">
-                              <Server className="h-3.5 w-3.5" />
-                            </span>
-                            <div className="min-w-0 flex-1 space-y-0.5">
-                              <div className="flex min-w-0 items-center gap-1.5">
-                                <HostListStatusBadge host={host} />
-                                <span className="min-w-0 truncate font-semibold" title={hostRuntimeTitle}>{host.name}</span>
-                              </div>
-                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
-                                {host.agentVersion && (
-                                  <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
-                                    v{host.agentVersion}
-                                  </span>
-                                )}
-                                {agentNeedsUpdate && (
-                                  <Badge variant="outline" className="h-4 shrink-0 border-amber-500/30 px-1 py-0 text-[9px] leading-none text-amber-500">{translateText("新版本")}</Badge>
-                                )}
-                                {host.agentUpgradeRequested && (
-                                  <Badge variant="outline" className={`h-4 shrink-0 px-1 py-0 text-[9px] leading-none ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
-                                    {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
-                                  </Badge>
-                                )}
-                                <HostRegionBadge host={host} compact />
-                              </div>
-                              <HostLoad metric={latestMetric} />
-                              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={primaryAddressText}>
-                                <RadioTower className="h-3 w-3 shrink-0" />
-                                <span className="min-w-0 truncate font-mono">{primaryAddressText}</span>
-                              </div>
-                            </div>
-                          </div>
+                        <TableCell className="host-table-frozen-cell sticky left-0 z-20 w-[44px] bg-card px-2 py-2">
+                          {hostSortingEnabled && <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={hostReorderPending} className="mx-auto" />}
                         </TableCell>
-                        <TableCell className="w-[128px] whitespace-nowrap py-2.5 text-center">
-                          <div className="flex flex-col items-center justify-center gap-1.5 text-center">
-                            <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium tabular-nums text-muted-foreground" title={uptimeTitle}>
-                              <Clock className="h-3.5 w-3.5 shrink-0" />
-                              <span>{uptimeText}</span>
-                            </div>
-                            <div className="flex items-center justify-center gap-1.5 text-[11px] font-semibold tabular-nums" title={expiryTitle}>
-                              <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              <span className={hostRemainingClass(remainingDays)}>{remainingDays}</span>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="px-3 py-2.5">
-                          <HostListResourceBundle
-                            cpuValue={latestMetric?.cpuUsage}
-                            cpuDetail={host.cpuInfo ? String(host.cpuInfo) : undefined}
-                            memoryValue={latestMetric?.memoryUsage}
-                            memoryDetail={memoryDetail}
-                            diskValue={latestMetric?.diskUsage}
-                            diskDetail={diskDetail}
-                            isOnline={!!host.isOnline}
-                          />
-                        </TableCell>
-                        <TableCell className="px-3 py-2.5">
-                          <HostListFlowPair
-                            inValue={formatBytes(Number(traffic?.bytesIn || 0))}
-                            outValue={formatBytes(Number(traffic?.bytesOut || 0))}
-                            inTitle={translateText("累计入向：{0}", [formatBytes(Number(traffic?.bytesIn || 0))])}
-                            outTitle={translateText("累计出向：{0}", [formatBytes(Number(traffic?.bytesOut || 0))])}
-                          />
-                        </TableCell>
-                        <TableCell className="px-3 py-2.5">
-                          <HostListFlowPair
-                            inValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedIn)}
-                            outValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedOut)}
-                            inTitle={translateText("实时入向")}
-                            outTitle={translateText("实时出向")}
-                          />
-                        </TableCell>
-                        <TableCell className="px-3 py-2.5">
-                          <HostListFlowPair
-                            inValue={formatOptionalBytes(latestMetric?.networkIn)}
-                            outValue={formatOptionalBytes(latestMetric?.networkOut)}
-                            inTitle={systemNetworkTotalTitle(latestMetric)}
-                            outTitle={systemNetworkTotalTitle(latestMetric)}
-                          />
-                        </TableCell>
-                        <TableCell className="host-table-frozen-cell host-table-frozen-right sticky right-0 z-20 w-[120px] min-w-[120px] max-w-[120px] border-l border-border/60 bg-card px-2 py-2.5 text-right">
-                          <HostActionButtons
-                            host={host}
-                            onEdit={openEdit}
-                            onDelete={setDeletingHostId}
-                            onUpgrade={requestAgentUpgrade}
-                            onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
-                            onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
-                            onViewProbeLatency={setProbeLatencyHost}
-                            resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                            canUpgrade={user?.role === "admin"}
-                            className="flex items-center justify-end gap-0.5"
-                            buttonClassName="h-8 w-8"
-                          />
-                        </TableCell>
+                        {tableLayout.columns.map(column => <TableCell key={column.id} className={cn("overflow-hidden px-3 py-2", column.id === "actions" && "text-right")}>
+                          {renderHostTableCell(host, column.id)}
+                        </TableCell>)}
                       </TableRow>
                         )}
                       </SortableItem>
-                    );
-                    })}
+                    ))}
                   </TableBody>
                   </SortableReorderContext>
                 </Table>
+                </TooltipProvider>
               </CardContent>
             </Card>
           </>

@@ -188,6 +188,8 @@ export const users = table("users", {
   telegramId: text("telegramId").unique(),
   supportTicketNotificationSubscribed: boolean("supportTicketNotificationSubscribed").notNull().default(true),
   animationsEnabled: boolean("animationsEnabled").notNull().default(true),
+  ruleTableLayout: text("ruleTableLayout"),
+  hostTableLayout: text("hostTableLayout"),
   discordId: varchar("discordId", { length: 32 }).unique(),
   discordUsername: text("discordUsername"),
   discordLinkedAt: epoch("discordLinkedAt"),
@@ -366,6 +368,21 @@ export const aiBotWorkflows = table("ai_bot_workflows", {
   payload: longtext("payload").notNull(),
   result: longtext("result"),
   updatedAt: bigint("updatedAt", { mode: "number" }).notNull(),
+});
+
+export const ruleGroups = table("rule_groups", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  name: varchar("name", { length: 64 }).notNull(),
+  sortOrder: int("sortOrder").notNull().default(0),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+
+export const ruleGroupMembers = table("rule_group_members", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  groupId: int("groupId").notNull(),
 });
 
 export const forwardRules = table("forward_rules", {
@@ -795,6 +812,9 @@ export const hostProbeServices = table("host_probe_services", {
   method: varchar("method", { length: 16 }).notNull().default("tcping"),
   targetIp: text("targetIp").notNull(),
   targetPort: int("targetPort"),
+  targetUrl: text("targetUrl"),
+  timeoutSeconds: int("timeoutSeconds").notNull().default(5),
+  expectedStatus: int("expectedStatus").notNull().default(200),
   hostScope: varchar("hostScope", { length: 16 }).notNull().default("all"),
   hostIds: text("hostIds"),
   excludeHostIds: text("excludeHostIds"),

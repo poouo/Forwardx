@@ -2,6 +2,7 @@ import { getFormatLocale, getLanguage } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import NotificationSettingsCard from "@/components/NotificationSettingsCard";
 import GoogleLoginSettingsCard from "@/components/GoogleLoginSettingsCard";
+import AuthorSupportDialog from "@/components/AuthorSupportDialog";
 import McpAccessCard from "@/components/McpAccessCard";
 import AuthCaptchaSettingsFields from "@/components/AuthCaptchaSettingsFields";
 import { normalizeAuthCaptchaProvider, type AuthCaptchaProvider } from "@shared/authCaptcha";
@@ -6113,6 +6114,7 @@ function SystemInfoSection() {
                 </a>
               );
             })}
+            <AuthorSupportDialog onCopy={copyTextToClipboard} />
           </div>
 
           <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">

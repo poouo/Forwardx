@@ -987,7 +987,7 @@ function normalizeResourceFields(value: unknown): PluginResourceFieldDefinition[
     else if (type === "multi-select") defaultValue = Array.isArray(item?.defaultValue)
       ? item.defaultValue.slice(0, 100).map((entry: unknown) => String(entry ?? "").slice(0, 240))
       : [];
-    else if (typeof item?.defaultValue === "string") defaultValue = item.defaultValue.slice(0, type === "textarea" ? 10000 : 1000);
+    else if (typeof item?.defaultValue === "string") defaultValue = item.defaultValue.slice(0, type === "sysctl" ? 12000 : type === "textarea" ? 10000 : 1000);
     return [{
       key,
       label: String(item?.label || key).trim().slice(0, 100) || key,

@@ -12,9 +12,20 @@ test("initial UI is usable and bilingual, without an overlay or private controls
     assert.match(html, /href="\/"/);
     assert.match(html, /href="\/login"/);
     assert.match(html, /<h1/);
-    assert.doesNotMatch(html, /fixed|inset-0|animate-pulse|type="password"|\/settings|\/users/);
+    assert.match(html, /data-sidebar="spacer"/);
+    assert.match(html, /data-sidebar="container"/);
+    assert.match(html, /pearl-topbar/);
+    assert.doesNotMatch(html, /inset-0|animate-pulse|type="password"|\/settings|\/users|dialog-overlay/);
     if (language === "en") assert.doesNotMatch(html, /\p{Script=Han}/u);
   }
+});
+
+test("pending sidebar and header render custom branding without showing ForwardX first", () => {
+  const html = renderToStaticMarkup(<PanelStartView branding={{ siteTitle: "Custom Panel", siteLogoDataUrl: "data:image/png;base64,dGVzdA==" }} />);
+  assert.match(html, /Custom Panel/);
+  assert.match(html, /src="data:image\/png;base64,dGVzdA=="/);
+  assert.doesNotMatch(html, />ForwardX<|aria-label="ForwardX"/);
+  assert.match(html, /aria-busy="true"/);
 });
 
 test("dashboard presentation ignores legacy unscoped text caches", () => {

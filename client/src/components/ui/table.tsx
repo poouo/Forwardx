@@ -1,9 +1,15 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import FloatingTableScrollbar from "@/components/FloatingTableScrollbar"
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(({ className, ...props }, ref) => (
-  <div className="pearl-table-scroll relative w-full overflow-auto"><table ref={ref} className={cn("pearl-table w-full caption-bottom text-sm", className)} {...props} /></div>
-))
+const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement> & { floatingScrollbar?: boolean }>(({ className, floatingScrollbar = false, ...props }, ref) => {
+  const scroller = React.useRef<HTMLDivElement>(null)
+  const scrollerId = React.useId()
+  return <>
+    <div ref={scroller} id={scrollerId} className="pearl-table-scroll relative w-full overflow-auto"><table ref={ref} className={cn("pearl-table w-full caption-bottom text-sm", className)} {...props} /></div>
+    {floatingScrollbar && <FloatingTableScrollbar target={scroller} enabled={floatingScrollbar} />}
+  </>
+})
 Table.displayName = "Table"
 
 const TableHeader = React.forwardRef<HTMLTableSectionElement, React.HTMLAttributes<HTMLTableSectionElement>>(({ className, ...props }, ref) => (
