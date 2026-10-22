@@ -7,6 +7,9 @@ import type {
 
 export const AGENT_TCPING_STEADY_REPORT_MS = 5 * 60 * 1000;
 export const AGENT_HEALTH_STEADY_REPORT_MS = 60 * 1000;
+// Shorter than the Agent's one-minute tunnel refresh so jitter or a forced
+// report cannot push a regular sample into another reporting cycle.
+export const AGENT_TUNNEL_STEADY_REPORT_MS = 30 * 1000;
 const AGENT_TCPING_GATE_STATE_TTL_MS = 30 * 60 * 1000;
 
 type ProbeResult = AgentTcpingResult | AgentTunnelTcpingResult | AgentForwardGroupLatencyResult;
@@ -129,6 +132,7 @@ export class AgentTcpingReportGate {
     addUnits(units, hostId, "tunnel", input.tunnels);
     addUnits(units, hostId, "forwardGroup", input.forwardGroups);
     const signatures = signaturesFor(units);
+    const tunnelUnits = new Set(input.tunnels.map(report => reportUnitKey(hostId, "tunnel", report)));
     const healthUnits = new Set<string>();
     for (const [kind, reports] of [["rule", input.results], ["forwardGroup", input.forwardGroups]] as const) {
       for (const report of reports) {
@@ -147,7 +151,9 @@ export class AgentTcpingReportGate {
       const previous = this.states.get(key);
       if (previous) previous.lastSeenAt = now;
       const transition = !previous || previous.signature !== signature;
-      const steadyReportMs = healthUnits.has(key)
+      const steadyReportMs = tunnelUnits.has(key)
+        ? Math.min(this.steadyReportMs, AGENT_TUNNEL_STEADY_REPORT_MS)
+        : healthUnits.has(key)
         ? Math.min(this.steadyReportMs, AGENT_HEALTH_STEADY_REPORT_MS)
         : this.steadyReportMs;
       if (!input.force && !transition && now - previous.acceptedAt < steadyReportMs) continue;

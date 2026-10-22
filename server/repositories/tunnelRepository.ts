@@ -351,6 +351,16 @@ export async function getTunnelsPage(input: TunnelListQuery) {
   };
 }
 
+/** Lightweight tab count; uses exactly the same scope/search as the list. */
+export async function getTunnelListCount(input: Omit<TunnelListQuery, keyof PageRequest>) {
+  const db = await getDb();
+  if (!db) return 0;
+  const condition = tunnelListCondition(input);
+  const query = db.select({ total: sql<number>`COUNT(*)` }).from(tunnels);
+  const [row] = condition ? await query.where(condition) : await query;
+  return Number(row?.total || 0);
+}
+
 export async function getTunnelOptionRows(ownerUserId?: number, allowedTunnelIds?: number[]) {
   const db = await getDb();
   if (!db) return [];

@@ -9,6 +9,41 @@ import ts from "typescript";
 import { pageResult, pageWindowForTotal } from "../shared/pagination";
 import { gateForwardRulesForUserSurface } from "./forwardRuleVisibility";
 
+test("host management badges use one count-only query across database dialects", async () => {
+  const text = fs.readFileSync("server/repositories/hostRepository.ts", "utf8");
+  const source = ts.createSourceFile("hostRepository.ts", text, ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "getHostManagementCounts");
+  assert.ok(declaration);
+  const code = ts.transpileModule(`(${declaration.getText(source).replace(/^export\s+/, "")})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  for (const quote of ['"', '`']) {
+    const queries: string[] = [];
+    let row: Record<string, unknown> | undefined = { hosts: "40", groups: 3, tokens: 8n, services: "0" };
+    const count = runInNewContext(code, {
+      quoteIdentifier: (name: string) => `${quote}${name}${quote}`,
+      queryRaw: async (query: string) => { queries.push(query); return row ? [row] : []; },
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(await count())), { hosts: 40, groups: 3, tokens: 8, services: 0 });
+    assert.equal(queries.length, 1);
+    assert.equal((queries[0].match(/COUNT\(\*\)/g) || []).length, 4);
+    for (const table of ["hosts", "host_groups", "agent_tokens", "host_probe_services"]) assert.ok(queries[0].includes(`${quote}${table}${quote}`));
+    assert.doesNotMatch(queries[0], /SELECT\s+\*|JOIN|host_probe_service_stats/i);
+    row = undefined;
+    assert.deepEqual(JSON.parse(JSON.stringify(await count())), { hosts: 0, groups: 0, tokens: 0, services: 0 });
+  }
+  const router = fs.readFileSync("server/routers/hosts.ts", "utf8");
+  assert.match(router, /managementCounts: adminProcedure\.query\(/);
+});
+
+test("all host management tabs have total-count badges and mutations invalidate the counters", () => {
+  const source = fs.readFileSync("client/src/pages/Hosts.tsx", "utf8");
+  assert.match(source, /badge: user\?\.role === "admin" \? managementCountsQuery\.data\?\.\[item\.value\]/);
+  assert.match(source, /enabled: user\?\.role === "admin"/);
+  assert.match(source, /hostPageQuery\.data\?\.scopeTotalItems/);
+  for (const file of ["client/src/pages/Hosts.tsx", "client/src/components/AgentTokenManager.tsx", "client/src/components/hosts/HostGroupManager.tsx", "client/src/components/hosts/HostProbeServiceManager.tsx"]) {
+    assert.match(fs.readFileSync(file, "utf8"), /utils\.hosts\.managementCounts\.invalidate\(\)/);
+  }
+});
+
 // Exercise the actual page synchronization effect without booting the whole
 // dashboard. Resource option queries are intentionally absent: server-filtered
 // results must not depend on their partial/ACL-filtered search metadata.
@@ -315,6 +350,28 @@ test("database-backed list queries page, search, scope, and hydrate only request
         authSession: null,
         authFailureReason: null,
       });
+
+      // Tab counts must cover all pages and match the exact visibility/search
+      // scope of each list, without fetching/hydrating every resource.
+      const ctxFor = (id, role) => ({ req: { headers: {} }, res: { clearCookie() {} },
+        user: { id, role, accountEnabled: true }, authSession: null, authFailureReason: null });
+      for (const [id, role] of [[1,"admin"],[2,"user"],[3,"user"]]) {
+        const tc = tunnelsRouter.createCaller(ctxFor(id, role));
+        const gc = forwardGroupsRouter.createCaller(ctxFor(id, role));
+        for (const search of ["", "Saved Port", "Singapore", "does-not-exist"]) {
+          const counts = await tc.sectionCounts({ search });
+          assert.equal(counts.tunnels, (await tc.listPage({page:1,pageSize:1,search})).totalItems);
+          for (const [section,groupMode] of [["ports","port"],["chains","chain"],["groups","failover"],["entries","entry"],["exits","exit"]]) {
+            assert.equal(counts[section], (await gc.listPage({page:1,pageSize:1,groupMode,search})).totalItems,
+              id + ":" + section + ":" + search);
+          }
+        }
+      }
+      const adminCounts = await adminTunnelCaller.sectionCounts({});
+      assert.equal(adminCounts.ports, 2, "count the entire category, not the one-row page");
+      const privateCounts = await tunnelsRouter.createCaller(ctxFor(3,"user")).sectionCounts({});
+      assert.deepEqual(privateCounts, {tunnels:0,ports:0,chains:0,groups:0,entries:0,exits:0},
+        "never expose another account's resource counts");
 
       const ownedGroupPage = await groupCaller.listPage({
         page: 1,
@@ -733,7 +790,9 @@ test("database-backed list queries page, search, scope, and hydrate only request
   `;
 
   try {
-    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+    // stdin avoids Windows' command-line limit as the fixture suite grows.
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module"], {
+      input: script,
       cwd: process.cwd(),
       env: {
         ...process.env,

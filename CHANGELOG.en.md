@@ -2,7 +2,23 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.288] - 2026-10-22
+
+- Add scheduled operations reports with separate editable hour/minute dropdowns through the active notification channel; disabled by default, with a default send time of 00:00 UTC+8.
+- Add counts to host, group, Token and service tabs, refreshed after additions and deletions.
+- Preserve the current route title and tab-local navigation appearance during refresh; fix collapsed sidebar label clipping without caching authentication or access decisions.
+- Compact tunnel card routes and protocols into one row; open entry/relay/exit details in a dialog and hop latency in a popover to avoid uneven rows and blank space.
+- Show overall health in resting date blocks and intraday stability trends on hover/focus; preserve coverage gaps and add local outage/recovery/probe fixtures.
+- Compact service/probe history into status blocks that expand to reveal dates on hover; use a dropdown on mobile and respect personal animation preferences.
+- Fill today's service-latency chart from midnight to the current time, removing future blank space while keeping historical days complete.
+- Show counts on all six link-management tabs, scoped to account permissions and search, and refresh after resource changes.
+- Fix intermittently missing multi-entry tunnel latency with more frequent tunnel reports, independent live-sample refresh, restart warm-up and asynchronous hop details; requires an Agent update.
+- Resume setup automatically after database-switch restarts, keep checking in the background, and match the initial database choice to the server dialect.
+- Localize unsupported MySQL versions and unauthorized client hosts in setup status, connection tests and database saves.
+- Remove Python and sysctl command dependencies from the BBR plugin using built-in Agent management, preserving validation, backups and rollback; requires the updated Agent.
+- Keep rule card styling and switch positions stable across personal-group filters; reserve consistent control space and release idle sortable compositing layers.
+
+- Versions: panel `2.3.288`, Android / iOS `2.4.6`, Agent `2.2.201`, ForwardX FXP runtime `2.2.121`. Update the Agent for built-in BBR management and probe-reporting improvements.
 
 ## [2.3.287] - 2026-10-21
 
@@ -205,17 +221,3 @@ Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are
 ### Versions
 
 - Panel/APK release: 2.3.279; Agent: 2.2.193; ForwardX FXP runtime: 2.2.117; Android: 2.3.97.
-
-## [2.3.278] - 2026-08-30
-
-### Fixes and improvements
-
-- Fix FXP multi-exit failover, connection limits and tunnel recovery so one problematic entry does not affect an entire path.
-- Fix forwarding-group tool/PROXY inheritance and stale nftables/iptables cleanup when switching tools.
-- Improve asset/runtime installation and upgrade validation for Agent/FXP and Realm/GOST/Nginx, preserving working binaries when candidates fail.
-- Stop generating obsolete transport options incompatible with Realm 2.9.x.
-- Improve latency details, local development and Agent/FXP state synchronization.
-
-### Versions
-
-- Panel/APK release: 2.3.278; Agent: 2.2.192; ForwardX FXP runtime: 2.2.116; Android: 2.3.97.

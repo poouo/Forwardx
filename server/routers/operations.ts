@@ -3,7 +3,10 @@ import { TRPCError } from "@trpc/server";
 import { adminProcedure, router } from "../_core/trpc";
 import { operationsRange, OPERATIONS_SOURCE_SORTS, CHINA_PROVINCES } from "../../shared/operations";
 import { getOperationsOverview, getOperationsSources, getOperationsSourceDetails, getOperationsProvinceDetails } from "../repositories/operationsRepository";
-import { setSetting } from "../repositories/settingsRepository";
+import { getSetting, setSetting } from "../repositories/settingsRepository";
+import { OPERATIONS_REPORT_CONFIG_KEY, OPERATIONS_REPORT_TIME_PATTERN, parseOperationsReportConfig } from "../../shared/operationsDailyReport";
+import { getNotificationSettings } from "../notificationSettings";
+import { getNotificationAdminRecipients } from "../notifications";
 import { resolveOperationsSourceGeo } from "../operationsSourceGeo";
 import { createQueryCache } from "../queryCache";
 import { getOperationsFinance, getOperationsFinanceLedger } from "../repositories/operationsFinanceRepository";
@@ -22,6 +25,19 @@ function range(input: z.infer<typeof dates>) {
 let geoBusy = false;
 let geoLastRequest = 0;
 export const operationsRouter = router({
+  reportSettings: adminProcedure.query(async () => {
+    const config = parseOperationsReportConfig(await getSetting(OPERATIONS_REPORT_CONFIG_KEY));
+    const notifications = await getNotificationSettings();
+    const recipients = await getNotificationAdminRecipients();
+    return { enabled: config.enabled, time: config.time, notificationReady: notifications.active, recipientCount: recipients.length };
+  }),
+  saveReportSettings: adminProcedure.input(z.object({ enabled: z.boolean(), time: z.string().regex(OPERATIONS_REPORT_TIME_PATTERN) })).mutation(async ({ input, ctx }) => {
+    const previous = parseOperationsReportConfig(await getSetting(OPERATIONS_REPORT_CONFIG_KEY));
+    const enabledAt = input.enabled && (!previous.enabled || previous.time !== input.time) ? Math.floor(Date.now() / 1000) : previous.enabledAt;
+    await setSetting(OPERATIONS_REPORT_CONFIG_KEY, JSON.stringify({ ...input, enabledAt }));
+    console.info(`[Operations] daily report ${input.enabled ? "enabled" : "disabled"} time=${input.time} admin=${ctx.user.id}`);
+    return { success: true };
+  }),
   monitor: adminProcedure.input(z.object({ page: z.number().int().min(0).max(10000).default(0), ipPage: z.number().int().min(0).max(10000).default(0) }).default({})).query(({ input }) => cache.get(`monitor:${input.page}:${input.ipPage}`, { ttlMs: 5000, staleMs: 0 }, () => monitorOverview(input.page, input.ipPage))),
   finance: adminProcedure.input(dates).query(({input,ctx})=> {
     const {start,end} = range(input), userId = scopedUserId(input,ctx.user.id);

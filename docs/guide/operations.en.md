@@ -19,6 +19,14 @@ This interval controls browser reads, not aggregate recomputation. Traffic trend
 
 *Local development demo in Chinese: current administrator, today's date and a 30s refresh interval.*
 
+## Daily operations reports
+
+Open **Settings** at the top right to enable reports and choose a send time. Reports are disabled by default; the default time is **00:00 Beijing time (UTC+8)**. They use the active Telegram or Discord channel and go to enabled administrators linked to that channel.
+
+Each report covers the previous complete calendar day across all users, regardless of dashboard filters: actual traffic, top three users/rules, top three offline durations, and online receipts separated by currency. The online-host count reflects send time. Only collected data is included; traffic excludes billing multipliers.
+
+Enabling or changing the time after today's scheduled time starts delivery tomorrow. A restart catches up today's unfinished report only, not a backlog of old days. Failures retry after about five minutes without resending successful recipients. Delivery continues with the browser closed; local development mode disables background tasks by default.
+
 ## Traffic and history
 
 View incoming/outgoing rule traffic, daily trends, and rankings by user, host, logical rule and resource. Multi-entry members are combined under their logical rule. Existing accounting-host selection prevents relay hops from being counted twice.

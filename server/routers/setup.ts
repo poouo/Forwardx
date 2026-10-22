@@ -5,6 +5,7 @@ import { MIGRATION_TABLES, ensureDatabaseSchema } from "../dbSchema";
 import {
   DatabaseConfig,
   DatabaseDialectMismatchError,
+  MYSQL_MIN_VERSION,
   closeDatabase,
   defaultSqlitePath,
   executeRaw,
@@ -33,29 +34,55 @@ import { startBackgroundServices } from "../backgroundServices";
 import { isDevPanelMode } from "../devPanel";
 import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
 import { withKeyedTaskLock } from "../keyedTaskLock";
+import { describeDatabaseError } from "../databaseHealthState";
 
 let setupSchemaReadyKey = "";
 const SETUP_WRITE_LOCK_KEY = "panel-setup-write";
 
-function friendlyDatabaseError(error: unknown) {
-  const raw = error instanceof Error ? error.message : String(error);
-  const code = String((error as any)?.code || "");
-  const hostname = String((error as any)?.hostname || "").trim();
-  if (code === "ENOTFOUND" || /getaddrinfo ENOTFOUND/i.test(raw)) {
-    const hostMatch = raw.match(/ENOTFOUND\s+([^\s]+)/i);
-    const host = hostname || hostMatch?.[1] || "数据库地址";
-    return `无法解析数据库地址 ${host}。如果面板通过 Docker/1Panel 部署，请确认这个主机名在面板容器内部可解析，或改用数据库容器服务名、同网络容器名、宿主机内网 IP 或可访问的域名。`;
+export function friendlyDatabaseError(error: unknown) {
+  const reason = describeDatabaseError(error);
+  if (reason?.code === "ER_HOST_NOT_PRIVILEGED") {
+    return "MySQL 未授权面板所在主机或容器网段连接。请为数据库账号配置 Host，允许面板实际来源 IP 或受限网段，不要仅允许 localhost；仅在隔离可信网络中考虑使用 %。";
   }
-  if (code === "ECONNREFUSED" || /ECONNREFUSED/i.test(raw)) {
-    return "数据库连接被拒绝。请检查数据库服务是否启动、端口是否正确，以及防火墙或 Docker 网络是否允许面板容器访问。";
+  if (reason?.code === "ER_HOST_IS_BLOCKED") return `${reason.message}。${reason.suggestion}`;
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  for (let count = 0; pending.length && count < 16; count++) {
+    const item = pending.shift();
+    if (seen.has(item)) continue;
+    seen.add(item);
+    const value = item && typeof item === "object"
+      ? item as { message?: unknown; sqlMessage?: unknown; code?: unknown; hostname?: unknown; cause?: unknown; errors?: unknown[] }
+      : null;
+    const raw = String(value?.sqlMessage || value?.message || item || "");
+    const code = String(value?.code || "").toUpperCase();
+    const hostname = String(value?.hostname || "").trim();
+    if (/Unsupported MySQL server version\b/i.test(raw)) {
+      const version = raw.match(/Unsupported MySQL server version\s+(\d+\.\d+\.\d+)\b/i)?.[1];
+      return version
+        ? `当前 MySQL ${version} 版本过低，请升级到 ${MYSQL_MIN_VERSION} 及以上。`
+        : `无法识别当前 MySQL 版本，请确认使用 MySQL ${MYSQL_MIN_VERSION} 及以上版本。`;
+    }
+    if (code === "ENOTFOUND" || /getaddrinfo ENOTFOUND/i.test(raw)) {
+      const hostMatch = raw.match(/ENOTFOUND\s+([^\s]+)/i);
+      const host = hostname || hostMatch?.[1] || "数据库地址";
+      return `无法解析数据库地址 ${host}。如果面板通过 Docker/1Panel 部署，请确认这个主机名在面板容器内部可解析，或改用数据库容器服务名、同网络容器名、宿主机内网 IP 或可访问的域名。`;
+    }
+    if (code === "ECONNREFUSED" || /ECONNREFUSED/i.test(raw)) {
+      return "数据库连接被拒绝。请检查数据库服务是否启动、端口是否正确，以及防火墙或 Docker 网络是否允许面板容器访问。";
+    }
+    if (code === "ETIMEDOUT" || /ETIMEDOUT|timeout|timed out/i.test(raw)) {
+      return "数据库连接超时。请检查数据库地址、端口、防火墙、安全组和 Docker 网络。";
+    }
+    if (/password authentication failed|access denied/i.test(raw)) {
+      return "数据库账号或密码验证失败，请检查用户名、密码和数据库权限。";
+    }
+    if (value) {
+      pending.push(value.cause);
+      if (Array.isArray(value.errors)) pending.push(...value.errors.slice(0, 8));
+    }
   }
-  if (code === "ETIMEDOUT" || /timeout|timed out/i.test(raw)) {
-    return "数据库连接超时。请检查数据库地址、端口、防火墙、安全组和 Docker 网络。";
-  }
-  if (/password authentication failed|access denied/i.test(raw)) {
-    return "数据库账号或密码验证失败，请检查用户名、密码和数据库权限。";
-  }
-  return raw;
+  return error instanceof Error ? error.message : String(error);
 }
 
 const mysqlConfigInput = z.object({
@@ -106,6 +133,7 @@ async function setupStatus() {
       databaseConfigured: true,
       databaseConnected: true,
       databaseType: "sqlite" as const,
+      defaultDatabaseType: getSchemaDialect(),
       activeDatabaseType: getDatabaseKind(),
       schemaReady: true,
       hasAdmin: true,
@@ -127,6 +155,7 @@ async function setupStatus() {
       databaseConfigured: false,
       databaseConnected: false,
       databaseType: null,
+      defaultDatabaseType: getSchemaDialect(),
       activeDatabaseType: getDatabaseKind(),
       schemaReady: false,
       hasAdmin: false,
@@ -156,6 +185,7 @@ async function setupStatus() {
       databaseConfigured: true,
       databaseConnected: true,
       databaseType: config.type,
+      defaultDatabaseType: getSchemaDialect(),
       activeDatabaseType: getDatabaseKind(),
       schemaReady: true,
       hasAdmin,
@@ -175,6 +205,7 @@ async function setupStatus() {
       databaseConfigured: true,
       databaseConnected: false,
       databaseType: config.type,
+      defaultDatabaseType: getSchemaDialect(),
       activeDatabaseType: getDatabaseKind(),
       schemaReady: false,
       hasAdmin: false,
@@ -227,6 +258,23 @@ async function withSetupWriteLock<T>(
     await ensureSetupWriteAllowed(ctx, options);
     return work();
   });
+}
+
+async function withSetupDatabaseWrite<T>(
+  ctx: Parameters<typeof withSetupWriteLock>[0],
+  work: () => Promise<T>,
+) {
+  return withSetupWriteLock(ctx, async () => {
+    try {
+      return await work();
+    } catch (error) {
+      // Keep setup permission/lock failures intact; localize only known DB errors.
+      if (error instanceof TRPCError) throw error;
+      const message = friendlyDatabaseError(error);
+      if (message === (error instanceof Error ? error.message : String(error))) throw error;
+      throw new TRPCError({ code: "BAD_REQUEST", message, cause: error });
+    }
+  }, { allowDatabaseRecovery: true });
 }
 
 async function lockInitialAdminCreation() {
@@ -348,31 +396,31 @@ export const setupRouter = router({
   testDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      return withSetupWriteLock(ctx, async () => {
+      return withSetupDatabaseWrite(ctx, async () => {
         await testDatabaseConnection(input as DatabaseConfig);
         return { success: true };
-      }, { allowDatabaseRecovery: true });
+      });
     }),
 
   saveDatabase: publicProcedure
     .input(databaseSetupInput)
     .mutation(async ({ input, ctx }) => {
-      return withSetupWriteLock(ctx, () => saveDatabase(input as DatabaseConfig), { allowDatabaseRecovery: true });
+      return withSetupDatabaseWrite(ctx, () => saveDatabase(input as DatabaseConfig));
     }),
 
   testMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      return withSetupWriteLock(ctx, async () => {
+      return withSetupDatabaseWrite(ctx, async () => {
         await testDatabaseConnection({ type: "mysql", mysql: input });
         return { success: true };
-      }, { allowDatabaseRecovery: true });
+      });
     }),
 
   saveMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      return withSetupWriteLock(ctx, () => saveDatabase({ type: "mysql", mysql: input }), { allowDatabaseRecovery: true });
+      return withSetupDatabaseWrite(ctx, () => saveDatabase({ type: "mysql", mysql: input }));
     }),
 
   startMigration: publicProcedure

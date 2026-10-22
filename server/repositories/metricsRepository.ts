@@ -2535,6 +2535,18 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
   await db.insert(tcpingStats).values(stats.map((stat) => withProbeCounts(stat)) as InsertTcpingStat[]);
 }
 
+/** Refresh incomplete automatic details without inventing a latency/history row. */
+export async function updateTunnelAutoProbeMessage(tunnelId: number, message: string) {
+  const db = await getDb();
+  if (!db) return;
+  // Use the same atomic guard as periodic samples: never overwrite a manual
+  // probe that was queued while this automatic report was being processed.
+  await db.update(tunnels).set({ lastTestMessage: message }).where(and(
+    eq(tunnels.id, tunnelId),
+    or(isNull(tunnels.lastTestStatus), notInArray(tunnels.lastTestStatus, ["pending", "running"])),
+  ));
+}
+
 /** Insert a tunnel latency sample and update latest tunnel test state. */
 export async function insertTunnelLatencyStat(
   stat: InsertTunnelLatencyStat,
@@ -2738,13 +2750,13 @@ export async function getTunnelLatencyBranchSeriesForTotal(tunnelId: number, tot
 
 export async function getTunnelLatencySeries(
   tunnelId: number,
-  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[]; includeTrend?: boolean } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date; seriesKey: string; seriesLabel: string | null }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   if (opts.bucketSeconds) {
-    const rows = await queryLatencyChartBuckets("tunnel_latency_stats", "tunnelId", [tunnelId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    const rows = await queryLatencyChartBuckets("tunnel_latency_stats", "tunnelId", [tunnelId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries, opts.includeTrend);
     return rows.reverse().map((row) => ({
       ...mapLatencyChartBucket(row),
       seriesKey: String(row.seriesKey || "total"),
@@ -2788,13 +2800,13 @@ export async function insertForwardGroupLatencyStat(stat: InsertForwardGroupLate
 
 export async function getForwardGroupLatencySeries(
   groupId: number,
-  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[]; includeTrend?: boolean } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   if (opts.bucketSeconds) {
-    const rows = await queryLatencyChartBuckets("forward_group_latency_stats", "groupId", [groupId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    const rows = await queryLatencyChartBuckets("forward_group_latency_stats", "groupId", [groupId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries, opts.includeTrend);
     return rows.reverse().map(mapLatencyChartBucket);
   }
   const limit = clampPositiveInt(opts.limit, 2880, 10_000);
@@ -2823,7 +2835,7 @@ export async function getForwardGroupLatencySeries(
 
 export async function getTcpingSeriesByRule(
   ruleId: number,
-  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[] } = {}
+  opts: { since?: Date; until?: Date; limit?: number; bucketSeconds?: number; dayBoundaries?: Date[]; includeTrend?: boolean } = {}
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; probeCount: number; probeSuccesses: number; recordedAt: Date }>;
@@ -2833,7 +2845,7 @@ export async function getTcpingSeriesByRule(
   let seriesRuleId = ruleId;
   const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
   if (chainGroupId) {
-    const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, until: opts.until, limit, bucketSeconds: opts.bucketSeconds, dayBoundaries: opts.dayBoundaries });
+    const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, until: opts.until, limit, bucketSeconds: opts.bucketSeconds, dayBoundaries: opts.dayBoundaries, includeTrend: opts.includeTrend });
     if (groupSeries.length > 0) return groupSeries;
   }
   const childRows = await db
@@ -2853,7 +2865,7 @@ export async function getTcpingSeriesByRule(
       const childIds = chainChildren.map((row: any) => Number(row.id)).filter((id: number) => id > 0);
       const page = limitOffset(Math.max(limit * childIds.length, limit));
       const rawRows = opts.bucketSeconds
-        ? (await queryLatencyChartBuckets("tcping_stats", "ruleId", childIds, since, opts.bucketSeconds, opts.until, opts.dayBoundaries))
+        ? (await queryLatencyChartBuckets("tcping_stats", "ruleId", childIds, since, opts.bucketSeconds, opts.until, opts.dayBoundaries, opts.includeTrend))
           .map((row) => ({ ...row, isTimeout: Number(row.probeSuccesses) <= 0 }))
         : await queryRaw<any>(
         `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("probeCount")}, ${q("probeSuccesses")}, ${q("recordedAt")}
@@ -2874,6 +2886,7 @@ export async function getTcpingSeriesByRule(
         recordedAt: Date;
         minLatencyMs: number | null;
         maxLatencyMs: number | null;
+        dayStart?: number;
       }>();
       for (const row of (rawRows as any[]).reverse()) {
         const at = rowDate(row.recordedAt);
@@ -2887,6 +2900,7 @@ export async function getTcpingSeriesByRule(
           recordedAt: at,
           minLatencyMs: null,
           maxLatencyMs: null,
+          dayStart: row.dayStart == null ? undefined : Number(row.dayStart) * 1000,
         };
         // Child rows may represent a multi-packet ping. Preserve those
         // counters while retaining the historical chain latency aggregation.
@@ -2935,7 +2949,7 @@ export async function getTcpingSeriesByRule(
             probeCount: totalProbeCount,
             probeSuccesses,
             recordedAt: bucket.recordedAt,
-            dayStart: opts.dayBoundaries ? Number(key) : undefined,
+            dayStart: opts.dayBoundaries ? bucket.dayStart ?? Number(key) : undefined,
             minLatencyMs: bucket.minLatencyMs,
             maxLatencyMs: bucket.maxLatencyMs,
           };
@@ -2963,7 +2977,7 @@ export async function getTcpingSeriesByRule(
     }
   }
   if (opts.bucketSeconds) {
-    const rows = await queryLatencyChartBuckets("tcping_stats", "ruleId", [seriesRuleId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries);
+    const rows = await queryLatencyChartBuckets("tcping_stats", "ruleId", [seriesRuleId], since, opts.bucketSeconds, opts.until, opts.dayBoundaries, opts.includeTrend);
     return rows.reverse().map(mapLatencyChartBucket);
   }
   const page = limitOffset(limit);

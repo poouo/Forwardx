@@ -103,6 +103,10 @@ test("raw latency history retains a month, seeks daily windows and bounds chart 
     assert.ok(daily.length <= 30);
     assert.ok(daily.some((row) => row.probeCount > 1024), "a daily aggregate is not a single wire batch");
     assert.equal(daily.reduce((sum, row) => sum + row.probeCount, 0), 60_000);
+    const trend = await metrics.getTcpingSeriesByRule(302, { since: days[0], until: days[30], bucketSeconds: 86400, dayBoundaries: days, includeTrend: true });
+    assert.ok(trend.length > 30 && trend.length <= 30 * 49, "bounded intraday summaries, not one request per day or raw rows");
+    assert.equal(trend.reduce((sum, row) => sum + row.probeCount, 0), 60_000);
+    for (const row of trend) assert.ok("dayStart" in row && days.some(day => day.getTime() === row.dayStart), "intraday rows retain their calendar-day key");
     assert.equal(Number((await runtime.queryRaw<any>("SELECT COUNT(*) AS count FROM tcping_stats WHERE ruleId = 302"))[0].count), 20_000, "chart aggregation must not discard raw history");
 
     const snapshot = (count: number, successes: number) => ({ kind: "rule" as const, refId: 301, hostId: 1, probeKey: "key", epoch: "epoch", totalCount: count, totalSuccesses: successes, batchCount: 5, batchSuccesses: 4 });
@@ -120,6 +124,8 @@ test("raw latency history retains a month, seeks daily windows and bounds chart 
     await assert.rejects(caller.tcpingSeries({ ruleId: 303, hours: 720 }), /无权/);
     const routeDaily = await caller.tcpingSeries({ ruleId: 302, hours: 720, startAt: days[0], endAt: days[30], dayBoundaries: days });
     assert.equal(routeDaily.reduce((sum, row) => sum + row.probeCount, 0), 60_000);
+    const routeTrend = await caller.tcpingSeries({ ruleId: 302, hours: 720, startAt: days[0], endAt: days[30], dayBoundaries: days, includeTrend: true });
+    assert.equal(routeTrend.length, trend.length, "trend and plain summary cache entries must be separate");
     const serviceCaller = hostsRouter.createCaller(context(1));
     const serviceDaily = await serviceCaller.probeServiceSeries({ serviceIds: [9], hostId: 1, hours: 720, startAt: days[0], endAt: days[30], dayBoundaries: days });
     const serviceDay = serviceDaily.find((row) => row.dayStart === start * 1000);

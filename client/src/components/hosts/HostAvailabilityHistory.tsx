@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { t } from "@/i18n";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HistoryDaySelector } from "@/components/HistoryDaySelector";
+import { HistoryDayTrendBand } from "@/components/HistoryDayTrend";
 import { latencyHistoryDays, localHistoryDate } from "@/components/LatencyHistoryDays";
 import type { AvailabilityDay, AvailabilityInterval } from "@shared/hostAvailability";
 
@@ -29,13 +29,8 @@ export function HostAvailabilityHistory({ days, summaries = [], selectedDay, onS
   detail?: { days: AvailabilityDay[]; intervals: AvailabilityInterval[] };
   loading?: boolean; error?: boolean; detailLoading?: boolean; detailError?: boolean;
 }) {
-  const container = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(50);
   useEffect(() => { setVisibleCount(50); }, [selectedDay]);
-  useEffect(() => {
-    const active = container.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
-    if (active && container.current) container.current.scrollLeft = Math.max(0, active.offsetLeft - container.current.offsetLeft - container.current.clientWidth / 2 + active.clientWidth / 2);
-  }, [selectedDay]);
   const byDate = useMemo(() => new Map(summaries.map((day) => [localHistoryDate(new Date(day.startAt * 1000)), day])), [summaries]);
   const selected = days.find((day) => day.date === selectedDay);
   const summary = detail?.days[0];
@@ -60,30 +55,22 @@ export function HostAvailabilityHistory({ days, summaries = [], selectedDay, onS
       <span className="font-medium">{t("主机在线稳定性")}</span>
       <span className="text-muted-foreground">{t("在线率：绿 ≥99.9% · 黄 ≥99% · 红 <99%")}</span>
     </div>
-    <div ref={container} role="group" aria-label={t("在线历史日期")} className="relative flex w-full gap-1 overflow-x-auto overscroll-x-contain rounded-xl border border-border/60 bg-muted/20 p-1.5">
-      {days.map((day) => {
+    <HistoryDaySelector selectedDay={selectedDay} onSelect={onSelect} ariaLabel={t("在线历史日期")}
+      items={days.map((day) => {
         const value = byDate.get(day.date);
         const health = loading || error ? "none" : availabilityHealth(value);
         const partial = !!value?.observedSeconds && value.unknownSeconds > 0;
-        const label = error ? t("加载失败") : loading ? t("加载中") : health === "none" ? t("无数据") : health === "good" ? t("优秀") : health === "warning" ? t("一般") : t("异常");
-        return <Tooltip key={day.date}><TooltipTrigger asChild>
-          <button type="button" aria-label={`${day.date} ${label}${partial ? ` · ${t("部分监测")}` : ""}`} aria-pressed={selectedDay === day.date} onClick={() => onSelect(day.date)} data-health={health} data-partial={partial}
-            className={cn("relative flex min-w-10 shrink-0 flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              health === "good" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25" : health === "warning" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25" : health === "bad" ? "bg-red-500/15 text-red-700 dark:text-red-300 hover:bg-red-500/25" : "bg-muted/50 text-muted-foreground hover:bg-muted",
-              selectedDay === day.date && "ring-2 ring-primary ring-inset font-semibold")}
-            style={partial ? { backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 5px, var(--color-border) 5px, var(--color-border) 6px)" } : undefined}>
-            <span className="font-semibold tabular-nums">{day.index}</span><span className="text-[10px] tabular-nums opacity-80">{day.label}</span>
-          </button>
-        </TooltipTrigger><TooltipContent side="top" className="max-w-80 space-y-1">
-          <p className="font-medium">{day.date} · {label}{partial ? ` · ${t("部分监测")}` : ""}</p>
+        const status = error ? t("加载失败") : loading ? t("加载中") : health === "none" ? t("无数据") : health === "good" ? t("优秀") : health === "warning" ? t("一般") : t("异常");
+        const label = `${status}${partial ? ` · ${t("部分监测")}` : ""}`;
+        return { date: day.date, health, partial, label, trend: <HistoryDayTrendBand segments={loading || error ? [] : value?.trend || []} />, tooltip: <>
+          <p className="font-medium">{day.date} · {label}</p>
           {!loading && !error && value && <>
             <p>{t("在线率")}：{value.uptimePercent == null ? "—" : `${value.uptimePercent.toFixed(3)}%`} · {t("离线次数")}：{value.offlineCount}</p>
             <p>{t("离线时长")}：{availabilityDuration(value.offlineSeconds)} · {t("监测覆盖率")}：{value.coveragePercent == null ? "—" : `${value.coveragePercent.toFixed(1)}%`}</p>
           </>}
           <p className="text-[10px] opacity-75">{t("按已监测时长计算在线率；斜纹表示当天存在未监测时段。")}</p>
-        </TooltipContent></Tooltip>;
-      })}
-    </div>
+        </> };
+      })} />
     {!selected ? <p className="text-xs text-muted-foreground">{t("点击日期查看当天稳定性详情。")}</p>
       : detailError ? <p role="alert" className="text-xs text-destructive">{t("在线稳定性加载失败，请稍后重试。")}</p>
       : detailLoading ? <p className="text-xs text-muted-foreground">{t("加载中")}</p>

@@ -19,18 +19,18 @@ net.ipv4.tcp_congestion_control = bbr
 
 ## 前置条件与限制
 
-- Linux，Agent 以 root 运行，安装 Python 3.8+ 与 `sysctl`（procps / procps-ng）。可选 `tc` 用于查看现有网卡队列。
+- Linux，Agent 以 root 运行。1.0.1 起由 Agent 内置 Go 程序直接读写 `/proc/sys`，不需要 Python 或 `sysctl` 命令；需先更新为支持内置 BBR 管理的新 Agent，再更新插件。旧 Agent 会提示更新，不自动安装依赖。可选 `tc` 用于查看现有网卡队列，缺少时不影响参数管理。
 - 内核必须支持所选参数和算法；会尝试加载系统已有 `tcp_bbr` / `sch_fq` 等模块，但不安装内核、不重启、不下载第三方脚本。不支持或权限不足时返回错误，不伪报成功。
 - BBR 影响主机发出的 **TCP** 连接，新连接采用新默认算法；不会直接优化 UDP、用户态 WireGuard 或修复转发程序自身瓶颈，也不保证任何线路吞吐提升。
 - `net.core.default_qdisc=fq` 仅改变默认队列。已存在的网卡队列可能仍为其他类型；插件单独展示现有队列，**不会运行 `tc qdisc replace` 打断网络**。
 - 预设不包含激进缓冲区或万能调优值，额外参数需根据主机内存和线路调整。
-- 每行采用 `参数 = 值`，允许空行及 `#` / `;` 注释；禁止重复键、命令、include 和通配符，最多 12000 UTF-8 字节。配置只作为数据解析，不作为 Shell / Python 执行。
+- 每行采用 `参数 = 值`，允许空行及 `#` / `;` 注释；禁止重复键、命令、include 和通配符，最多 12000 UTF-8 字节。配置只作为数据解析，不作为命令执行。
 - 受支持的 `net.core` 参数：`default_qdisc`、`somaxconn`、`rmem_max`、`wmem_max`、`rmem_default`、`wmem_default`、`optmem_max`、`netdev_max_backlog`、`netdev_budget`、`netdev_budget_usecs`。
 
 ## 保存与恢复
 
 - 持久化文件：`/etc/sysctl.d/90-forwardx-bbr.conf`。
-- 首次原值及原插件文件备份：`/var/lib/forwardx-agent/plugin-state/bbr-manager/original.json`，不随插件资源升级覆盖。
+- 首次原值及原插件文件备份：`/var/lib/forwardx-agent/plugin-state/bbr-manager/original.json`，不随插件资源升级覆盖，兼容 1.0.0 生成的备份。
 - 写入前校验所有目标键，应用后逐项核验；失败尝试回滚本次运行值和文件，若回滚失败保留备份并明确报错，便于重试还原。
 - 不执行 `sysctl --system`，不覆盖 `/etc/sysctl.conf` 或其他 sysctl.d 文件。其他配置文件、调优服务仍可能在启动时覆盖插件值；发现列表提示运行值与保存值有差异时，应检查冲突来源。
 - 停用或卸载插件不会擅自恢复主机参数；如需恢复，请在停用前执行「还原原参数」。强制终止任务或主机关机中断写入时，可在恢复连接后通过该入口恢复。

@@ -50,6 +50,17 @@ export function getTunnelHopIds(tunnel: any | null | undefined) {
   return [Number(tunnel?.entryHostId || 0), Number(tunnel?.exitHostId || 0)].filter((id) => id > 0);
 }
 
+/** Card overview only; full member names and route details belong in the dialog. */
+export function getTunnelCardRouteSummary(tunnel: any, hosts: any[] | undefined, entryGroupName?: string | null, exitGroupName?: string | null) {
+  const hops = getTunnelHopIds(tunnel);
+  const entry = String(entryGroupName || "").trim() || tunnelEndpointName(tunnel, "entry", hosts);
+  const exits = getTunnelExitNames(tunnel, hosts);
+  const exit = String(exitGroupName || "").trim() || (exits.length > 1
+    ? translateText("{0} 个出口", [exits.length])
+    : tunnelEndpointName(tunnel, "exit", hosts));
+  return [entry, ...(hops.length > 2 ? [translateText("{0} 个中转", [hops.length - 2])] : []), exit].join(" → ");
+}
+
 export function getTunnelRouteText(
   tunnel: any | null | undefined,
   hosts: any[] | undefined,

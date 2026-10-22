@@ -291,7 +291,7 @@ export default function HostProbeServiceLatencyDialog({
     const end = Date.now();
     const rangeMs = Math.max(0.5, Number(timeRangeHours) || DEFAULT_LATENCY_TIME_RANGE_HOURS) * 60 * 60 * 1000;
     return [end - rangeMs, end];
-  }, [data, timeRangeHours, history.selectedDay]);
+  }, [data, timeRangeHours, history.selectedDay, history.domain?.[0], history.domain?.[1]]);
   const yMax = useMemo(() => {
     const maxLatency = Math.max(0, ...chart.flatMap((point) => (
       visibleServiceIds.map((id) => {

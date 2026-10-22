@@ -428,7 +428,7 @@ test("plugin update comparison only accepts a newer version", () => {
   assert.equal(pluginVersionHasUpdate("2.1.0", ""), false);
 });
 
-test("official BBR plugin retains sysctl editor, host-scoped Python actions and confirmation", () => {
+test("official BBR plugin retains sysctl editor, host-scoped native actions and confirmation", () => {
   const raw = JSON.parse(fs.readFileSync("plugins/bbr-manager/forwardx-plugin.json", "utf8"));
   const manifest = normalizePluginManifest(raw);
   const view = manifest.resourceSchemas?.[0];
@@ -441,9 +441,9 @@ test("official BBR plugin retains sysctl editor, host-scoped Python actions and 
   assert.equal(view?.usageViewId, "sync-to-hosts");
   assert.equal(manifest.actions?.length, 5);
   for (const action of manifest.actions || []) {
-    assert.equal(action.agent?.interpreter, "python3");
+    assert.equal(action.agent?.interpreter, "sh");
     assert.equal(action.agent?.target, "selected-hosts");
-    assert.equal(action.agent?.entry, "manage.py");
+    assert.equal(action.agent?.entry, "manage.sh");
     assert.equal(action.agent?.outputType, "json");
   }
   assert.deepEqual(manifest.actions?.find(action => action.id === "apply-kernel-config")?.agent?.arguments, ["apply", "{{input.configText}}"]);
@@ -477,9 +477,10 @@ test("official BBR and Live2D packages include current runtime, logos and licens
       files.set(name, tar.subarray(offset + 512, offset + 512 + size).toString("utf8"));
       offset += 512 + Math.ceil(size / 512) * 512;
     }
-    for (const file of id === "bbr-manager" ? ["forwardx-plugin.json", "logo.svg", "manage.py", "README.md", "LICENSE.txt"] : ["forwardx-plugin.json", "logo.svg", "LICENSE.live2d-widget.txt"]) {
+    for (const file of id === "bbr-manager" ? ["forwardx-plugin.json", "logo.svg", "manage.sh", "README.md", "LICENSE.txt"] : ["forwardx-plugin.json", "logo.svg", "LICENSE.live2d-widget.txt"]) {
       assert.equal(files.get(file)?.replace(/\r\n/g, "\n"), fs.readFileSync(`plugins/${id}/${file}`, "utf8").replace(/\r\n/g, "\n"), `${id}/${file}`);
     }
     assert.equal([...files.keys()].some(file => file.startsWith("tests/") || file.includes("__pycache__")), false);
+    if (id === "bbr-manager") assert.equal([...files.keys()].some(file => file.endsWith(".py")), false);
   }
 });

@@ -22,7 +22,7 @@ ForwardX 插件用于给面板增加可选能力。插件可以声明设置项�
 
 支持拥塞控制、默认队列、TCP 缓冲、MTU 探测、Fast Open 等字段；高级文本支持 `net.ipv4.tcp_*` 及插件说明中列出的 `net.core` 参数。每台主机独立管理，普通用户无权操作。
 
-Agent 需要 Linux、root、Python 3.8+ 和 sysctl。插件只加载系统已有模块，不安装内核、不重启；不支持所选算法时返回错误。默认 FQ 与现有网卡队列分开展示，插件不会强制重建队列；BBR 主要作用于新 TCP 连接，不直接优化 UDP。
+Agent 需要 Linux 和 root。插件 1.0.1 起使用 Agent 内置 Go 管理，无需 Python 或 sysctl 命令；先升级支持内置 BBR 管理的 Agent，再更新插件，旧参数备份仍可还原。可选 `tc` 用于显示现有队列。插件只加载系统已有模块，不安装内核、不重启；不支持所选算法时返回错误。默认 FQ 与现有网卡队列分开展示，插件不会强制重建队列；BBR 主要作用于新 TCP 连接，不直接优化 UDP。
 
 配置保存在 `/etc/sysctl.d/90-forwardx-bbr.conf`，原参数保存在 `/var/lib/forwardx-agent/plugin-state/bbr-manager/original.json`。应用失败时尝试回滚，可通过「还原原参数」恢复插件修改前的状态。停用/卸载前如需恢复，应先执行还原；其他 sysctl 配置文件不会被修改。完整说明可在插件详情的「使用说明」页查看。
 

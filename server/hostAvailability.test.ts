@@ -14,6 +14,21 @@ function memoryRecorder() {
   return { rows, recorder };
 }
 
+test("availability trends locate brief noon outages, preserve gaps and clip today's future", () => {
+  const day = { ...availabilityDays([0, 86400], 86400)[0], trend: Array.from({ length: 48 }, (_, index) => ({ from: index / 48, to: (index + 1) / 48, health: "none" as "none" | "good" | "bad" })) };
+  const base = { observationKey: "trend", hostId: 1, offlineIncident: false };
+  addAvailabilityInterval([day], { ...base, online: true, startAt: 0, endAt: 43200 });
+  addAvailabilityInterval([day], { ...base, online: false, startAt: 43200, endAt: 43205, offlineIncident: true });
+  addAvailabilityInterval([day], { ...base, online: true, startAt: 43205, endAt: 80000 });
+  assert.equal(day.trend[24].health, "bad", "five-second outage must not disappear into successful time");
+  assert.equal(day.trend[23].health, "good");
+  assert.equal(day.trend[47].health, "none");
+  assert.equal(finishAvailabilityDays([day])[0].offlineSeconds, 5);
+  const today = { ...availabilityDays([0, 86400], 64800)[0], trend: Array.from({ length: 48 }, (_, index) => ({ from: index / 48, to: (index + 1) / 48, health: "none" as "none" | "good" | "bad" })) };
+  addAvailabilityInterval([today], { ...base, online: false, startAt: 43200, endAt: 45000 });
+  assert.equal(today.trend[32].health, "bad", "noon occupies two thirds of a day ending at 18:00");
+});
+
 test("availability counts one incident per transition, not per sweep; ignores stale observations", async () => {
   const { recorder, rows } = memoryRecorder();
   for (const [at, online] of [[1000, true], [1030, true], [1050, false], [1080, false], [1110, false], [1120, true], [1150, true]] as const) await recorder.observe(1, online, at * 1000);
@@ -112,6 +127,11 @@ test("availability history uses configured DB, scopes host access, pages full hi
     assert.equal(summary.days.length, 30);
     assert.equal(summary.intervals.length, 0);
     assert.equal(summary.days.find((day) => day.startAt === start)?.offlineCount, 1050);
+    const trend = await repository.getHostAvailability(1, { since: boundaries[0], until: boundaries[30], dayBoundaries: boundaries, includeTrend: true });
+    assert.equal(trend.intervals.length, 0, "daily trends do not expose all raw intervals");
+    assert.equal(trend.days.reduce((sum, day) => sum + (day.trend?.length || 0), 0), 30 * 48);
+    assert.ok(trend.days.some(day => day.trend?.some(segment => segment.health === "bad")));
+    assert.equal(trend.days.find(day => day.startAt === start)?.offlineSeconds, summary.days.find(day => day.startAt === start)?.offlineSeconds);
     const context = (id: number, role = "user") => ({ req: { headers: {} }, res: {}, user: { id, role, accountEnabled: true } } as any);
     const routeInput = { hostId: 1, hours: 24, startAt: input.since, endAt: input.until };
     assert.equal((await hostsRouter.createCaller(context(1)).availabilityHistory(routeInput)).days[0].offlineCount, 1050);

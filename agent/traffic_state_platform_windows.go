@@ -25,6 +25,14 @@ func unlockAgentStateFile(file *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, new(windows.Overlapped))
 }
 
+func lockBBRStateFile(file *os.File, write bool) error {
+	mode := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
+	if write {
+		mode |= windows.LOCKFILE_EXCLUSIVE_LOCK
+	}
+	return windows.LockFileEx(windows.Handle(file.Fd()), mode, 0, 1, 0, new(windows.Overlapped))
+}
+
 func replaceTrafficStateFile(source string, target string, stateDir string) error {
 	from, err := windows.UTF16PtrFromString(source)
 	if err != nil {

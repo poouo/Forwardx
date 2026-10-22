@@ -45,6 +45,7 @@ export async function queryLatencyChartBuckets(
   bucketSeconds: number,
   until = new Date(Date.now() + 1000),
   dayBoundaries?: Date[],
+  includeTrend = false,
 ) {
   if (!ids.length) return [];
   const end = Math.min(Math.floor(until.getTime() / 1000), Math.floor(Date.now() / 1000) + 1);
@@ -52,7 +53,7 @@ export async function queryLatencyChartBuckets(
   const series = table === "tunnel_latency_stats"
     ? `COALESCE(NULLIF(TRIM(s.${q("seriesKey")}), ''), 'total')` : null;
   let seriesCount = ids.length;
-  if (series && !dayBoundaries) {
+  if (series && (!dayBoundaries || includeTrend)) {
     const counts = await queryRaw<any>(`SELECT COUNT(*) AS ${q("count")} FROM (
       SELECT s.${q(idColumn)}, ${series} FROM ${q(table)} s
       WHERE s.${q(idColumn)} IN (${ids.map(() => "?").join(",")})
@@ -61,8 +62,9 @@ export async function queryLatencyChartBuckets(
     seriesCount = Math.max(1, Number(counts[0]?.count) || 1);
   }
   const perSeriesBudget = Math.max(2, Math.floor(20_000 / seriesCount));
-  const width = Math.max(60, Math.floor(bucketSeconds), Math.ceil((end - start) / (perSeriesBudget - 1) / 60) * 60);
-  const bucket = dayBoundaries ? latencyDayBucketExpression(dayBoundaries, `s.${q("recordedAt")}`) : bucketExpression("s", "recordedAt", width);
+  const width = Math.max(includeTrend ? 1800 : 60, includeTrend ? 1800 : Math.floor(bucketSeconds), Math.ceil((end - start) / (perSeriesBudget - 1) / 60) * 60);
+  const dayBucket = dayBoundaries ? latencyDayBucketExpression(dayBoundaries, `s.${q("recordedAt")}`) : null;
+  const bucket = dayBucket && !includeTrend ? dayBucket : bucketExpression("s", "recordedAt", width);
   const count = `CASE WHEN s.${q("probeCount")} BETWEEN 1 AND 1024 THEN s.${q("probeCount")} ELSE 1 END`;
   const successes = `CASE
     WHEN s.${q("isTimeout")} = ${boolLiteral(true)} AND COALESCE(s.${q("probeSuccesses")}, 0) <= 0 THEN 0
@@ -73,6 +75,7 @@ export async function queryLatencyChartBuckets(
   return queryRaw<any>(`SELECT s.${q(idColumn)},
       MAX(s.${q("recordedAt")}) AS ${q("recordedAt")},
       ${bucket} AS ${q("bucketStart")},
+      ${includeTrend && dayBucket ? `${dayBucket} AS ${q("dayStart")},` : ""}
       ${series ? `${series} AS ${q("seriesKey")}, MAX(s.${q("seriesLabel")}) AS ${q("seriesLabel")},` : ""}
       SUM(s.${q("latencyMs")} * (${validSuccesses})) * 1.0 / NULLIF(SUM(${validSuccesses}), 0) AS ${q("latencyMs")},
       MIN(CASE WHEN (${validSuccesses}) > 0 THEN s.${q("latencyMs")} END) AS ${q("minLatencyMs")},
@@ -82,7 +85,7 @@ export async function queryLatencyChartBuckets(
     FROM ${q(table)} s
     WHERE s.${q(idColumn)} IN (${ids.map(() => "?").join(",")})
       AND s.${q("recordedAt")} >= ? AND s.${q("recordedAt")} < ?
-    GROUP BY s.${q(idColumn)}, ${bucket}${series ? `, ${series}` : ""}
+    GROUP BY s.${q(idColumn)}, ${bucket}${includeTrend && dayBucket ? `, ${dayBucket}` : ""}${series ? `, ${series}` : ""}
     ORDER BY ${q("bucketStart")} DESC`,
   [...ids, start, end]);
 }
@@ -96,7 +99,7 @@ export function mapLatencyChartBucket(row: any) {
     probeCount,
     probeSuccesses,
     recordedAt: new Date(Number(row.recordedAt) * 1000),
-    dayStart: Number(row.bucketStart) * 1000,
+    dayStart: Number(row.dayStart ?? row.bucketStart) * 1000,
     minLatencyMs: row.minLatencyMs == null ? null : Number(row.minLatencyMs),
     maxLatencyMs: row.maxLatencyMs == null ? null : Number(row.maxLatencyMs),
   };

@@ -164,12 +164,25 @@ func TestTCPingReportGateSuppressesStableAutoProbesButKeepsServices(t *testing.T
 	gate.commit(first)
 
 	results[0]["latencyMs"] = 99
-	stable := gate.plan(results, tunnels, groups, services, false, now.Add(time.Minute))
+	stable := gate.plan(results, tunnels, groups, services, false, now.Add(59*time.Second))
 	if len(stable.results) != 0 || len(stable.tunnels) != 0 || len(stable.forwardGroups) != 0 {
 		t.Fatalf("stable automatic probes were not suppressed: %+v", stable)
 	}
 	if len(stable.services) != 1 {
 		t.Fatal("service history must preserve its configured report cadence")
+	}
+	refresh := gate.plan(results, tunnels, groups, services, false, now.Add(time.Minute))
+	if len(refresh.tunnels) != 2 || len(refresh.results) != 0 || len(refresh.forwardGroups) != 0 {
+		t.Fatalf("tunnels refresh each minute without increasing rule/group cadence: %+v", refresh)
+	}
+	gate.commit(refresh)
+	retry := gate.plan(results, tunnels, groups, services, false, now.Add(2*time.Minute))
+	if len(retry.tunnels) != 2 {
+		t.Fatal("steady tunnel snapshots must recur, not only on the first deadline")
+	}
+	// A failed HTTP delivery is not committed and must remain retryable.
+	if len(gate.plan(results, tunnels, groups, services, false, now.Add(2*time.Minute+time.Second)).tunnels) != 2 {
+		t.Fatal("failed tunnel refresh must retry without another minute's delay")
 	}
 }
 

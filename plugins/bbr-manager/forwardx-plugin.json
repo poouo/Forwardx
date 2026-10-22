@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "id": "bbr-manager",
   "name": "ForwardX BBR 管理",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "按主机读取、配置和还原 BBR / TCP 参数，支持图形化与高级 sysctl 文本。",
-  "detailsMarkdown": "管理员可按主机读取真实拥塞控制算法、默认队列及现有网卡队列。支持图形化与高级文本双向编辑、BBR + FQ 预设、持久化和原参数还原。\n\n仅使用 Agent 上的 Python 3 标准库与系统 sysctl，不安装内核、不下载第三方脚本、不重建网卡队列。仅在管理员保存后修改参数，安装或启用插件不自动启用 BBR。",
+  "detailsMarkdown": "管理员可按主机读取真实拥塞控制算法、默认队列及现有网卡队列。支持图形化与高级文本双向编辑、BBR + FQ 预设、持久化和原参数还原。\n\n由 Agent 内置 Go 程序直接管理，无需 Python 或 sysctl 命令。需使用支持内置 BBR 管理的新 Agent；兼容旧插件的参数备份。不安装内核、不下载第三方脚本、不重建网卡队列。仅在管理员保存后修改参数，安装或启用插件不自动启用 BBR。",
   "author": "ForwardX",
   "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+CiAgPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiIiB4MT0iMTIiIHkxPSI5IiB4Mj0iNTQiIHkyPSI1OSIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIHN0b3AtY29sb3I9IiMzOGJkZjgiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyNTYzZWIiLz48L2xpbmVhckdyYWRpZW50PjxsaW5lYXJHcmFkaWVudCBpZD0icyIgeDE9IjE4IiB5MT0iMjgiIHgyPSI0OCIgeTI9IjQxIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHN0b3Agc3RvcC1jb2xvcj0iIzY3ZThmOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2ZmZiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgogIDxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWZmNmZmIi8+CiAgPHJlY3QgeD0iNiIgeT0iNiIgd2lkdGg9IjUyIiBoZWlnaHQ9IjUyIiByeD0iMTUiIGZpbGw9InVybCgjYikiLz4KICA8cGF0aCBkPSJNMTcgNDNhMTkgMTkgMCAxIDEgMzAgMCIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utb3BhY2l0eT0iLjg1IiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwYXRoIGQ9Im0zMiAzNCAxMi0xMiIgc3Ryb2tlPSJ1cmwoI3MpIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9IjMyIiBjeT0iMzQiIHI9IjUiIGZpbGw9IiNmZmYiLz4KICA8cGF0aCBkPSJNMjAgNDdoMjRNMTcgMzRoM20yNCAwaDNNMzIgMTZ2MyIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
-  "releaseDate": "2026-10-21",
-  "updatedAt": "2026-10-21",
-  "changelog": "新增按主机 BBR / TCP 参数读取、双模式配置、BBR + FQ 预设及还原。",
+  "releaseDate": "2026-10-22",
+  "updatedAt": "2026-10-22",
+  "changelog": "改用 Agent 内置 Go 管理，移除 Python 和 sysctl 命令依赖，兼容原参数备份；需配套更新 Agent。",
   "tags": ["bbr", "tcp", "sysctl", "agent"],
   "license": "AGPL-3.0-only",
   "homepage": "https://github.com/poouo/Forwardx",
@@ -71,16 +71,16 @@
     }
   }],
   "actions": [
-    { "id": "read-kernel-list", "label": "读取内核参数", "type": "agent.request", "intent": "read", "agent": { "executor": "script", "interpreter": "python3", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.py", "arguments": ["list"], "timeoutMs": 30000, "outputType": "json" } },
-    { "id": "read-kernel-detail", "label": "读取配置详情", "type": "agent.request", "intent": "read", "agent": { "executor": "script", "interpreter": "python3", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.py", "arguments": ["read"], "timeoutMs": 30000, "outputType": "json" } },
-    { "id": "apply-kernel-config", "label": "保存并应用配置", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "python3", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.py", "arguments": ["apply", "{{input.configText}}"], "timeoutMs": 60000, "outputType": "json" } },
-    { "id": "apply-preset", "label": "应用 BBR + FQ", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "python3", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.py", "arguments": ["preset"], "timeoutMs": 60000, "outputType": "json" } },
-    { "id": "restore-kernel-config", "label": "还原原参数", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "python3", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.py", "arguments": ["restore"], "timeoutMs": 60000, "outputType": "json" } }
+    { "id": "read-kernel-list", "label": "读取内核参数", "type": "agent.request", "intent": "read", "agent": { "executor": "script", "interpreter": "sh", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.sh", "arguments": ["list"], "timeoutMs": 30000, "outputType": "json" } },
+    { "id": "read-kernel-detail", "label": "读取配置详情", "type": "agent.request", "intent": "read", "agent": { "executor": "script", "interpreter": "sh", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.sh", "arguments": ["read"], "timeoutMs": 30000, "outputType": "json" } },
+    { "id": "apply-kernel-config", "label": "保存并应用配置", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "sh", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.sh", "arguments": ["apply", "{{input.configText}}"], "timeoutMs": 60000, "outputType": "json" } },
+    { "id": "apply-preset", "label": "应用 BBR + FQ", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "sh", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.sh", "arguments": ["preset"], "timeoutMs": 60000, "outputType": "json" } },
+    { "id": "restore-kernel-config", "label": "还原原参数", "type": "agent.request", "intent": "write", "agent": { "executor": "script", "interpreter": "sh", "target": "selected-hosts", "usageViewId": "sync-to-hosts", "entry": "manage.sh", "arguments": ["restore"], "timeoutMs": 60000, "outputType": "json" } }
   ],
   "pages": [{ "id": "overview", "title": "使用说明", "contentType": "markdown", "assetPath": "README.md" }],
   "assets": [
     { "path": "README.md", "label": "使用说明", "contentType": "text/markdown;charset=utf-8" },
-    { "path": "manage.py", "label": "内核参数管理程序", "contentType": "text/x-python;charset=utf-8" },
+    { "path": "manage.sh", "label": "内置管理入口", "contentType": "text/x-shellscript;charset=utf-8" },
     { "path": "logo.svg", "label": "BBR Logo", "contentType": "image/svg+xml" },
     { "path": "LICENSE.txt", "label": "许可证", "contentType": "text/plain;charset=utf-8" }
   ]

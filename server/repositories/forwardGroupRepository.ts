@@ -1047,6 +1047,22 @@ function forwardGroupListCondition(input: {
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
+/** Count every tab in one aggregation without loading members or runtimes. */
+export async function getForwardGroupModeCounts(input: { allowedGroupIds?: number[]; search?: string }) {
+  const counts = { port: 0, chain: 0, failover: 0, entry: 0, exit: 0 };
+  const db = await getDb();
+  if (!db) return counts;
+  const mode = sql<string>`CASE WHEN ${forwardGroups.groupMode} IN ('port', 'chain', 'entry', 'exit')
+    THEN ${forwardGroups.groupMode} ELSE 'failover' END`;
+  const condition = forwardGroupListCondition(input);
+  const query = db.select({ mode, total: sql<number>`COUNT(*)` }).from(forwardGroups);
+  const rows = condition ? await query.where(condition).groupBy(mode) : await query.groupBy(mode);
+  for (const row of rows) {
+    if (Object.hasOwn(counts, row.mode)) counts[row.mode as keyof typeof counts] = Number(row.total || 0);
+  }
+  return counts;
+}
+
 export async function getForwardGroupsPage(input: ForwardGroupListQuery) {
   const db = await getDb();
   if (!db) return { ...pageResult([], 0, input), scopeTotalItems: 0, enabledItems: 0 };

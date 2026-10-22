@@ -219,6 +219,7 @@ export default function HostGroupManager({
   });
   const displayedGroups = groupOrder.items;
   const refreshHostGroupQueries = () => Promise.all([
+    utils.hosts.managementCounts.invalidate(),
     utils.hosts.hostGroups.invalidate(),
     utils.hosts.listPage.invalidate(),
     utils.hosts.mapPoints.invalidate(),

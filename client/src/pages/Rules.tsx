@@ -6,6 +6,7 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { RuleLimitsForm, newRuleLimitsForm, ruleLimitsPayload, type RuleLimitsFormValue } from "@/components/rules/RuleLimitsForm";
 import { RuleUsageSummary } from "@/components/rules/RuleUsageSummary";
 import { RuleGroupBar, RuleGroupMultiSelect, RuleGroupBulkEditor } from "@/components/rules/PersonalRuleGroups";
+import { RuleCardControls } from "@/components/rules/RuleCardControls";
 import { RulePersonalGroupBadges } from "@/components/rules/RulePersonalGroupBadges";
 import { RuleCardMetadata } from "@/components/rules/RuleCardMetadata";
 import ListSettings from "@/components/ListSettings";
@@ -6380,6 +6381,7 @@ function RulesContent() {
       return (
         <Card
           key={rule.id}
+          disableEnterAnimation
           interactive={supported && !sortable?.isDragging}
           {...(sortable?.itemProps || {})}
           className={cn(
@@ -6392,7 +6394,7 @@ function RulesContent() {
         >
           <CardContent className="action-card-content space-y-2.5 p-3">
             <div className="flex min-w-0 items-start justify-between gap-2">
-              <div className="flex min-w-0 items-start gap-2">
+              <div className="flex min-w-0 flex-1 items-start gap-2">
                 <div className="mt-1.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                   {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
                 </div>
@@ -6403,17 +6405,16 @@ function RulesContent() {
                   </div>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                {sortable && (
-                  <SortableDragHandle
-                    dragHandleProps={sortable.handleProps}
-                    visible={sortable.isDragging}
-                    busy={ruleReorderPending}
-                    className="bg-card/70"
-                  />
-                )}
+              <RuleCardControls dragHandle={sortable && (
+                <SortableDragHandle
+                  dragHandleProps={sortable.handleProps}
+                  visible={sortable.isDragging}
+                  busy={ruleReorderPending}
+                  className="h-6 w-6 bg-card/70"
+                />
+              )}>
                 {renderRuleEnabledSwitch(rule)}
-              </div>
+              </RuleCardControls>
             </div>
 
             <div className="min-w-0">
@@ -6452,6 +6453,7 @@ function RulesContent() {
     return (
       <Card
         key={rule.id}
+        disableEnterAnimation
         interactive={supported && !sortable?.isDragging}
         {...(sortable?.itemProps || {})}
         className={cn(
@@ -6463,8 +6465,8 @@ function RulesContent() {
         title={!supported ? unsupportedProtocolTitle : undefined}
       >
         <CardContent className="action-card-content space-y-3 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-2">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
               <div className="mt-2 flex h-4 w-4 flex-shrink-0 items-center justify-center">
                 {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
               </div>
@@ -6487,17 +6489,16 @@ function RulesContent() {
                 )}
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {sortable && (
-                <SortableDragHandle
-                  dragHandleProps={sortable.handleProps}
-                  visible={sortable.isDragging}
-                  busy={ruleReorderPending}
-                  className="bg-card/70"
-                />
-              )}
+            <RuleCardControls dragHandle={sortable && (
+              <SortableDragHandle
+                dragHandleProps={sortable.handleProps}
+                visible={sortable.isDragging}
+                busy={ruleReorderPending}
+                className="h-6 w-6 bg-card/70"
+              />
+            )}>
               {renderRuleEnabledSwitch(rule)}
-            </div>
+            </RuleCardControls>
           </div>
 
           <div className="min-w-0">

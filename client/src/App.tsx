@@ -3,6 +3,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { useAuth } from "@/_core/hooks/useAuth";
 import type { ComponentType } from "react";
+import { useEffect } from "react";
+import { clearSidebarPresentation } from "@/lib/sidebarPresentation";
 import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
 import NotFound from "@/pages/NotFound";
@@ -103,7 +105,8 @@ function PluginsRoute({ sidebarPluginId }: { sidebarPluginId?: string }) {
 
 function Router() {
   const [location] = useLocation();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  useEffect(() => { if (!loading && !user) clearSidebarPresentation(); }, [loading, user]);
   const route = resolveClientRoute(location);
   const content = (
     <Switch>
@@ -147,6 +150,7 @@ function Router() {
   );
   // Keep navigation, sidebar scroll and upgrade state alive while only the
   // content module changes. Public pages must never inherit the dashboard shell.
+  if (loading && route?.dashboard) return <PanelStartView />;
   return user && route?.dashboard
     ? <DashboardLayout key={String(user.id) + ":" + user.role}>{content}</DashboardLayout>
     : content;

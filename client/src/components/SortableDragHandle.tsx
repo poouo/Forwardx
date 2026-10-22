@@ -341,7 +341,7 @@ export function SortableItem({
     zIndex: isDragging ? 20 : undefined,
     position: isDragging ? "relative" : undefined,
     display: itemKind === "row" ? "table-row" : undefined,
-    willChange: "transform",
+    willChange: isDragging || transform ? "transform" : undefined,
   };
 
   return (

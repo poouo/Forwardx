@@ -1089,9 +1089,9 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     };
     const acceptedTunnelReports = new Set(tunnelResults);
     const acceptedGroupReports = new Set(forwardGroupResults);
-    // Old Agents have no cumulative metadata. Preserve their existing gate
-    // savings instead of reloading topology for every suppressed report.
-    const counterTunnelReports = parsedTunnelResults.filter((report) => acceptedTunnelReports.has(report) || hasAgentProbeCounter(report));
+    // Every authenticated/validated hop refreshes live memory, independently
+    // of history throttling (including older Agents without packet counters).
+    const counterTunnelReports = parsedTunnelResults;
     const counterGroupReports = parsedForwardGroupResults.filter((report) => acceptedGroupReports.has(report)
       || (hasAgentProbeCounter(report) && !["china", "entry"].includes(String(report.probeType || ""))));
     if (!results.length && !counterTunnelReports.length && !counterGroupReports.length && !serviceResults.length) {
@@ -1126,17 +1126,18 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           tunnelId, expectedEntryHostIds: orderedEntryHostIds, hopCount,
           generation: multiEntryGeneration, pathKey, totalLatencyMs,
         });
-        if (snapshot?.missingEntryHostIds.length && snapshot.sampleAgeMs >= 30_000
+        if (snapshot?.missingEntryHostIds.length && !snapshot.warmingUp && snapshot.sampleAgeMs >= 30_000
           && shouldLogReport(`tunnel-probe-missing:${tunnelId}`, 5 * 60_000)) {
           console.warn(`[TunnelProbe] incomplete tunnel=${tunnelId} path=${pathKey} missingEntryHosts=${snapshot.missingEntryHostIds.join(",")} expectedEntries=${orderedEntryHostIds.length}; no fresh Agent samples, not a confirmed network timeout`);
         }
         return snapshot?.message;
       };
       const branchByKey = new Map<string, { key: string; label: string; latencyMs: number | null; isTimeout: boolean; probeCount?: number; probeSuccesses?: number }>();
+      const incompletePaths = new Map<string, number>();
       for (const report of reports) {
         if (!await validateTunnelProbeSource(Number(host.id), tunnel, report, { hops, exitNodes, entryHostIds, topologyKey })) continue;
         collectCounter("tunnel", tunnelId, report);
-        if (!acceptedTunnelReports.has(report)) continue;
+        const accepted = acceptedTunnelReports.has(report);
         const latencyValue = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
         const isTimeout = !!report.isTimeout || latencyValue === null;
         const seriesKey = cleanTunnelSeriesKey(report.seriesKey);
@@ -1159,7 +1160,12 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
             pathKey: seriesKey || "default",
             toHostId: tunnelProbeTargetHostId(tunnel, hops, exitNodes, report, seriesKey),
           });
-          if (!aggregate) continue;
+          if (!accepted) continue;
+          if (!aggregate) {
+            incompletePaths.set(seriesKey || "default", hasHop ? hopCount : 1);
+            continue;
+          }
+          incompletePaths.delete(seriesKey || "default");
           const recordedAt = new Date();
           await mapWithConcurrency(aggregate.details, 4, async (detail) => {
             const detailSeriesKey = cleanTunnelSeriesKey(`entry-${detail.hostId}${seriesKey ? `-${seriesKey}` : ""}`);
@@ -1206,6 +1212,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           }
           continue;
         }
+        if (!accepted) continue;
         if (relayFailover && seriesKey && /^relay-\d+$/.test(seriesKey)) {
           recordTunnelAutoHopLatency({
             tunnelId,
@@ -1326,7 +1333,18 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       }
 
       const branches = Array.from(branchByKey.values());
-      if (branches.length === 0) return;
+      if (branches.length === 0) {
+        // Incomplete/shared-hop warm-up still has useful current details.
+        // Do not leave a previous topology's diagram displayed until a total
+        // can be calculated, and do not fabricate packet-loss history.
+        const path = [...incompletePaths.keys()].sort((a, b) =>
+          Number(b === "default" || b === "primary") - Number(a === "default" || a === "primary") || a.localeCompare(b))[0];
+        if (path) {
+          const message = liveProbeMessage(path, incompletePaths.get(path)!, null);
+          if (message) await db.updateTunnelAutoProbeMessage(tunnelId, message);
+        }
+        return;
+      }
       const recordedAt = new Date();
       await mapWithConcurrency(branches, 4, async (branch) => {
         await db.insertTunnelLatencyStat({

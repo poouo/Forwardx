@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getTunnelExitNames, getTunnelRouteText, tunnelTestIndicatesTimeout } from "./tunnelDisplay";
+import { getTunnelCardRouteSummary, getTunnelExitNames, getTunnelRouteText, tunnelTestIndicatesTimeout } from "./tunnelDisplay";
 
 const hosts = [
   { id: 1, name: "广州 01" },
@@ -8,6 +8,14 @@ const hosts = [
   { id: 3, name: "香港 23" },
   { id: 4, name: "东京 09" },
 ];
+
+test("card summaries omit full member lists and retain a compact topology", () => {
+  const tunnel = { entryHostId: 1, exitHostId: 2, hopHostIds: [1, 2], loadBalanceExits: [{ hostId: 3 }] };
+  assert.equal(getTunnelCardRouteSummary(tunnel, hosts, "亚洲入口"), "亚洲入口 → 2 个出口");
+  assert.equal(getTunnelCardRouteSummary(tunnel, hosts, "亚洲入口", "香港出口"), "亚洲入口 → 香港出口");
+  assert.equal(getTunnelCardRouteSummary({ ...tunnel, hopHostIds: [1, 4, 2] }, hosts), "广州 01 → 1 个中转 → 2 个出口");
+  assert.equal(getTunnelCardRouteSummary({ ...tunnel, loadBalanceStrategy: "none" }, hosts), "广州 01 → 香港 07");
+});
 
 test("keeps multi-exit names in the route without a redundant mode label", () => {
   const tunnel = {

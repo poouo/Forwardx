@@ -1,5 +1,5 @@
 import { structuredLinkTestMessage } from "./linkTestMessages";
-import { getTunnelMultiEntryHopDetails } from "./tunnelMultiEntryLatencyState";
+import { getTunnelMultiEntryHopDetails, tunnelMultiEntryProbeWarmingUp } from "./tunnelMultiEntryLatencyState";
 
 /** Publish the same live samples as the total, never a previous manual test. */
 export function tunnelMultiEntryProbeMessage(input: {
@@ -14,6 +14,7 @@ export function tunnelMultiEntryProbeMessage(input: {
   if (!samples?.length) return null;
   const reported = new Set(samples.filter(sample => sample.hopIndex === 0).map(sample => sample.fromHostId));
   const missingEntryHostIds = [...new Set(input.expectedEntryHostIds)].filter(id => !reported.has(id));
+  const warmingUp = tunnelMultiEntryProbeWarmingUp(input);
   const firstTarget = samples.find(sample => sample.hopIndex === 0)?.toHostId
     || samples.find(sample => sample.hopIndex === 1)?.fromHostId;
   const details = samples.map(sample => ({
@@ -28,12 +29,13 @@ export function tunnelMultiEntryProbeMessage(input: {
   // without writing fabricated timeouts or packet-loss samples to history.
   for (const hostId of missingEntryHostIds) details.push({
     fromHostId: hostId, toHostId: firstTarget || null, hopIndex: 0, hopCount: input.hopCount,
-    latencyMs: null, isTimeout: false, recordedAt: 0, success: false, pending: false,
-    message: "未收到探测结果", hopLabel: `1/${input.hopCount} ${hostId}->${firstTarget}`, method: "tcp",
+    latencyMs: null, isTimeout: false, recordedAt: 0, success: false, pending: warmingUp,
+    message: warmingUp ? "等待探测结果" : "未收到探测结果", hopLabel: `1/${input.hopCount} ${hostId}->${firstTarget}`, method: "tcp",
   });
   details.sort((a, b) => a.hopIndex - b.hopIndex || Number(a.fromHostId) - Number(b.fromHostId));
   return {
     missingEntryHostIds,
+    warmingUp,
     sampleAgeMs: Date.now() - Math.min(...samples.map(sample => sample.recordedAt)),
     message: structuredLinkTestMessage({
       kind: "tunnel-entry-group-summary", tunnelId: input.tunnelId, details,

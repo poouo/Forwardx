@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { clearTunnelMultiEntryLatencyState, getTunnelMultiEntryHopDetails, getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tunnelMultiEntryLatencyState";
 import { tunnelMultiEntryProbeMessage } from "./tunnelMultiEntryProbeMessage";
+import { AgentTcpingReportGate } from "./agentTcpingReportGate";
 
 test("live multi-entry diagrams replace missing entries as asynchronous reports arrive", () => {
   const base = { tunnelId: 95001, expectedEntryHostIds: [11, 12], hopCount: 2, generation: "live-v1" };
@@ -12,7 +13,8 @@ test("live multi-entry diagrams replace missing entries as asynchronous reports 
   const partialMessage = JSON.parse(partial!.message);
   assert.equal(partialMessage.totalLatencyMs, 7);
   assert.deepEqual(partialMessage.details.map((detail: any) => [detail.fromHostId, detail.toHostId]), [[11, 20], [12, 20], [20, 30]]);
-  assert.equal(partialMessage.details[0].message, "未收到探测结果");
+  assert.equal(partialMessage.details[0].message, "等待探测结果");
+  assert.equal(partialMessage.details[0].pending, true);
   assert.equal(partialMessage.details[0].isTimeout, false, "absent reports are not fabricated network timeouts");
   // A later report must replace the old diagram, not leave it waiting forever.
   recordTunnelMultiEntryLatency({ ...base, sourceHostId: 11, toHostId: 20, hopIndex: 0, latencyMs: 9, isTimeout: false });
@@ -305,8 +307,92 @@ test("multi-entry state exposes entry and shared hop samples for the rule test",
   const newestRecordedAt = Math.max(...details.map((detail) => detail.recordedAt));
   assert.equal(getTunnelMultiEntryHopDetails({
     ...base,
-    referenceAt: newestRecordedAt + 30_001,
+    referenceAt: newestRecordedAt + 6 * 60_000 + 1,
   }), null);
+});
+
+test("staggered steady tunnel snapshots survive delivery jitter without losing an entry", (t) => {
+  let now = Date.parse("2026-10-22T00:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const start = now;
+  const base = { tunnelId: 96001, expectedEntryHostIds: [11, 12], hopCount: 2, generation: "steady" };
+  const gate = new AgentTcpingReportGate();
+  const report = (hostId: number, hopIndex: number, latencyMs: number, force = false) => {
+    const wire = { tunnelId: base.tunnelId, hopIndex, hopCount: 2, topologyKey: "steady", latencyMs, isTimeout: false };
+    const plan = gate.plan({ hostId, tunnels: [wire], results: [], forwardGroups: [], services: [], force });
+    assert.equal(plan.tunnels.length, 1);
+    recordTunnelMultiEntryLatency({ ...base, sourceHostId: hostId, hopIndex, latencyMs, isTimeout: false });
+    plan.commit();
+  };
+  report(11, 0, 6);
+  report(12, 0, 8);
+  report(20, 1, 1);
+  now = start + 1_000;
+  report(12, 0, 8, true);
+  for (let minute = 1; minute <= 6; minute++) {
+    now = start + minute * 60_000;
+    report(11, 0, 6);
+    report(20, 1, 1);
+    // Drop one full report and delay the following one by five seconds.
+    if (minute !== 5) {
+      now += 5_000;
+      report(12, 0, 8);
+    }
+  }
+  const snapshot = tunnelMultiEntryProbeMessage({ ...base, totalLatencyMs: 9 });
+  assert.deepEqual(snapshot?.missingEntryHostIds, []);
+  assert.equal(getTunnelMultiEntryLatency(base)?.latencyMs, 9);
+});
+
+test("asynchronous details keep each valid hop rather than discarding the entire diagram", (t) => {
+  let now = Date.parse("2026-10-22T01:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const base = { tunnelId: 96002, expectedEntryHostIds: [11, 12], hopCount: 2, generation: "async" };
+  const start = now;
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 11, hopIndex: 0, latencyMs: 6, isTimeout: false });
+  now += 40_000;
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 12, hopIndex: 0, latencyMs: 8, isTimeout: false });
+  now += 260_000;
+  recordTunnelMultiEntryLatency({ ...base, sourceHostId: 20, hopIndex: 1, latencyMs: 1, isTimeout: false });
+  assert.equal(getTunnelMultiEntryHopDetails({ ...base, referenceAt: now })?.length, 3,
+    "independent Agents are not a synchronized 30-second probe batch");
+  const limited = getTunnelMultiEntryHopDetails({ ...base, referenceAt: now, maxAgeMs: 270_000 });
+  assert.deepEqual(limited?.map(detail => detail.fromHostId), [12, 20]);
+  now = start + 360_001;
+  assert.deepEqual(getTunnelMultiEntryHopDetails(base)?.map(detail => detail.fromHostId), [12, 20],
+    "an actually expired entry is removed, but other samples remain");
+  now = start + 700_000;
+  assert.equal(getTunnelMultiEntryHopDetails(base), null);
+});
+
+test("restarted/topology-reset state warms up without hiding actual failures", (t) => {
+  let now = Date.parse("2026-10-22T02:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const base = { tunnelId: 96003, expectedEntryHostIds: [11, 12], hopCount: 1, generation: "before" };
+  const record = (hostId: number, generation = base.generation, isTimeout = false) =>
+    recordTunnelMultiEntryLatency({ ...base, generation, sourceHostId: hostId, hopIndex: 0,
+      latencyMs: isTimeout ? null : 8, isTimeout });
+  record(11); record(12);
+  clearTunnelMultiEntryLatencyState(base.tunnelId);
+  record(11, "after", true);
+  const input = { ...base, generation: "after", totalLatencyMs: null };
+  let snapshot = tunnelMultiEntryProbeMessage(input)!;
+  let details = JSON.parse(snapshot.message).details;
+  assert.equal(snapshot.warmingUp, true);
+  assert.equal(details[0].message, "隧道跳探测超时");
+  assert.equal(details[0].pending, false);
+  assert.equal(details[1].pending, true);
+  now += 120_001;
+  snapshot = tunnelMultiEntryProbeMessage(input)!;
+  details = JSON.parse(snapshot.message).details;
+  assert.equal(snapshot.warmingUp, false);
+  assert.equal(details[1].message, "未收到探测结果");
+  assert.equal(details[1].isTimeout, false);
+  record(12, "after");
+  assert.deepEqual(tunnelMultiEntryProbeMessage(input)?.missingEntryHostIds, []);
+  record(11, "changed");
+  assert.equal(tunnelMultiEntryProbeMessage({ ...input, generation: "after" }), null);
+  assert.deepEqual(tunnelMultiEntryProbeMessage({ ...input, generation: "changed" })?.missingEntryHostIds, [12]);
 });
 
 test("multi-entry details do not turn an entry that has not reported into a timeout", () => {

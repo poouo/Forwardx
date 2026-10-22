@@ -33,7 +33,10 @@ test("TCPing gate reports complete topologies on failure and recovery transition
   assert.equal(first.tunnels.length, 2);
   first.commit();
 
-  assert.equal(gate.plan(input({ tunnels: healthy }), now + 60_000).tunnels.length, 0);
+  assert.equal(gate.plan(input({ tunnels: healthy }), now + 29_000).tunnels.length, 0);
+  const refresh = gate.plan(input({ tunnels: healthy }), now + 60_000);
+  assert.equal(refresh.tunnels.length, 2);
+  refresh.commit();
 
   const failure = gate.plan(input({ tunnels: [tunnelHop(0), tunnelHop(1, true)] }), now + 61_000);
   assert.equal(failure.tunnels.length, 2);
@@ -41,6 +44,20 @@ test("TCPing gate reports complete topologies on failure and recovery transition
 
   const recovery = gate.plan(input({ tunnels: healthy }), now + 62_000);
   assert.equal(recovery.tunnels.length, 2);
+});
+
+test("tunnel refreshes survive forced-report phase shifts and delayed delivery", () => {
+  const gate = new AgentTcpingReportGate();
+  const now = Date.parse("2026-10-22T00:00:00Z");
+  const tunnels = [tunnelHop(0), tunnelHop(1)];
+  gate.plan(input({ tunnels }), now).commit();
+  gate.plan(input({ tunnels, force: true }), now + 1_000).commit();
+  // A five-minute second gate would swallow the next Agent snapshot.
+  for (const offset of [60_000, 125_000, 181_000, 245_000, 365_000]) {
+    const plan = gate.plan(input({ tunnels }), now + offset);
+    assert.equal(plan.tunnels.length, 2);
+    plan.commit();
+  }
 });
 
 test("TCPing gate retries uncommitted work and emits five minute snapshots", () => {

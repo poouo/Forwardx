@@ -2,6 +2,8 @@
 export const LATENCY_HISTORY_DAYS = 30;
 export const LATENCY_HISTORY_HOURS = LATENCY_HISTORY_DAYS * 24;
 
+export type HistoryTrendSegment = { from: number; to: number; health: "good" | "warning" | "bad" | "none" };
+
 /** Bound chart responses, not stored samples. Align buckets to whole minutes. */
 export function latencyChartBucketSeconds(hours: number, maxPoints = 1440) {
   return Math.max(60, Math.ceil(hours * 3600 / Math.max(1, maxPoints - 1) / 60) * 60);

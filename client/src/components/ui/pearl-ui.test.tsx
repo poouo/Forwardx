@@ -6,6 +6,7 @@ import { Button } from "./button";
 import { Card, CardContent, CardFooter, CardHeader } from "./card";
 import { ContentTransition } from "./content-transition";
 import { RuleLimitsForm, newRuleLimitsForm } from "../rules/RuleLimitsForm";
+import { RuleCardControls } from "../rules/RuleCardControls";
 import { Input } from "./input";
 import { Textarea } from "./textarea";
 import { Progress } from "./progress";
@@ -18,6 +19,29 @@ import { ConfirmDialogProvider } from "./confirm-dialog";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference } from "@/i18n";
 
 const css = readFileSync("client/src/styles/pearl.css", "utf8");
+
+test("rule card controls reserve identical space with and without sorting", () => {
+  const switchControl = <Switch checked aria-label="Toggle rule" />;
+  const handle = <button type="button" className="h-6 w-6" aria-label="Sort rule" />;
+  const sortable = renderToStaticMarkup(<RuleCardControls dragHandle={handle}>{switchControl}</RuleCardControls>);
+  const filtered = renderToStaticMarkup(<RuleCardControls>{switchControl}</RuleCardControls>);
+  for (const html of [sortable, filtered]) {
+    assert.match(html, /data-rule-card-controls="" class="flex h-6 shrink-0 items-center gap-1"/);
+    assert.match(html, /data-rule-card-drag-slot="" class="flex size-6 shrink-0 items-center justify-center"/);
+    assert.match(html, /role="switch"[^>]*aria-checked="true"/);
+  }
+  assert.equal(sortable.replace(/<button[^>]*aria-label="Sort rule"><\/button>/, ""), filtered);
+  const source = readFileSync("client/src/pages/Rules.tsx", "utf8");
+  const cards = source.slice(source.indexOf("const renderRuleCard ="), source.indexOf("const renderRuleCard =") + 8000);
+  assert.equal((cards.match(/<RuleCardControls dragHandle=/g) || []).length, 2);
+  assert.equal((cards.match(/disableEnterAnimation/g) || []).length, 2);
+});
+
+test("idle sortable items do not retain a different compositing layer from filtered cards", () => {
+  const source = readFileSync("client/src/components/SortableDragHandle.tsx", "utf8");
+  assert.match(source, /willChange: isDragging \|\| transform \? "transform" : undefined/);
+  assert.doesNotMatch(source, /willChange: "transform"/);
+});
 
 test("affiliate and operations pages fill the dashboard content width", () => {
   for (const page of ["Affiliates", "Operations"]) {

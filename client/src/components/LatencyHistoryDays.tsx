@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { t } from "@/i18n";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HistoryDaySelector } from "@/components/HistoryDaySelector";
+import { HistoryDayTrendBand } from "@/components/HistoryDayTrend";
+import { probeDayTrend } from "@/lib/historyDayTrend";
 import { LATENCY_HISTORY_DAYS } from "@shared/latencyHistory";
 import { latencyHistoryPollingInterval, type LatencyTimeRangeHours } from "./LatencyTimeRangeSelect";
 
@@ -18,15 +19,26 @@ export function latencyHistoryDays(now = new Date()) {
   });
 }
 
+/** Today ends at the current time; completed local calendar days stay whole. */
+export function latencyHistoryDayDomain(day: { startAt: Date; endAt: Date } | undefined, now = Date.now()): [number, number] | null {
+  if (!day) return null;
+  const start = day.startAt.getTime();
+  // Avoid a degenerate numeric axis at exactly midnight, before any data exists.
+  return [start, Math.max(start + 1, Math.min(now, day.endAt.getTime()))];
+}
+
 export function useLatencyHistoryDays(hours: LatencyTimeRangeHours, open: boolean, recentInterval: number | false) {
+  const [now, setNow] = useState(() => Date.now());
   const [today, setToday] = useState(() => localHistoryDate(new Date()));
   // null keeps the existing rolling-range selector available.
   const [selectedDay, setSelectedDay] = useState<string | null>(() => localHistoryDate(new Date()));
   useEffect(() => {
     if (!open) return;
     const update = () => {
-      const next = localHistoryDate(new Date());
+      const current = Date.now();
+      const next = localHistoryDate(new Date(current));
       if (next !== today) setSelectedDay((selected) => selected === today ? next : selected);
+      setNow(current);
       setToday(next);
     };
     update();
@@ -41,7 +53,7 @@ export function useLatencyHistoryDays(hours: LatencyTimeRangeHours, open: boolea
     today: () => setSelectedDay(today),
     label: selected ? selected.date : `${hours}H`,
     input: selected ? { hours: 24, startAt: selected.startAt, endAt: selected.endAt } : { hours },
-    summaryInput: { hours: 720, startAt: days[0].startAt, endAt: days[days.length - 1].endAt,
+    summaryInput: { hours: 720, startAt: days[0].startAt, endAt: days[days.length - 1].endAt, includeTrend: true,
       dayBoundaries: [...days.map((day) => day.startAt), days[days.length - 1].endAt] },
     refetchInterval: historical ? false : latencyHistoryPollingInterval(selected ? 24 : hours, open, recentInterval),
     filter<T extends { recordedAt: string | Date }>(rows: T[] | null | undefined) {
@@ -52,7 +64,9 @@ export function useLatencyHistoryDays(hours: LatencyTimeRangeHours, open: boolea
         return at >= start && at < end;
       });
     },
-    domain: selected ? [selected.startAt.getTime(), selected.endAt.getTime()] as [number, number] : null,
+    // Only the visual domain advances. Keep query boundaries at midnight so
+    // the clock never creates a new query/cache key every thirty seconds.
+    domain: latencyHistoryDayDomain(selected, now),
   };
 }
 
@@ -66,6 +80,7 @@ export type LatencyDaySample = {
   probeSuccesses?: number | null;
   serviceId?: number;
   seriesKey?: string | null;
+  isTimeout?: boolean | null;
 };
 
 export function summarizeLatencyDays(samples: LatencyDaySample[]) {
@@ -108,40 +123,31 @@ export function LatencyHistoryDayStrip({ days, selectedDay, onSelect, samples = 
   loading?: boolean;
   error?: boolean;
 }) {
-  const container = useRef<HTMLDivElement>(null);
   const summaries = useMemo(() => summarizeLatencyDays(samples), [samples]);
-  useEffect(() => {
-    const active = container.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
-    if (active && container.current) {
-      container.current.scrollLeft = Math.max(0, active.offsetLeft - container.current.offsetLeft - container.current.clientWidth / 2 + active.clientWidth / 2);
+  const trends = useMemo(() => {
+    const byDate = new Map<string, LatencyDaySample[]>();
+    for (const row of samples) {
+      const date = localHistoryDate(new Date(row.dayStart ?? row.recordedAt));
+      const rows = byDate.get(date) || [];
+      rows.push(row);
+      byDate.set(date, rows);
     }
-  }, [selectedDay]);
-  return <div ref={container} role="group" aria-label={t("延迟历史日期")} className="relative flex w-full gap-1 overflow-x-auto overscroll-x-contain rounded-xl border border-border/60 bg-muted/20 p-1.5">
-    {days.map((day) => {
+    return new Map(days.map(day => [day.date, probeDayTrend(day, byDate.get(day.date) || [])]));
+  }, [days, samples]);
+  return <HistoryDaySelector selectedDay={selectedDay} onSelect={onSelect} ariaLabel={t("延迟历史日期")}
+    items={days.map((day) => {
       const summary = summaries.get(day.date);
-      const health = latencyDayHealth(summary?.total || 0, summary?.successes || 0);
+      const health = loading || error ? "none" : latencyDayHealth(summary?.total || 0, summary?.successes || 0);
       const label = error ? t("加载失败") : loading ? t("加载中") : health === "none" ? t("无数据") : health === "good" ? t("优秀") : health === "warning" ? t("一般") : t("异常");
       const loss = summary?.total ? (summary.total - summary.successes) / summary.total * 100 : null;
-      return <Tooltip key={day.date}><TooltipTrigger asChild><button type="button" aria-label={`${day.date} ${label}`} aria-pressed={selectedDay === day.date}
-      onClick={() => onSelect(day.date)}
-      data-health={health}
-      className={cn("flex min-w-10 shrink-0 flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        health === "good" ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25"
-          : health === "warning" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-500/25"
-          : health === "bad" ? "bg-red-500/15 text-red-700 dark:text-red-300 hover:bg-red-500/25"
-          : "bg-muted/50 text-muted-foreground hover:bg-muted",
-        selectedDay === day.date && "ring-2 ring-primary ring-inset font-semibold")}>
-      <span className="font-semibold tabular-nums">{day.index}</span>
-      <span className="text-[10px] tabular-nums opacity-80">{day.label}</span>
-    </button></TooltipTrigger><TooltipContent side="top" className="max-w-72 space-y-1">
+      return { date: day.date, health, label, trend: <HistoryDayTrendBand segments={loading || error ? [] : trends.get(day.date) || []} />, tooltip: <>
       <p className="font-medium">{day.date} · {label}</p>
-      {summary && summary.total > 0 && <>
+      {!loading && !error && summary && summary.total > 0 && <>
         <p>{t("上报探测样本")}：{summary.total.toLocaleString()} · {t("失败率")}：{loss!.toFixed(2)}%</p>
         <p>{t("平均延迟")}：{summary.latencyWeight ? `${Math.round(summary.sum / summary.latencyWeight)} ms` : "—"}</p>
         <p>{t("最小延迟")}：{summary.min == null ? "—" : `${summary.min} ms`} · {t("最大延迟")}：{summary.max == null ? "—" : `${summary.max} ms`}</p>
       </>}
       <p className="text-[10px] opacity-75">{t("按上报样本失败率：绿色 ≤1%，黄色 ≤5%，红色 >5%。")}</p>
-    </TooltipContent></Tooltip>;
-    })}
-  </div>;
+      </> };
+    })} />;
 }

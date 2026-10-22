@@ -48,6 +48,23 @@ import {
 
 export { HOST_ONLINE_TTL_MS };
 
+/** Count only: do not load Token values, group members or probe history for tab badges. */
+export async function getHostManagementCounts() {
+  const q = quoteIdentifier;
+  const rows = await queryRaw<Record<string, unknown>>(`SELECT
+    (SELECT COUNT(*) FROM ${q("hosts")}) AS ${q("hosts")},
+    (SELECT COUNT(*) FROM ${q("host_groups")}) AS ${q("groups")},
+    (SELECT COUNT(*) FROM ${q("agent_tokens")}) AS ${q("tokens")},
+    (SELECT COUNT(*) FROM ${q("host_probe_services")}) AS ${q("services")}`);
+  const row = rows[0];
+  return {
+    hosts: Math.max(0, Number(row?.hosts) || 0),
+    groups: Math.max(0, Number(row?.groups) || 0),
+    tokens: Math.max(0, Number(row?.tokens) || 0),
+    services: Math.max(0, Number(row?.services) || 0),
+  };
+}
+
 export function isFreshHostHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;
   const time = new Date(lastHeartbeat as any).getTime();

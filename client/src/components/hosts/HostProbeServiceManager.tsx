@@ -310,7 +310,7 @@ export default function HostProbeServiceManager({
   );
 
   const createMutation = trpc.hosts.createProbeService.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success(translateText("服务已添加")); },
+    onSuccess: () => { utils.hosts.managementCounts.invalidate(); utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success(translateText("服务已添加")); },
     onError: (err) => toast.error(err.message || translateText("添加服务失败")),
   });
   const updateMutation = trpc.hosts.updateProbeService.useMutation({
@@ -323,7 +323,7 @@ export default function HostProbeServiceManager({
     },
   });
   const deleteMutation = trpc.hosts.deleteProbeService.useMutation({
-    onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success(translateText("服务已删除")); },
+    onSuccess: () => { utils.hosts.managementCounts.invalidate(); utils.hosts.probeServices.invalidate(); toast.success(translateText("服务已删除")); },
     onError: (err) => toast.error(err.message || translateText("删除服务失败")),
   });
   const reorderServicesMutation = trpc.hosts.reorderProbeServices.useMutation({

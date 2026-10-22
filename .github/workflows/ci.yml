@@ -98,10 +98,10 @@ jobs:
           pnpm test:operations
           pnpm test:payments
           pnpm test:plugin-bbr
-          python3 -B -m unittest discover -s plugins/bbr-manager/tests -v
           pnpm exec tsc --noEmit
           pnpm build
           node --import tsx --test server/agentCrypto.test.ts
+          node --import tsx --test server/tunnelProbeReporting.test.ts
           pnpm test:server
           pnpm test:ai
           pnpm test:selftest-dispatch

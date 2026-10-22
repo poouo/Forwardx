@@ -1,7 +1,7 @@
 import { t as translateText } from "@/i18n";
 import LanguageSelector from "@/components/LanguageSelector";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -32,6 +32,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "@/lib/localizedToast";
 import { type PanelMigrationScope } from "@shared/panelMigration";
+import { setupDatabaseConfigKey, setupDatabaseRestartReady, type SetupDatabaseRestart } from "@/lib/setupDatabase";
 
 type DatabaseType = "mysql" | "postgresql" | "sqlite";
 type SetupMode = "new" | "migrate" | null;
@@ -66,7 +67,15 @@ export default function Setup() {
   const [, refreshLanguage] = useState(0);
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
-  const status = trpc.setup.status.useQuery(undefined, { refetchOnWindowFocus: false, retry: false, refetchInterval: pollingInterval("active") });
+  const [databaseRestart, setDatabaseRestart] = useState<SetupDatabaseRestart | null>(null);
+  const [restartSlow, setRestartSlow] = useState(false);
+  const databaseChoiceTouched = useRef(false);
+  const status = trpc.setup.status.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+    retry: false,
+    refetchInterval: pollingInterval(databaseRestart ? "interactive" : "active"),
+    refetchIntervalInBackground: !!databaseRestart,
+  });
   const defaultSqlitePath = status.data?.defaultSqlitePath || "/data/forwardx.db";
   const [step, setStep] = useState(1);
   const [databaseStepReviewed, setDatabaseStepReviewed] = useState(false);
@@ -130,6 +139,11 @@ export default function Setup() {
   const hasExistingData = !!data?.hasExistingData;
   const existingData = data?.existingData;
   useEffect(() => {
+    if (!configuredDatabase?.type && data && !loadedDatabaseConfigKey) {
+      if (!databaseChoiceTouched.current) setDatabaseType(data.defaultDatabaseType);
+      setLoadedDatabaseConfigKey(configuredDatabaseKey);
+      return;
+    }
     if (!configuredDatabase?.type || configuredDatabaseKey === loadedDatabaseConfigKey) return;
     if (configuredDatabase.type === "postgresql" && configuredDatabase.postgresql) {
       setDatabaseType("postgresql");
@@ -156,22 +170,12 @@ export default function Setup() {
       setSqlitePath(configuredDatabase.sqlite?.path || defaultSqlitePath);
     }
     setLoadedDatabaseConfigKey(configuredDatabaseKey);
-  }, [configuredDatabase, configuredDatabaseKey, defaultSqlitePath, loadedDatabaseConfigKey]);
+  }, [configuredDatabase, configuredDatabaseKey, data, defaultSqlitePath, loadedDatabaseConfigKey]);
 
   const databaseConfigMatchesSaved = useMemo(() => {
-    if (!configuredDatabase?.type || configuredDatabase.type !== databaseType) return false;
-    if (databaseType === "sqlite") {
-      return String(configuredDatabase.sqlite?.path || defaultSqlitePath) === String(sqlitePath || defaultSqlitePath);
-    }
-    const saved = configuredDatabase.type === "postgresql" ? configuredDatabase.postgresql : configuredDatabase.mysql;
-    const current = databaseType === "postgresql" ? postgresql : mysql;
-    if (!saved) return false;
-    return String(saved.host || "") === current.host.trim()
-      && Number(saved.port || (databaseType === "postgresql" ? 5432 : 3306)) === Number(current.port || (databaseType === "postgresql" ? 5432 : 3306))
-      && String(saved.user || "") === current.user.trim()
-      && String(saved.database || "") === current.database.trim()
-      && !!saved.ssl === !!current.ssl;
-  }, [configuredDatabase, databaseType, defaultSqlitePath, mysql, postgresql, sqlitePath]);
+    const savedKey = setupDatabaseConfigKey(configuredDatabase, defaultSqlitePath);
+    return !!savedKey && savedKey === setupDatabaseConfigKey(databaseConfig, defaultSqlitePath);
+  }, [configuredDatabase, databaseConfig, defaultSqlitePath]);
 
   const canContinueWithSavedDatabase = dbReady
     && !!data?.databaseConfigured
@@ -179,16 +183,35 @@ export default function Setup() {
     && (databaseType === "sqlite" || !externalDatabase.password.trim());
 
   useEffect(() => {
+    if (databaseRestart) {
+      if (setupDatabaseRestartReady(databaseRestart, data, status.dataUpdatedAt)) {
+        setDatabaseRestart(null);
+        setDatabaseStepReviewed(false);
+        setStep(2);
+        toast.success(translateText("数据库已初始化"));
+      }
+      return;
+    }
     if (!databaseStepReviewed && dbReady && step === 1 && status.data?.databaseConfigured) setStep(2);
-  }, [databaseStepReviewed, dbReady, status.data?.databaseConfigured, step]);
+  }, [databaseRestart, databaseStepReviewed, data, dbReady, status.dataUpdatedAt, step]);
+
+  useEffect(() => {
+    setRestartSlow(false);
+    if (!databaseRestart) return;
+    const timer = window.setTimeout(() => setRestartSlow(true), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [databaseRestart]);
 
   const saveDatabase = trpc.setup.saveDatabase.useMutation({
-    onSuccess: async (next) => {
-      await utils.setup.status.invalidate();
+    onSuccess: async (next, input) => {
       if (next?.needsRestart) {
-        toast.info(translateText("数据库类型已保存，服务正在重启，请稍后刷新页面"));
+        // Do not accept cached readiness from the old database, including after reviewing step 1.
+        setDatabaseRestart({ configKey: setupDatabaseConfigKey(input, defaultSqlitePath), afterUpdatedAt: status.dataUpdatedAt });
+        await utils.setup.status.invalidate();
         return;
       }
+      await utils.setup.status.invalidate();
+      setDatabaseStepReviewed(false);
       toast.success(translateText("数据库已初始化"));
       setStep(2);
     },
@@ -258,6 +281,7 @@ export default function Setup() {
   }, [migrationStatus.data?.status, migrationStatus.data?.error]);
 
   const handleDatabaseNext = () => {
+    if (databaseRestart || saveDatabase.isPending) return;
     if (canContinueWithSavedDatabase) {
       setDatabaseStepReviewed(false);
       setStep(2);
@@ -357,7 +381,22 @@ export default function Setup() {
           </div>
         </div>
 
-        {data?.error && (
+        {databaseRestart && (
+          <Alert role="status" aria-live="polite">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <AlertTitle>{translateText("等待服务重启")}</AlertTitle>
+            <AlertDescription className="space-y-3">
+              <p>{translateText("数据库配置已保存，服务恢复并初始化完成后将自动继续，无需刷新页面。")}</p>
+              {restartSlow && <p>{translateText("等待时间较长，请检查服务是否已重启及数据库连接情况；恢复后仍会自动继续。")}</p>}
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" variant="outline" disabled={status.isFetching} onClick={() => void status.refetch()}>{translateText("重新检查")}</Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => { setDatabaseStepReviewed(true); setDatabaseRestart(null); }}>{translateText("返回修改")}</Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {data?.error && (!databaseRestart || !data.needsRestart) && (
           <Alert variant={data.needsRestart ? "default" : "destructive"}>
             <AlertTitle>{data.needsRestart ? translateText("等待服务重启") : translateText("数据库连接异常")}</AlertTitle>
             <AlertDescription>{data.error}</AlertDescription>
@@ -382,12 +421,13 @@ export default function Setup() {
                   <CardDescription>{translateText("选择数据库并初始化。")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-5">
+                  <fieldset className="grid min-w-0 gap-5" disabled={!data || saveDatabase.isPending || !!databaseRestart} aria-busy={saveDatabase.isPending || !!databaseRestart}>
                   <div className="grid gap-3 sm:grid-cols-3">
                     {(["sqlite", "mysql", "postgresql"] as DatabaseType[]).map((type) => (
                       <button
                         key={type}
                         type="button"
-                        onClick={() => setDatabaseType(type)}
+                        onClick={() => { databaseChoiceTouched.current = true; setDatabaseType(type); }}
                         className={`rounded-lg border p-4 text-left transition ${databaseType === type ? "border-primary/50 bg-primary/10 shadow-sm" : "border-border bg-card/80 hover:border-primary/30"}`}
                       >
                         <div className="flex items-center justify-between gap-3">
@@ -460,12 +500,13 @@ export default function Setup() {
                   )}
 
                   <div className="flex justify-end">
-                    <Button disabled={saveDatabase.isPending} onClick={handleDatabaseNext}>
-                      {saveDatabase.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      {canContinueWithSavedDatabase ? translateText("继续下一步") : translateText("保存并连接")}
-                      {!saveDatabase.isPending && <ArrowRight className="ml-2 h-4 w-4" />}
+                    <Button disabled={saveDatabase.isPending || !!databaseRestart} onClick={handleDatabaseNext}>
+                      {(saveDatabase.isPending || databaseRestart) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {databaseRestart ? translateText("等待服务重启") : canContinueWithSavedDatabase ? translateText("继续下一步") : translateText("保存并连接")}
+                      {!saveDatabase.isPending && !databaseRestart && <ArrowRight className="ml-2 h-4 w-4" />}
                     </Button>
                   </div>
+                  </fieldset>
                 </CardContent>
               </Card>
             )}

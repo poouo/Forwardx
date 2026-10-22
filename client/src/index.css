@@ -615,6 +615,28 @@
   background: transparent;
 }
 
+/* Radix Select hides native scrollbars; time dropdowns keep a visible right gutter. */
+.time-picker-options {
+  /* Keep the scrolling viewport, including its track, inside the rounded shell. */
+  padding: 8px 4px;
+}
+
+.time-picker-options [data-radix-select-viewport] {
+  scrollbar-width: auto;
+  scrollbar-gutter: stable;
+  scrollbar-color: auto;
+}
+
+.time-picker-options [data-radix-select-viewport]::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
+.time-picker-options [data-radix-select-viewport]::-webkit-scrollbar-thumb {
+  border: 0;
+  background-color: color-mix(in oklch, var(--foreground) 28%, transparent);
+}
+
 /* Horizontal control stays reachable while a long table extends below
    the viewport. The body portal avoids card transforms and overflow clipping. */
 .floating-table-scrollbar {

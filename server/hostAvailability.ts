@@ -64,6 +64,14 @@ export function addAvailabilityInterval(days: AvailabilityDay[], row: Availabili
     const seconds = Math.max(0, Math.min(day.endAt, row.endAt) - Math.max(day.startAt, row.startAt));
     if (row.online) day.onlineSeconds += seconds;
     else day.offlineSeconds += seconds;
+    if (seconds > 0 && day.trend && day.endAt > day.startAt) {
+      const from = (Math.max(day.startAt, row.startAt) - day.startAt) / (day.endAt - day.startAt);
+      const to = (Math.min(day.endAt, row.endAt) - day.startAt) / (day.endAt - day.startAt);
+      for (const segment of day.trend) if (segment.to > from && segment.from < to) {
+        if (!row.online) segment.health = "bad";
+        else if (segment.health === "none") segment.health = "good";
+      }
+    }
     if (row.offlineIncident && row.startAt >= day.startAt && row.startAt < day.endAt) day.offlineCount++;
   }
 }

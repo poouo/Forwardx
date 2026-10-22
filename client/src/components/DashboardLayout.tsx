@@ -92,6 +92,8 @@ import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
 import PanelStartView from "./PanelStartView";
 import { readSiteBranding } from "@/lib/siteBranding";
+import { readSidebarPresentation, saveSidebarPresentation } from "@/lib/sidebarPresentation";
+import { pendingPageTitle, SidebarPresentation } from "./SidebarPresentation";
 
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 type SidebarNavItem = {
@@ -413,17 +415,17 @@ function DashboardLayoutContent({
     const timer = window.setTimeout(() => setDeferBackgroundQueries(false), 1200);
     return () => window.clearTimeout(timer);
   }, []);
-  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
+  const { data: publicInfo, isFetched: publicInfoFetched } = trpc.system.publicInfo.useQuery(undefined, {
     enabled: !!user,
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const { data: customSidebarPages = [] } = trpc.system.sidebarPages.useQuery(undefined, {
+  const { data: customSidebarPages = [], isFetched: customSidebarFetched } = trpc.system.sidebarPages.useQuery(undefined, {
     enabled: !!user,
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const { data: pluginSidebarPages = [] } = trpc.plugins.sidebarPages.useQuery(undefined, {
+  const { data: pluginSidebarPages = [], isFetched: pluginSidebarFetched } = trpc.plugins.sidebarPages.useQuery(undefined, {
     enabled: isAdmin && publicInfo?.pluginsEnabled === true,
     refetchOnWindowFocus: false,
     retry: false,
@@ -437,7 +439,7 @@ function DashboardLayoutContent({
     retry: false,
     staleTime: 60 * 1000,
   });
-  const { data: storeStatus } = trpc.plans.storeStatus.useQuery(undefined, {
+  const { data: storeStatus, isFetched: storeStatusFetched } = trpc.plans.storeStatus.useQuery(undefined, {
     enabled: !!user && !isAdmin,
     refetchOnWindowFocus: false,
     retry: false,
@@ -1145,6 +1147,20 @@ function DashboardLayoutContent({
     : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems, ...ticketMenuItems];
   const allMenuItems = [...primaryMenuItems, ...managementMenuItems, ...otherMenuItems];
 
+  const [cachedSidebar] = useState(() => readSidebarPresentation(`${user?.id}:${user?.role}`));
+  const sidebarReady = publicInfoFetched && customSidebarFetched
+    && (!isAdmin || publicInfo?.pluginsEnabled !== true || pluginSidebarFetched)
+    && (isAdmin || storeStatusFetched);
+  const pendingSidebar = !sidebarReady && cachedSidebar.length > 0 ? cachedSidebar : null;
+  const sidebarPresentationJson = JSON.stringify([
+    { label: translateText("主菜单"), items: primaryMenuItems },
+    { label: translateText("管理"), items: managementMenuItems },
+    { label: translateText("其他"), items: otherMenuItems },
+  ].map(group => ({ label: group.label, items: group.items.map(item => ({ path: item.path, label: item.path === "/tickets" ? translateText("工单支持") : item.label })) })));
+  useEffect(() => {
+    if (sidebarReady && publicInfo && user) saveSidebarPresentation(`${user.id}:${user.role}`, JSON.parse(sidebarPresentationJson));
+  }, [sidebarReady, !!publicInfo, user?.id, user?.role, sidebarPresentationJson]);
+
   const currentPath = location.split("?")[0] || "/";
   const activeMenuItem = allMenuItems.find((item) => item.path === currentPath);
   const upgradeJob = upgradeStatus?.job;
@@ -1419,6 +1435,7 @@ function DashboardLayoutContent({
         </SidebarHeader>
 
         <PearlSidebarContent activeKey={currentPath} scrollKey={`${user?.id}:${user?.role}`} className="gap-1 pb-2 mobile-sidebar-content">
+          {pendingSidebar ? <SidebarPresentation groups={pendingSidebar} path={currentPath} /> : <>
           {primaryMenuItems.length > 0 && (
             <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
               <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>
@@ -1446,6 +1463,7 @@ function DashboardLayoutContent({
             </SidebarGroup>
           )}
 
+          </>}
         </PearlSidebarContent>
 
         <SidebarFooter className={cn("mobile-sidebar-footer", isDesktopCollapsed ? "items-center p-1.5" : "p-3")}>
@@ -1621,7 +1639,7 @@ function DashboardLayoutContent({
             <div className="pearl-topbar-crumb">
               <span className="text-muted-foreground">{siteTitle}</span>
               <span className="text-muted-foreground/50" aria-hidden="true">/</span>
-              <span className="font-medium">{activeMenuItem?.label ?? siteTitle}</span>
+              <span className="font-medium">{pendingSidebar ? pendingPageTitle(currentPath, pendingSidebar) : activeMenuItem?.label ?? pendingPageTitle(currentPath)}</span>
             </div>
             <div className="pearl-topbar-actions">
               <LanguageSelector compact />

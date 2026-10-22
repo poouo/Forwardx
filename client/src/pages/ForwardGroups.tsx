@@ -1108,6 +1108,7 @@ export function ForwardGroupsContent({
 
   const createMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
+      utils.tunnels.sectionCounts.invalidate();
       utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();
@@ -1119,6 +1120,7 @@ export function ForwardGroupsContent({
 
   const updateMutation = trpc.forwardGroups.update.useMutation({
     onSuccess: async (result) => {
+      void utils.tunnels.sectionCounts.invalidate();
       const updatedGroup = result?.group;
       const cachedGroups = utils.forwardGroups.options.getData();
       if (updatedGroup && cachedGroups) {
@@ -1169,6 +1171,7 @@ export function ForwardGroupsContent({
 
   const deleteMutation = trpc.forwardGroups.delete.useMutation({
     onSuccess: () => {
+      utils.tunnels.sectionCounts.invalidate();
       utils.forwardGroups.options.invalidate();
       utils.forwardGroups.listPage.invalidate();
       utils.rules.list.invalidate();

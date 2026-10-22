@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.200"
+var Version = "2.2.201"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2694,6 +2694,13 @@ type guardRule struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--plugin-bbr" {
+		if err := runBBRPlugin(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "BBR 管理失败："+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 	configPath := flag.String("config", defaultConfigPath, "config file")
 	onceRegister := flag.Bool("register", false, "register and exit")
 	flag.Parse()

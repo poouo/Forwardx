@@ -7,6 +7,7 @@ import { SlidingTabsList, shouldUseCompactTabs, tabScrollTarget } from "./slidin
 import { Tabs, TabsList, TabsTrigger } from "./tabs";
 import { DialogFooter } from "./dialog";
 import { Button } from "./button";
+import { LinkSectionTabs, LINK_SECTIONS } from "../LinkSectionTabs";
 
 test("sliding tabs reserve intrinsic translated label, icon and badge widths", () => {
   const html = renderToStaticMarkup(<Tabs value="notifications">
@@ -41,7 +42,6 @@ test("all section switchers use their existing controlled change handlers", () =
   const bindings: Record<string, readonly string[]> = {
     Settings: ["handleTabChange"],
     Hosts: ["setActiveManageTab"],
-    Tunnels: ["setActiveSection"],
     Rules: ["handleRuleCategoryChange", "setRouteMode"],
     Users: ["handleManageTypeChange"],
     Plans: ["setActiveTab"],
@@ -58,10 +58,34 @@ test("all section switchers use their existing controlled change handlers", () =
       assert.match(lists[index], /ariaLabel=/);
     }
   }
+  const tunnels = readFileSync("client/src/pages/Tunnels.tsx", "utf8");
+  assert.match(tunnels, /<LinkSectionTabs counts=\{sectionCountsQuery.data\} activeSection=\{activeSection\} onSectionChange=\{setActiveSection\}/);
+  const linkTabs = readFileSync("client/src/components/LinkSectionTabs.tsx", "utf8");
+  assert.match(linkTabs, /onValueChange=\{onSectionChange\}/);
+  assert.match(linkTabs, /ariaLabel=\{t\("链路管理"\)\}/);
   const component = readFileSync("client/src/components/ui/sliding-tabs.tsx", "utf8");
   assert.match(component, /aria-hidden=\{compact \|\| undefined\} inert=\{compact \|\| undefined\}/);
   assert.match(component, /shouldUseCompactTabs\(container.clientWidth, list.offsetWidth\)/);
   assert.match(component, /textValue=\{item.label\} disabled=\{item.disabled\}/);
+});
+
+test("link management shows all six category counts, including zero, without opening a category", () => {
+  const counts = { tunnels: 24, ports: 17, chains: 0, groups: 3, entries: 1000, exits: 2 };
+  const html = renderToStaticMarkup(<Tabs value="tunnels">
+    <LinkSectionTabs counts={counts} activeSection="tunnels" onSectionChange={() => {}} />
+  </Tabs>);
+  const tabs = html.match(/<button[^>]*role="tab"[\s\S]*?<\/button>/g) || [];
+  assert.equal(tabs.length, LINK_SECTIONS.length);
+  for (const key of LINK_SECTIONS) {
+    const tab = tabs[LINK_SECTIONS.indexOf(key)];
+    assert.ok(tab, key);
+    assert.match(tab, new RegExp(`>${counts[key]}</span>`), key);
+  }
+  assert.equal((html.match(/tabular-nums|text-\[10px\]/g) || []).length, 6);
+  const pending = renderToStaticMarkup(<Tabs value="tunnels">
+    <LinkSectionTabs activeSection="tunnels" onSectionChange={() => {}} />
+  </Tabs>);
+  assert.doesNotMatch(pending, /text-\[10px\]/, "do not display fabricated zeroes before counts are loaded");
 });
 
 test("standard tabs wrap long labels and dialog actions may grow without shrinking icons", () => {

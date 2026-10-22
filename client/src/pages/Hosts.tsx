@@ -1322,6 +1322,12 @@ function HostsContent() {
   const hostSearchQuery = manageSearchQueries.hosts;
   const hostPageRequest = usePersistentPageRequest("forwardx.hosts.page");
   const hostListRefreshInterval = visiblePollingInterval("slow", pageVisible);
+  const managementCountsQuery = trpc.hosts.managementCounts.useQuery(undefined, {
+    enabled: user?.role === "admin",
+    staleTime: 25_000,
+    refetchInterval: hostListRefreshInterval,
+    refetchOnWindowFocus: true,
+  });
   const hostPageQuery = trpc.hosts.listPage.useQuery({
     page: hostPageRequest.page,
     pageSize: 12,
@@ -1440,7 +1446,10 @@ function HostsContent() {
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
   const [hostGroupViewMode, setHostGroupViewMode] = useState<HostGroupViewMode>(() => getStoredHostGroupViewMode());
-  const hostManageTabItems = user?.role === "admin" ? HOST_MANAGE_TAB_ITEMS_ADMIN : HOST_MANAGE_TAB_ITEMS_USER;
+  const hostManageTabItems = (user?.role === "admin" ? HOST_MANAGE_TAB_ITEMS_ADMIN : HOST_MANAGE_TAB_ITEMS_USER).map(item => ({
+    ...item,
+    badge: user?.role === "admin" ? managementCountsQuery.data?.[item.value] ?? null : hostPageQuery.data?.scopeTotalItems ?? null,
+  }));
   const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
   // Sorted, because the ids travel as a query input: keeping the visual order here
   // would give every reorder a brand-new query key and refetch the whole summary.
@@ -1636,6 +1645,7 @@ function HostsContent() {
 
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
+      utils.hosts.managementCounts.invalidate();
       utils.hosts.list.invalidate();
       utils.hosts.options.invalidate();
       utils.hosts.listPage.invalidate();
@@ -1665,6 +1675,7 @@ function HostsContent() {
   const deleteMutation = trpc.hosts.delete.useMutation({
     onSettled: () => { void utils.hosts.deleteImpact.invalidate(); },
     onSuccess: () => {
+      utils.hosts.managementCounts.invalidate();
       setDeletingHostId(null);
       utils.hosts.list.invalidate();
       utils.hosts.options.invalidate();

@@ -646,6 +646,7 @@ func runPluginAgentTask(task pluginAgentTask) pluginAgentTaskResult {
 	command.Env = append(os.Environ(),
 		"FORWARDX_PLUGIN_ID="+task.PluginID,
 		"FORWARDX_PLUGIN_ACTION_ID="+task.ActionID,
+		"FORWARDX_AGENT_EXECUTABLE="+pluginAgentExecutable(),
 	)
 	stdout := &pluginAgentTaskOutput{limit: pluginAgentTaskOutputLimit}
 	stderr := &pluginAgentTaskOutput{limit: pluginAgentTaskOutputLimit}

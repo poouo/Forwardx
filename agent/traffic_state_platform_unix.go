@@ -12,6 +12,14 @@ func lockAgentStateFile(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 }
 
+func lockBBRStateFile(file *os.File, write bool) error {
+	mode := unix.LOCK_SH
+	if write {
+		mode = unix.LOCK_EX
+	}
+	return unix.Flock(int(file.Fd()), mode|unix.LOCK_NB)
+}
+
 func unlockAgentStateFile(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }

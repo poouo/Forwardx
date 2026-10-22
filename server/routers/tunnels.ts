@@ -751,6 +751,21 @@ function relatedGroupsForUser(
 }
 
 export const tunnelsRouter = router({
+  sectionCounts: protectedProcedure
+    .input(z.object({ search: z.string().trim().max(200).optional().default("") }))
+    .query(async ({ input, ctx }) => {
+      const accessScope = await getLinkAccessScope(ctx.user);
+      const scope = visibleTunnelQueryScope(ctx.user, accessScope);
+      const [tunnelCount, groups] = await Promise.all([
+        db.getTunnelListCount({ ...scope, search: input.search }),
+        db.getForwardGroupModeCounts({
+          allowedGroupIds: accessScope ? Array.from(accessScope.groupIds) : undefined,
+          search: input.search,
+        }),
+      ]);
+      return { tunnels: tunnelCount, ports: groups.port, chains: groups.chain,
+        groups: groups.failover, entries: groups.entry, exits: groups.exit };
+    }),
   list: protectedProcedure.query(async ({ ctx }) => {
       const accessScope = await getLinkAccessScope(ctx.user);
       const scope = visibleTunnelQueryScope(ctx.user, accessScope);

@@ -7,6 +7,7 @@ import OperationsDateFilter from "@/components/OperationsDateFilter";
 import OperationsSourceList from "@/components/OperationsSourceList";
 import OperationsFinanceSummary from "@/components/OperationsFinanceSummary";
 import OperationsRefreshSelect from "@/components/OperationsRefreshSelect";
+import OperationsSettingsDialog from "@/components/OperationsSettingsDialog";
 import OperationsMonitorPanel from "@/components/OperationsMonitorPanel";
 import Ranking from "@/components/OperationsRanking";
 import { SummaryMetricCard } from "@/components/SummaryMetricCard";
@@ -77,6 +78,7 @@ export default function OperationsPage() {
     <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p><p className="mt-1 text-xs text-muted-foreground">{t("流量与财务汇总约每分钟更新")}</p></div>
       <div className="flex flex-wrap items-center gap-3">
         <OperationsRefreshSelect seconds={autoRefresh.seconds} onChange={autoRefresh.onChange} />
+        <OperationsSettingsDialog />
         <Button variant="outline" onClick={refresh} disabled={overview.isFetching || sources.isFetching}><RefreshCw className="mr-2 size-4" />{t("刷新")}</Button>
       </div>
     </div>

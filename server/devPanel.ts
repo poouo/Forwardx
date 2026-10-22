@@ -10,6 +10,7 @@ import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
 import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
 import { AGENT_VERSION } from "../shared/versions";
 import { operationsDay } from "../shared/operations";
+import { seedDevHistoryTrend } from "./devHistoryTrend";
 
 export const DEV_PANEL_FLAG = "FORWARDX_DEV_PANEL";
 export const DEV_ADMIN_USERNAME = "dev.admin@forwardx.local";
@@ -2312,6 +2313,7 @@ export async function seedDevPanelData() {
 
   // Watch-mode restarts must not wipe tickets, rules or settings being debugged.
   if (await getSetting("devPanelSeededAt")) {
+    await seedDevHistoryTrend();
     console.log("[DevPanel] Reusing existing local development data");
     return;
   }
@@ -2334,6 +2336,7 @@ export async function seedDevPanelData() {
   await seedSettings();
   await seedOperationsData(hostIds, resources);
   await seedOperationsFinanceData(usersSeed, catalog);
+  await seedDevHistoryTrend();
   await setSetting("devPanelSeededAt", new Date().toISOString());
 
   console.log(`[DevPanel] Seeded local development data as ${DEV_ADMIN_USERNAME}`);

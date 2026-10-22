@@ -25,6 +25,7 @@ import { reconcileHostDdnsRecords } from "./hostDdns";
 import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
 import { databaseHealth } from "./databaseHealthState";
+import { runOperationsDailyReport } from "./operationsDailyReport";
 import {
   SELF_TEST_TIMEOUT_SECONDS,
   selfTestTimeoutSeconds,
@@ -701,6 +702,7 @@ export function startScheduler() {
     await recoverStaleProcessingPaymentOrders();
     await settleAffiliateCommissions();
   });
+  const operationsDailyReport = createNonOverlappingScheduledTask("operations daily report", runOperationsDailyReport, { slowTaskMs: 15_000 });
 
   const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {
     const startTimer = setTimeout(() => {
@@ -742,6 +744,7 @@ export function startScheduler() {
   runAtBillingMidnight(monthlyTrafficReset);
   repeatAfter(databasePoolSizing, 5 * 60 * 1000, 25_000);
   repeatAfter(paymentMaintenance, 60 * 1000, 35_000);
+  repeatAfter(operationsDailyReport, 60_000, 40_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
   repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
   // Short, paced passes catch up old backlogs without a single hourly burst.

@@ -37,6 +37,7 @@ type MultiEntryPathState = {
   expectedEntryHostIds: number[];
   entryHops: Map<number, ProbeResult>;
   sharedHops: Map<number, ProbeResult>;
+  createdAt: number;
   updatedAt: number;
 };
 
@@ -51,6 +52,7 @@ export type TunnelMultiEntryLatencyAggregate = {
 
 const states = new Map<string, MultiEntryPathState>();
 const MULTI_ENTRY_PROBE_TTL_MS = 6 * 60 * 1000;
+const MULTI_ENTRY_WARMUP_MS = 2 * 60 * 1000;
 
 function normalizeHostIds(values: number[]) {
   return Array.from(new Set((values || [])
@@ -256,6 +258,7 @@ export function recordTunnelMultiEntryLatency(input: {
       expectedEntryHostIds,
       entryHops: new Map(),
       sharedHops: new Map(),
+      createdAt: now,
       updatedAt: now,
     };
     states.set(key, state);
@@ -306,6 +309,12 @@ export function getTunnelMultiEntryLatency(input: {
   return aggregateMultiEntryState(state, now);
 }
 
+/** A new topology/restarted panel must wait for independent Agents to report. */
+export function tunnelMultiEntryProbeWarmingUp(input: { tunnelId: number; pathKey?: string | null }) {
+  const state = states.get(pathStateKey(input.tunnelId, input.pathKey));
+  return !!state && Date.now() - state.createdAt < MULTI_ENTRY_WARMUP_MS;
+}
+
 /** Returns only the fresh entry and shared-hop samples actually reported by Agents. */
 export function getTunnelMultiEntryHopDetails(input: {
   tunnelId: number;
@@ -338,14 +347,16 @@ export function getTunnelMultiEntryHopDetails(input: {
   const maxAgeMs = Math.max(1_000, Number(input.maxAgeMs || MULTI_ENTRY_PROBE_TTL_MS));
   const isFresh = (recordedAt: number) => (
     now - recordedAt <= maxAgeMs
-    && (referenceAt <= 0 || Math.abs(recordedAt - referenceAt) <= 30_000)
+    // Automatic entries are asynchronous, not a synchronized manual batch.
+    // Keep their actual timestamps and use the same bounded validity window.
+    && (referenceAt <= 0 || Math.abs(recordedAt - referenceAt) <= maxAgeMs)
   );
   const sharedFirstSource = state.sharedHops.get(1)?.fromHostId || null;
   const details: TunnelMultiEntryHopDetail[] = [];
   for (const hostId of expectedEntryHostIds) {
     const entry = state.entryHops.get(hostId);
     if (!entry) continue;
-    if (!isFresh(entry.recordedAt)) return null;
+    if (!isFresh(entry.recordedAt)) continue;
     const detail: TunnelMultiEntryHopDetail = {
       hopIndex: 0,
       hopCount,
@@ -364,7 +375,7 @@ export function getTunnelMultiEntryHopDetails(input: {
   for (let hopIndex = 1; hopIndex < hopCount; hopIndex += 1) {
     const shared = state.sharedHops.get(hopIndex);
     if (!shared) continue;
-    if (!isFresh(shared.recordedAt)) return null;
+    if (!isFresh(shared.recordedAt)) continue;
     const detail: TunnelMultiEntryHopDetail = {
       hopIndex,
       hopCount,

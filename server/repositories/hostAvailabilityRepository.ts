@@ -44,12 +44,13 @@ export async function checkpointHostAvailability() {
   }
 }
 
-export async function getHostAvailability(hostId: number, input: { since: Date; until: Date; dayBoundaries?: Date[] }, nowMs = Date.now()) {
+export async function getHostAvailability(hostId: number, input: { since: Date; until: Date; dayBoundaries?: Date[]; includeTrend?: boolean }, nowMs = Date.now()) {
   const now = Math.floor(nowMs / 1000);
   const since = Math.max(Math.floor(input.since.getTime() / 1000), now - LATENCY_HISTORY_HOURS * 3600);
   const until = Math.min(Math.floor(input.until.getTime() / 1000), now);
   const boundaries = input.dayBoundaries?.map((day) => Math.floor(day.getTime() / 1000)) || [since, Math.max(since, until)];
   const days = availabilityDays(boundaries, now);
+  if (input.includeTrend) for (const day of days) day.trend = Array.from({ length: 48 }, (_, index) => ({ from: index / 48, to: (index + 1) / 48, health: "none" }));
   const intervals: AvailabilityInterval[] = [];
   const includeDetails = !input.dayBoundaries && until - since <= 26 * 3600;
   let cursorStart = 0, cursorId = 0;

@@ -595,6 +595,7 @@ function scheduleOrphanedAgentHostCleanup() {
 }
 
 export const hostsRouter = router({
+  managementCounts: adminProcedure.query(() => db.getHostManagementCounts()),
   resourceAlertSettings: adminProcedure.input(z.object({ hostId: z.number().int().positive() })).query(async ({ input }) => {
     if (!await db.getHostById(input.hostId)) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
     return getMonitorSettings(input.hostId);

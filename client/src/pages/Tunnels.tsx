@@ -5,6 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
+import { TunnelCardLatency, TunnelCardRoute } from "@/components/TunnelCardSummary";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -42,7 +43,7 @@ import {
 } from "@/components/ui/select";
 import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
+import { LinkSectionTabs, LINK_SECTIONS as TUNNEL_SECTIONS, type LinkSection as TunnelSection } from "@/components/LinkSectionTabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
@@ -63,22 +64,18 @@ import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/l
 import { MAX_NGINX_PEM_FILES, MAX_NGINX_PEM_UPLOAD_BYTES, parseNginxPemFiles } from "@/lib/nginxPemFiles";
 import { pollingInterval } from "@/lib/polling";
 import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
-import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
+import { getTunnelCardRouteSummary, getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { MAX_FORWARD_GROUP_MEMBERS } from "@shared/forwardGroup";
 import { cn } from "@/lib/utils";
 import {
   Activity,
-  ArrowRight,
-  ArrowRightLeft,
   ChevronRight,
   Filter,
   Globe,
   LayoutGrid,
   List,
   Loader2,
-  LogIn,
-  LogOut,
   Network,
   Server,
   Pencil,
@@ -92,7 +89,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
-import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -808,18 +805,7 @@ function getTunnelModeDisplay(mode: unknown, showNginxLabel = true, forwardxVers
 }
 
 type TunnelViewMode = "card" | "table" | "globe";
-type TunnelSection = "tunnels" | "ports" | "chains" | "groups" | "entries" | "exits";
 type TunnelGroupMode = "port" | "failover" | "entry" | "exit";
-
-const TUNNEL_SECTIONS = ["tunnels", "ports", "chains", "groups", "entries", "exits"] as const;
-const TUNNEL_SECTION_ITEMS = [
-  { value: "tunnels", label: translateText("隧道链路"), icon: Network },
-  { value: "ports", label: translateText("端口转发"), icon: ArrowRightLeft },
-  { value: "chains", label: translateText("转发链"), icon: Route },
-  { value: "groups", label: translateText("转发组"), icon: ShieldCheck },
-  { value: "entries", label: translateText("入口组"), icon: LogIn },
-  { value: "exits", label: translateText("出口组"), icon: LogOut },
-] as const satisfies readonly SlidingTabItem<TunnelSection>[];
 
 const TUNNEL_SECTION_STORAGE_KEY = "forwardx.tunnels.section";
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
@@ -2306,6 +2292,13 @@ function TunnelsContent() {
     storageKey: TUNNEL_SECTION_STORAGE_KEY,
   });
   const [linkSearchQuery, setLinkSearchQuery] = useState("");
+  const sectionCountsQuery = trpc.tunnels.sectionCounts.useQuery({ search: linkSearchQuery }, {
+    enabled: !!user,
+    staleTime: 10_000,
+    refetchInterval: pollingInterval("normal"),
+    refetchOnWindowFocus: false,
+    placeholderData: previous => previous,
+  });
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("chain");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
@@ -2678,49 +2671,32 @@ function TunnelsContent() {
     if (state?.status === "unavailable") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
     return <span title={state?.message || translateText("隧道已停用")} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
-  const renderTunnelRoute = (tunnel: any, compact = false) => {
+  const renderTunnelRoute = (tunnel: any) => {
     const hopIds = getTunnelHopIds(tunnel);
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
-    const entryGroupLabel = entryGroup
-      ? `${String(entryGroup.name || translateText("入口组")).trim()}${String(entryGroup.domain || "").trim() ? ` (${String(entryGroup.domain).trim()})` : ""}`
-      : "";
-    const visibleHopIds = entryGroup
-      ? hopIds.filter((hostId: number) => !entryMembersForGroup(Number(entryGroup.id)).some((member: any) => Number(member.hostId || 0) === Number(hostId)))
-      : hopIds;
-    const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
-    const exitNames = extraExitNames.length > 0 ? getTunnelExitNames(tunnel, hosts) : [];
-    const routeTitle = [
-      entryGroupLabel ? translateText("入口组：{0}", [entryGroupLabel]) : "",
-      getTunnelRouteText(tunnel, hosts),
-    ].filter(Boolean).join("；");
-    return (
-      <div
-        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact || exitNames.length > 0 ? "flex-wrap" : "whitespace-nowrap"}`}
-        title={routeTitle}
-      >
-        {entryGroupLabel && (
-          <span className="flex min-w-0 items-center gap-1 rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 text-primary">
-            <span className="shrink-0">{translateText("入口组")}</span>
-            <span className={compact ? "max-w-[10rem] truncate" : "min-w-0 truncate"}>{entryGroupLabel}</span>
-          </span>
-        )}
-        {visibleHopIds.map((hostId: number, index: number) => (
-          <Fragment key={`${tunnel.id || "tunnel"}-${hostId}-${index}`}>
-            {(index > 0 || entryGroupLabel) && <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
-            <span className={compact ? "max-w-[8rem] truncate" : "truncate"}>
-              {tunnelHopHostName(tunnel, hostId, hosts)}
-            </span>
-          </Fragment>
-        ))}
-        {exitNames.length > 0 && (
-          <span className="flex min-w-0 items-center gap-1 rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 text-muted-foreground">
-            <span className="shrink-0">{translateText("出口")}</span>
-            <span className="min-w-0 truncate">{exitNames.join(" / ")}</span>
-          </span>
-        )}
-      </div>
-    );
+    const exitGroup = Number(tunnel?.exitGroupId || 0) > 0 ? exitGroupById.get(Number(tunnel.exitGroupId)) : null;
+    const entries = entryGroup ? entryMembersForGroup(entryGroup.id).map((member: any) => Number(member.hostId)) : [hopIds[0]];
+    const exits = exitGroup ? exitMembersForGroup(exitGroup.id).map((member: any) => Number(member.hostId)) : [];
+    const externalIds = new Set([...entries, ...exits]);
+    const relays = hopIds.slice(1, -1).filter((id: number) => !externalIds.has(id));
+    const sections = [
+      { label: entryGroup ? translateText("入口组") : translateText("入口"), group: entryGroup, names: entries.map((id: number) => tunnelHopHostName(tunnel, id, hosts)) },
+      ...(relays.length ? [{ label: translateText("中转"), group: null, names: relays.map((id: number) => tunnelHopHostName(tunnel, id, hosts)) }] : []),
+      { label: exitGroup ? translateText("出口组") : translateText("出口"), group: exitGroup, names: exits.length ? exits.map((id: number) => tunnelHopHostName(tunnel, id, hosts)) : getTunnelExitNames(tunnel, hosts) },
+    ];
+    return <div className="space-y-3">{sections.map(section => <section key={section.label} className="min-w-0 space-y-2 rounded-lg border border-border/50 bg-muted/20 p-3">
+      <h3 className="text-xs text-muted-foreground">{section.label}</h3>
+      {section.group && <div className="space-y-1 text-sm font-medium [overflow-wrap:anywhere]">
+        <p>{section.group.name}</p>
+        {section.group.domain && <p className="text-xs font-normal text-muted-foreground">{section.group.domain}</p>}
+      </div>}
+      <div className="space-y-1.5 text-sm [overflow-wrap:anywhere]">{section.names.map((name: string, index: number) => <p key={index}>{name}</p>)}</div>
+    </section>)}</div>;
   };
+  const tunnelCardRouteSummary = (tunnel: any) => getTunnelCardRouteSummary(tunnel, hosts,
+    entryGroupById.get(Number(tunnel?.entryGroupId))?.name,
+    exitGroupById.get(Number(tunnel?.exitGroupId))?.name,
+  );
   const resetForm = () => {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
@@ -2860,6 +2836,7 @@ function TunnelsContent() {
 
   const createMutation = trpc.tunnels.create.useMutation({
     onSuccess: () => {
+      utils.tunnels.sectionCounts.invalidate();
       utils.tunnels.list.invalidate();
       utils.tunnels.options.invalidate();
       utils.tunnels.listPage.invalidate();
@@ -2881,6 +2858,7 @@ function TunnelsContent() {
 
   const createChainMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
+      utils.tunnels.sectionCounts.invalidate();
       utils.forwardGroups.options.invalidate();
       utils.rules.list.invalidate();
       setShowCreateTypeDialog(false);
@@ -2893,6 +2871,7 @@ function TunnelsContent() {
 
   const updateMutation = trpc.tunnels.update.useMutation({
     onSuccess: async (result: any) => {
+      void utils.tunnels.sectionCounts.invalidate();
       const updatedTunnel = result?.tunnel;
       const patchTunnelCache = (items: any[] | undefined) => items?.map((tunnel: any) => (
         Number(tunnel.id) === Number(updatedTunnel?.id) ? { ...tunnel, ...updatedTunnel } : tunnel
@@ -2963,6 +2942,7 @@ function TunnelsContent() {
 
   const deleteMutation = trpc.tunnels.delete.useMutation({
     onSuccess: () => {
+      utils.tunnels.sectionCounts.invalidate();
       utils.tunnels.list.invalidate();
       utils.tunnels.options.invalidate();
       utils.tunnels.listPage.invalidate();
@@ -4095,7 +4075,7 @@ function TunnelsContent() {
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
-        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} onValueChange={setActiveSection} ariaLabel={translateText("链路管理")} minItemWidthRem={7.75} />
+        <LinkSectionTabs counts={sectionCountsQuery.data} activeSection={activeSection} onSectionChange={setActiveSection} />
 
         <TabsContent value="tunnels" className="space-y-4">
           <div className="min-w-0">
@@ -4171,19 +4151,9 @@ function TunnelsContent() {
                       </div>
                     </div>
 
-                    <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
-                      {renderTunnelRoute(tunnel, true)}
-                      <div className="flex flex-wrap gap-1.5">
-                        <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}
-                        </Badge>
-                      </div>
-                    </div>
+                    <TunnelCardRoute summary={tunnelCardRouteSummary(tunnel)} name={tunnel.name} mode={getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}>{renderTunnelRoute(tunnel)}</TunnelCardRoute>
 
-                    <div className="space-y-1 text-xs">
-                      <span className="text-muted-foreground">{translateText("延迟")}</span>
-                      {renderTunnelLatencyBreakdown(tunnel, true)}
-                    </div>
+                    <TunnelCardLatency items={tunnelDisplayLatencyList(tunnel)} />
 
                     <ResourceTrafficSummary summary={tunnel.trafficSummary} />
 
@@ -4269,19 +4239,9 @@ function TunnelsContent() {
                       </div>
                     </div>
 
-                    <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
-                      {renderTunnelRoute(tunnel, true)}
-                      <div className="flex flex-wrap gap-1.5">
-                        <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}
-                        </Badge>
-                      </div>
-                    </div>
+                    <TunnelCardRoute summary={tunnelCardRouteSummary(tunnel)} name={tunnel.name} mode={getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled, tunnel.forwardxVersion)}>{renderTunnelRoute(tunnel)}</TunnelCardRoute>
 
-                    <div className="space-y-1 text-xs">
-                      <span className="text-muted-foreground">{translateText("延迟")}</span>
-                      {renderTunnelLatencyBreakdown(tunnel, true)}
-                    </div>
+                    <TunnelCardLatency items={tunnelDisplayLatencyList(tunnel)} />
 
                     <ResourceTrafficSummary summary={tunnel.trafficSummary} />
 

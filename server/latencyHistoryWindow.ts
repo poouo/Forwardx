@@ -7,9 +7,10 @@ export const latencyHistoryWindowInput = {
   startAt: z.date().optional(),
   endAt: z.date().optional(),
   dayBoundaries: z.array(z.date()).length(31).optional(),
+  includeTrend: z.boolean().optional(),
 };
 
-export function resolveLatencyHistoryWindow(input: { hours?: number; startAt?: Date; endAt?: Date; dayBoundaries?: Date[] }, now = Date.now()) {
+export function resolveLatencyHistoryWindow(input: { hours?: number; startAt?: Date; endAt?: Date; dayBoundaries?: Date[]; includeTrend?: boolean }, now = Date.now()) {
   const hours = input.hours || 24;
   if (!!input.startAt !== !!input.endAt || (input.startAt && input.endAt && (
     input.startAt >= input.endAt || input.endAt.getTime() - input.startAt.getTime() > (LATENCY_HISTORY_HOURS + 2) * 3600_000
@@ -31,9 +32,10 @@ export function resolveLatencyHistoryWindow(input: { hours?: number; startAt?: D
   return {
     since, until,
     hours: input.startAt ? Math.max(0.5, (until.getTime() - since.getTime()) / 3600_000) : hours,
-    cacheKey: `${hours}:${input.startAt?.getTime() || "rolling"}:${input.endAt?.getTime() || "now"}:${input.dayBoundaries?.map((day) => day.getTime()).join(",") || "chart"}`,
+    cacheKey: `${hours}:${input.startAt?.getTime() || "rolling"}:${input.endAt?.getTime() || "now"}:${input.dayBoundaries?.map((day) => day.getTime()).join(",") || "chart"}:${input.includeTrend ? "trend" : "summary"}`,
     cacheOptions: latencyHistoryCacheOptions(historical || input.dayBoundaries ? 48 : hours),
     longHistory: historical || hours > 24 || !!input.dayBoundaries,
     dayBoundaries: input.dayBoundaries,
+    includeTrend: !!input.includeTrend && !!input.dayBoundaries,
   };
 }
