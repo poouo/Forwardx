@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import mysql from "mysql2/promise";
+import mysql, { type RowDataPacket } from "mysql2/promise";
 
 // Opt-in only. Never migrate or clear the database named in the supplied URL:
 // all work happens in a unique test database created and dropped by this test.
@@ -22,9 +22,27 @@ test("real MySQL upgrades legacy fields without altering business data and clean
   try {
     await admin.query(`CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
     created = true;
+    await runtime.testMysqlConnection({ ...connection, database });
     await runtime.connectDatabase({ type: "mysql", mysql: { ...connection, database } });
     const pool = runtime.getPool()!;
+    // Exercise the binary prepared protocol before schema initialization. A
+    // text-protocol SELECT/ping alone misses the MySQL 8.0.24 cursor-flag bug.
+    const probes = await Promise.all([pool.getConnection(), pool.getConnection()]);
+    try {
+      for (const probe of probes) {
+        for (const value of ["sidebarMenu", "中文 ' ? \\ ; --", ""]) {
+          const [rows] = await probe.execute<RowDataPacket[]>({ sql: "SELECT ? AS value", timeout: 5000 }, [value]);
+          assert.equal(rows[0].value, value, "prepared parameters must remain bound and round-trip unchanged");
+        }
+      }
+    } finally {
+      for (const probe of probes) probe.destroy();
+    }
     await ensureDatabaseSchema(pool);
+    const [empty] = await pool.execute<RowDataPacket[]>({
+      sql: "SELECT value FROM system_settings WHERE `key` = ?", timeout: 5000,
+    }, ["forwardx-test-missing-setting"]);
+    assert.equal(empty.length, 0, "empty prepared results must also complete");
     await pool.query("INSERT INTO users (id, username, password, role, balanceCents) VALUES (1, 'upgrade-admin', 'test-hash', 'admin', 12345)");
     await pool.query("INSERT INTO hosts (id, name, ip, userId) VALUES (1, 'existing-host', '192.0.2.10', 1)");
     await pool.query("INSERT INTO forward_rules (id, name, hostId, userId, sourcePort, targetIp, targetPort, forwardType) VALUES (1, 'existing-gost-rule', 1, 1, 10000, '198.51.100.10', 25565, 'gost')");

@@ -21,6 +21,7 @@ import {
 import { ENV } from "./env";
 import { exportMigrationSnapshot, summarizeMigrationSnapshot, type MigrationSnapshotSummary } from "./migration";
 import { maintainPostgresqlDatabase } from "./postgresqlMaintenance";
+import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 
 export type DatabaseSwitchJobStatus = "pending" | "running" | "success" | "failed";
 export type DatabaseSwitchStage =
@@ -340,6 +341,7 @@ function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptio
     connectTimeout: pool.connectTimeoutMillis,
     timezone: "+00:00",
     dateStrings: false,
+    flags: MYSQL_COMPATIBILITY_FLAGS,
     ssl: mysqlConfig.ssl ? {} : undefined,
   };
 }

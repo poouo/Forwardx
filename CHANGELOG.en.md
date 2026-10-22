@@ -2,6 +2,10 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Fix initialization stalls during installation or upgrades on some MySQL 8.0 servers.
+
 ## [2.3.288] - 2026-10-22
 
 - Add scheduled operations reports with separate editable hour/minute dropdowns through the active notification channel; disabled by default, with a default send time of 00:00 UTC+8.

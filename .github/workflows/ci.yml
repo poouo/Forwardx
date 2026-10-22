@@ -16,9 +16,13 @@ concurrency:
 jobs:
   mysql-upgrade:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0.24", "8.0"]
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: forwardx-ci-only
           MYSQL_ROOT_HOST: "%"

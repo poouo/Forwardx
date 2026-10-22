@@ -13,6 +13,7 @@ import { databasePoolSettingsForHostCount } from "./databasePoolSizing";
 import { databaseHealth } from "./databaseHealthState";
 import { dashboardSummaries, operationsSummaries } from "./backgroundSummaryCache";
 import { seamlessDatabaseOperation } from "./seamlessMigrationState";
+import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -511,6 +512,7 @@ function mysqlConnectionOptions(config: MysqlConfig): ConnectionOptions {
     connectTimeout: pool.connectTimeoutMillis,
     timezone: "+00:00",
     dateStrings: false,
+    flags: MYSQL_COMPATIBILITY_FLAGS,
     ssl: config.ssl ? {} : undefined,
   };
 }
