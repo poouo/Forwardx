@@ -191,6 +191,25 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     || !dbBool(existing?.isEnabled)
     || !dbBool(existing?.isRunning)
     || dbBool(existing?.pendingDelete)) return false;
+  return childRuleRuntimeConfigEqual(existing, payload);
+}
+
+// A stopped child on an offline or traffic-excluded entry host cannot be
+// acknowledged by its Agent. Rewriting the unchanged row on every background
+// sync only churns the database; once the host is available again the regular
+// re-dispatch path picks the child up.
+async function canDeferUnavailableChildRule(existing: any, payload: any, options: SyncForwardGroupRulesOptions, hostId: number) {
+  if (!options.preserveRuntime
+    || !dbBool(existing?.isEnabled)
+    || dbBool(existing?.isRunning)
+    || dbBool(existing?.pendingDelete)
+    || !childRuleRuntimeConfigEqual(existing, payload)) return false;
+  const host = await getHostById(hostId).catch(() => undefined);
+  if (!host) return false;
+  return !host.isOnline || hostTrafficExcluded(host);
+}
+
+function childRuleRuntimeConfigEqual(existing: any, payload: any) {
   const numberKeys = [
     "hostId",
     "sourcePort",
@@ -3001,7 +3020,8 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   }
 
   if (existing) {
-    if (canPreserveChildRuleRuntime(existing, payload, options)) {
+    if (canPreserveChildRuleRuntime(existing, payload, options)
+      || await canDeferUnavailableChildRule(existing, payload, options, hostId)) {
       await syncPreservedChildRuleMetadata(existing, payload);
       return Number(existing.id);
     }

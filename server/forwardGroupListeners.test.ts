@@ -76,6 +76,94 @@ test("forward group sync creates an enabled child listener for every enabled mem
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test("background sync leaves stopped children on unavailable hosts untouched until the host returns", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-unavailable-"));
+  const databasePath = path.join(directory, "unavailable.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const q = (name) => '"' + name + '"';
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO " + q(table) + " (" + columns.map(q).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+    const updatedAt = async () => Object.fromEntries((await runtime.queryRaw(
+      'SELECT "forwardGroupMemberId", "updatedAt" FROM "forward_rules" WHERE "forwardGroupId" = ? AND "isForwardGroupTemplate" = 0',
+      [10],
+    )).map((row) => [Number(row.forwardGroupMemberId), row.updatedAt]));
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      const now = Math.floor(Date.now() / 1000);
+      const hostColumns = ["id", "name", "ip", "ipv4", "userId", "isOnline", "lastHeartbeat", "trafficFailoverEnabled", "trafficLimit", "trafficFailoverExcluded"];
+      // 1: online, 2: offline, 3: online but excluded after reaching its traffic quota.
+      await insert("hosts", hostColumns, [1, "host-1", "198.51.100.10", "198.51.100.10", 1, 1, now, 0, 0, 0]);
+      await insert("hosts", hostColumns, [2, "host-2", "198.51.100.20", "198.51.100.20", 1, 0, now - 3600, 0, 0, 0]);
+      await insert("hosts", hostColumns, [3, "host-3", "198.51.100.30", "198.51.100.30", 1, 1, now, 1, 1000, 1]);
+      await insert("forward_groups", [
+        "id", "name", "groupType", "groupMode", "forwardType", "targetIp", "userId", "isEnabled", "failoverSeconds", "recoverSeconds", "autoFailback",
+      ], [10, "group", "host", "failover", "realm", "0.0.0.0", 1, 1, 60, 120, 1]);
+      for (const [id, hostId, priority] of [[101, 1, 0], [102, 2, 1], [103, 3, 2]]) {
+        await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [id, 10, "host", hostId, priority, 1]);
+      }
+      await insert("forward_rules", [
+        "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate",
+        "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning",
+      ], [100, 1, "template", "realm", "tcp", 10, 1, 16000, "203.0.113.10", 80, 1, 1, 0]);
+
+      const forwardGroups = await import(moduleUrl("server/repositories/forwardGroupRepository.ts"));
+      await forwardGroups.syncForwardGroupRules(10);
+      const initial = await updatedAt();
+      assert.deepEqual(Object.keys(initial).map(Number).sort(), [101, 102, 103]);
+
+      await tick();
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      let current = await updatedAt();
+      assert.notEqual(current[101], initial[101], "a stopped child on an online host must be re-dispatched");
+      assert.equal(current[102], initial[102], "an offline host must not be rewritten on every background sync");
+      assert.equal(current[103], initial[103], "a traffic-excluded host must not be rewritten on every background sync");
+
+      // Configuration changes still reach unavailable hosts.
+      await runtime.executeRaw('UPDATE "forward_rules" SET "targetPort" = 81 WHERE "id" = 100');
+      await tick();
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      const ports = await runtime.queryRaw(
+        'SELECT "forwardGroupMemberId", "targetPort" FROM "forward_rules" WHERE "forwardGroupId" = ? AND "isForwardGroupTemplate" = 0 ORDER BY "forwardGroupMemberId"',
+        [10],
+      );
+      assert.deepEqual(ports.map((row) => Number(row.targetPort)), [81, 81, 81]);
+
+      // Once the host is back, the stopped child is re-dispatched again.
+      const beforeReturn = await updatedAt();
+      await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 2', [Math.floor(Date.now() / 1000)]);
+      await tick();
+      await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
+      current = await updatedAt();
+      assert.notEqual(current[102], beforeReturn[102], "a returning host must be re-dispatched");
+      assert.equal(current[103], beforeReturn[103]);
+    } finally {
+      await runtime.closeDatabase();
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  fs.rmSync(directory, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 test("legacy failover groups keep child runtime fields until explicitly opted in", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-runtime-compat-"));
   const databasePath = path.join(directory, "runtime-compat.db");
