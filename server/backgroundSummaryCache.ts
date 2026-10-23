@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import superjson from "superjson";
+import { displayQueries } from "./displayQueryCache";
 
 type Entry = {
   value?: unknown;
@@ -18,6 +19,7 @@ type Entry = {
  */
 export function createBackgroundSummaryCache(options: {
   now?: () => number; refreshMs?: number; idleMs?: number; maxEntries?: number; maxBytes?: number;
+  run?: <T>(load: () => Promise<T>) => Promise<T>;
 } = {}) {
   const now = options.now ?? Date.now;
   const refreshMs = options.refreshMs ?? 60_000;
@@ -39,7 +41,7 @@ export function createBackgroundSummaryCache(options: {
   };
   async function refresh(key: string, entry: Entry) {
     if (entry.pending) return entry.pending;
-    const task = Promise.resolve().then(entry.load).then((value) => {
+    const task = Promise.resolve().then(() => options.run ? options.run(entry.load) : entry.load()).then((value) => {
       if (entries.get(key) === entry) {
         const size = Buffer.byteLength(superjson.stringify(value));
         bytes += size - entry.bytes;
@@ -99,7 +101,7 @@ export function createBackgroundSummaryCache(options: {
   };
 }
 
-export const dashboardSummaries = createBackgroundSummaryCache();
+export const dashboardSummaries = createBackgroundSummaryCache({ run: displayQueries.run });
 // Administrative reports have a separate, smaller budget; they cannot evict
 // ordinary users' home summaries when an admin explores many date ranges.
-export const operationsSummaries = createBackgroundSummaryCache({ maxEntries: 300, maxBytes: 8 * 1024 * 1024 });
+export const operationsSummaries = createBackgroundSummaryCache({ maxEntries: 300, maxBytes: 8 * 1024 * 1024, run: displayQueries.run });

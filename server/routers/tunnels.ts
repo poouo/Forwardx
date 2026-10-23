@@ -10,6 +10,7 @@ import * as hopRepo from "../repositories/tunnelRepository";
 import { planManualTunnelProbes, queueManualTunnelProbeBatch } from "../tunnelManualProbe";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
+import { displayQueries } from "../displayQueryCache";
 import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
 import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
 import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
@@ -802,10 +803,10 @@ export const tunnelsRouter = router({
         const availabilityIndex = availabilityIndexForHydratedTunnels(hydratedItems);
         const visibleItems = attachTunnelAvailability(hydratedItems, availabilityIndex)
           .map((tunnel) => tunnelForUser(tunnel, accessScope));
-        const trafficByTunnelId = await db.getTunnelTrafficSummaries(
-          visibleItems.map((tunnel: any) => Number(tunnel.id)),
-          ctx.user.role === "admin" ? undefined : ctx.user.id,
-        );
+        const visibleIds = visibleItems.map((tunnel: any) => Number(tunnel.id)).sort((a, b) => a - b);
+        const trafficByTunnelId = await displayQueries.get(ctx.user, "tunnels.traffic",
+          [visibleIds, Math.floor((Date.now() + 8 * 3600000) / 86400000)],
+          () => db.getTunnelTrafficSummaries(visibleIds, ctx.user.role === "admin" ? undefined : ctx.user.id));
         const items = visibleItems.map((tunnel: any) => ({
           ...tunnel,
           trafficSummary: trafficByTunnelId.get(Number(tunnel.id)),

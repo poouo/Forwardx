@@ -11,6 +11,7 @@ import { assertRuleWritable } from "../../shared/ruleLimits";
 import { personalRuleGroupsRouter } from "./rules.groups";
 import { ruleGroupFilterSchema } from "../../shared/ruleGroups";
 import { getRulePersonalGroupIds } from "../repositories/ruleGroupRepository";
+import { displayQueries } from "../displayQueryCache";
 
 async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
   const scope = user.role === "admin" ? null : await getLinkAccessScope(user);
@@ -116,7 +117,9 @@ export const rulesRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const repositoryInput = await getRuleListRepositoryInput(input, ctx.user);
-      const page = await db.getForwardRulesPage({ ...repositoryInput, page: input.page, pageSize: input.pageSize });
+      const query = { ...repositoryInput, page: input.page, pageSize: input.pageSize };
+      const page = await displayQueries.get(ctx.user, "rules.page", query,
+        () => db.getForwardRulesPage(query), { ttlMs: 2000, staleMs: 0 });
       return withRuleResourceAccess(page, ctx.user);
     }),
   mapItems: protectedProcedure
@@ -150,31 +153,33 @@ export const rulesRouter = router({
     }))
     .query(async ({ input, ctx }) => {
       const repositoryInput = await getRuleListRepositoryInput(input, ctx.user);
-      const selection = await db.getForwardRuleSummarySelection(repositoryInput);
-      const [totalRows, dailyRows] = selection.ruleIds.length > 0
-        ? await Promise.all([
-          db.getTrafficCounterSummaryByRule({
-            userId: ctx.user.role === "admin" ? undefined : ctx.user.id,
-            ruleIds: selection.ruleIds,
-          }),
-          db.getTrafficSummaryByRule({
-            userId: ctx.user.role === "admin" ? undefined : ctx.user.id,
-            ruleIds: selection.ruleIds,
-            since: new Date(Date.now() - 24 * 60 * 60 * 1000),
-          }),
-        ])
-        : [[], []];
-      const sumRows = (rows: any[]) => rows.reduce((total, row) => ({
-        bytesIn: total.bytesIn + Math.max(0, Number(row?.bytesIn) || 0),
-        bytesOut: total.bytesOut + Math.max(0, Number(row?.bytesOut) || 0),
-        connections: total.connections + Math.max(0, Number(row?.connections) || 0),
-      }), { bytesIn: 0, bytesOut: 0, connections: 0 });
-      return {
-        totalItems: selection.totalItems,
-        activeItems: selection.activeItems,
-        totalTraffic: sumRows(totalRows as any[]),
-        dailyTraffic: sumRows(dailyRows as any[]),
-      };
+      return displayQueries.get(ctx.user, "rules.summary", repositoryInput, async () => {
+        const selection = await db.getForwardRuleSummarySelection(repositoryInput);
+        const [totalRows, dailyRows] = selection.ruleIds.length > 0
+          ? await Promise.all([
+            db.getTrafficCounterSummaryByRule({
+              userId: ctx.user.role === "admin" ? undefined : ctx.user.id,
+              ruleIds: selection.ruleIds,
+            }),
+            db.getTrafficSummaryByRule({
+              userId: ctx.user.role === "admin" ? undefined : ctx.user.id,
+              ruleIds: selection.ruleIds,
+              since: new Date(Date.now() - 24 * 60 * 60 * 1000),
+            }),
+          ])
+          : [[], []];
+        const sumRows = (rows: any[]) => rows.reduce((total, row) => ({
+          bytesIn: total.bytesIn + Math.max(0, Number(row?.bytesIn) || 0),
+          bytesOut: total.bytesOut + Math.max(0, Number(row?.bytesOut) || 0),
+          connections: total.connections + Math.max(0, Number(row?.connections) || 0),
+        }), { bytesIn: 0, bytesOut: 0, connections: 0 });
+        return {
+          totalItems: selection.totalItems,
+          activeItems: selection.activeItems,
+          totalTraffic: sumRows(totalRows as any[]),
+          dailyTraffic: sumRows(dailyRows as any[]),
+        };
+      });
     }),
   getById: protectedProcedure
     .input(z.object({ id: z.number() }))

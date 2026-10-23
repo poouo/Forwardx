@@ -14,6 +14,8 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
       await runtime.connectDatabase({type:"sqlite",sqlite:{path:process.env.FORWARDX_TEST_DB}});
       await (await import("./server/dbSchema.ts")).ensureDatabaseSchema();
       const metrics = await import("./server/repositories/metricsRepository.ts");
+      const { billingStartOfCalendarDay } = await import("./shared/billingTime.ts");
+      const expected = (totals) => ({...totals,daily:{bytesIn:totals.bytesIn,bytesOut:totals.bytesOut,totalBytes:totals.totalBytes}});
       const insert = async (table, data) => runtime.executeRaw('INSERT INTO "'+table+'" ('+Object.keys(data).map(k=>'"'+k+'"').join(',')+') VALUES ('+Object.keys(data).map(()=>'?').join(',')+')',Object.values(data));
       try {
         for (const id of [1,2]) await insert("users",{id,username:"user"+id,password:"unused",name:"User"+id,role:id===1?"admin":"user",accountEnabled:1});
@@ -27,16 +29,16 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         await insert("forward_rules",{...rule,id:11,sourcePort:10001,tunnelId:5,userId:2});
         await insert("forward_rules",{...rule,id:12,sourcePort:10002}); // unrelated host traffic
         await insert("forward_rules",{...rule,id:13,sourcePort:10003,forwardGroupId:1,pendingDelete:1});
-        const report = async (ruleId,bytesIn,bytesOut,userId=1) => metrics.insertTrafficStatsBatch([{stat:{ruleId,hostId:1,bytesIn,bytesOut,connections:1,recordedAt:new Date()},userId}]);
+        const report = async (ruleId,bytesIn,bytesOut,userId=1,recordedAt=new Date()) => metrics.insertTrafficStatsBatch([{stat:{ruleId,hostId:1,bytesIn,bytesOut,connections:1,recordedAt},userId}]);
         await report(10,100,200);
         await report(11,30,40,2);
         await report(12,9000,9000);
         await report(13,8000,8000);
         const ids = [1,2,3,4];
         const totals = await metrics.getForwardGroupTrafficSummaries(ids);
-        assert.deepEqual(totals.get(1),{bytesIn:100,bytesOut:200,totalBytes:300,ruleCount:1});
-        for (const id of [2,3]) assert.deepEqual(totals.get(id),{bytesIn:30,bytesOut:40,totalBytes:70,ruleCount:1});
-        assert.deepEqual(totals.get(4),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.deepEqual(totals.get(1),expected({bytesIn:100,bytesOut:200,totalBytes:300,ruleCount:1}));
+        for (const id of [2,3]) assert.deepEqual(totals.get(id),expected({bytesIn:30,bytesOut:40,totalBytes:70,ruleCount:1}));
+        assert.deepEqual(totals.get(4),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0}));
         assert.equal((await metrics.getForwardGroupTrafficSummaries(ids,2)).get(1).totalBytes,0);
         assert.equal((await metrics.getForwardGroupTrafficSummaries(ids,1)).get(2).totalBytes,0);
         assert.equal((await metrics.getForwardGroupTrafficSummaries([1,1,-1,NaN])).size,1);
@@ -49,11 +51,13 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         assert.equal(page.items.length,1);
         assert.equal(page.items[0].id,1);
         assert.equal(page.items[0].trafficSummary.totalBytes,0);
+        assert.equal(page.items[0].trafficSummary.daily.totalBytes,0);
         const entryPage = await caller.listPage({page:1,pageSize:12,groupMode:"entry"});
         assert.equal(entryPage.items[0].trafficSummary.totalBytes,70);
+        assert.equal(entryPage.items[0].trafficSummary.daily.totalBytes,70);
         assert.equal(entryPage.items[0].trafficSummary.ruleCount,1);
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5])).get(5),{bytesIn:30,bytesOut:40,totalBytes:70,ruleCount:1});
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],1)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5])).get(5),expected({bytesIn:30,bytesOut:40,totalBytes:70,ruleCount:1}));
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],1)).get(5),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0}));
         assert.equal((await metrics.getTunnelTrafficSummaries([])).size,0);
         assert.equal((await metrics.getTunnelTrafficSummaries([5,5,-1,NaN])).size,1);
         // A tunnel used through a failover template counts that logical rule
@@ -80,9 +84,9 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         await insert("forward_rules",{...rule,id:30,userId:2,forwardGroupId:10,isForwardGroupTemplate:1});
         await report(30,5,5,2);
         const tunnelTotals = await metrics.getTunnelTrafficSummaries([5,6,7]);
-        assert.deepEqual(tunnelTotals.get(5),{bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2});
-        assert.deepEqual(tunnelTotals.get(6),{bytesIn:100,bytesOut:200,totalBytes:300,ruleCount:1});
-        assert.deepEqual(tunnelTotals.get(7),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.deepEqual(tunnelTotals.get(5),expected({bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2}));
+        assert.deepEqual(tunnelTotals.get(6),expected({bytesIn:100,bytesOut:200,totalBytes:300,ruleCount:1}));
+        assert.deepEqual(tunnelTotals.get(7),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0}));
         const indirectGroups = await metrics.getForwardGroupTrafficSummaries([2,3,7,8,9,10],2);
         assert.equal(indirectGroups.get(2).ruleCount,3);
         assert.equal(indirectGroups.get(2).totalBytes,120);
@@ -94,6 +98,8 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         }
         assert.equal(indirectGroups.get(7).ruleCount,1);
         assert.equal(indirectGroups.get(7).totalBytes,340);
+        assert.equal(indirectGroups.get(7).daily.totalBytes,340);
+        assert.equal(indirectGroups.get(2).daily.totalBytes,120);
         assert.equal(indirectGroups.get(10).ruleCount,1);
         // Shared tunnel endpoints attach only the caller's usage, not admin data.
         await insert("forward_rules",{...rule,id:40,tunnelId:5});
@@ -103,29 +109,43 @@ test("resource summaries isolate linked rules, empty resources and shared-user u
         const tunnelCaller = tunnelsRouter.createCaller({user:{id:2,role:"user"},req:{headers:{}},res:{}});
         const sharedTunnels = await tunnelCaller.listPage({page:1,pageSize:12});
         assert.equal(sharedTunnels.items.length,1);
-        assert.deepEqual(sharedTunnels.items[0].trafficSummary,{bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2});
+        assert.deepEqual(sharedTunnels.items[0].trafficSummary,expected({bytesIn:43,bytesOut:67,totalBytes:110,ruleCount:2}));
         const adminCaller = tunnelsRouter.createCaller({user:{id:1,role:"admin"},req:{headers:{}},res:{}});
         const adminTunnels = await adminCaller.listPage({page:1,pageSize:12});
-        assert.deepEqual(adminTunnels.items.find(t=>t.id===5).trafficSummary,{bytesIn:1043,bytesOut:2067,totalBytes:3110,ruleCount:3});
+        assert.deepEqual(adminTunnels.items.find(t=>t.id===5).trafficSummary,expected({bytesIn:1043,bytesOut:2067,totalBytes:3110,ruleCount:3}));
         await runtime.executeRaw('UPDATE "forward_rules" SET "pendingDelete" = 1 WHERE "id" = 11');
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:13,bytesOut:27,totalBytes:40,ruleCount:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),expected({bytesIn:13,bytesOut:27,totalBytes:40,ruleCount:1}));
         await metrics.resetRuleTrafficStats([20]);
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([6],2)).get(6),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1}));
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([6],2)).get(6),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1}));
         // Saved references are counted even before a disabled rule has any
         // runtime children. Stale children of a removed member are ignored.
         await insert("forward_groups",{id:12,name:"unapplied tunnel group",groupMode:"failover",groupType:"tunnel",targetIp:"127.0.0.1",userId:1});
         await insert("forward_group_members",{id:1201,groupId:12,memberType:"tunnel",tunnelId:7,isEnabled:0});
         await insert("forward_rules",{...rule,id:50,userId:2,forwardGroupId:12,isForwardGroupTemplate:1});
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([7],2)).get(7),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([7],2)).get(7),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:1}));
         await runtime.executeRaw('DELETE FROM "forward_group_members" WHERE "id" = 701');
-        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0});
+        assert.deepEqual((await metrics.getTunnelTrafficSummaries([5],2)).get(5),expected({bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0}));
         assert.equal((await metrics.getForwardGroupTrafficSummaries([2],2)).get(2).ruleCount,1);
         // More than one bounded batch, including many rules with no reports.
         for (let id=100;id<305;id++) await insert("forward_rules",{...rule,id,sourcePort:20000+id,forwardGroupId:4});
         await report(100,1,2);
         await report(304,3,4);
-        assert.deepEqual((await metrics.getForwardGroupTrafficSummaries([4])).get(4),{bytesIn:4,bytesOut:6,totalBytes:10,ruleCount:205});
+        assert.deepEqual((await metrics.getForwardGroupTrafficSummaries([4])).get(4),expected({bytesIn:4,bytesOut:6,totalBytes:10,ruleCount:205}));
+        // A natural-day boundary, not a rolling 24 hours: the immediately
+        // preceding sample affects cumulative totals but never today's usage.
+        const midnight = billingStartOfCalendarDay(new Date());
+        await report(100,100,200,1,new Date(midnight.getTime()-1000));
+        await report(100,10,20,1,midnight);
+        const dated = (await metrics.getForwardGroupTrafficSummaries([4])).get(4);
+        assert.equal(dated.totalBytes,340);
+        assert.deepEqual(dated.daily,{bytesIn:14,bytesOut:26,totalBytes:40});
+        // Bucket-only data must survive raw-history cleanup as well.
+        await metrics.ensureTrafficStatBucketsBackfilled();
+        await runtime.executeRaw('DELETE FROM "traffic_stats" WHERE "ruleId" IN (100,304)');
+        assert.deepEqual((await metrics.getForwardGroupTrafficSummaries([4])).get(4),dated);
+        await metrics.resetRuleTrafficStats([100,304]);
+        assert.deepEqual((await metrics.getForwardGroupTrafficSummaries([4])).get(4).daily,{bytesIn:0,bytesOut:0,totalBytes:0});
       } finally { await runtime.closeDatabase(); }
     `], {cwd:process.cwd(),env:{...process.env,DATABASE_TYPE:"sqlite",FORWARDX_TEST_DB:path.join(directory,"test.db"),FORWARDX_LOG_DIR:path.join(directory,"logs")},encoding:"utf8",timeout:60_000,windowsHide:true});
     assert.equal(result.status,0,result.stderr || result.stdout);

@@ -176,6 +176,7 @@ function PaymentStatCard({
   loading = false,
   cacheKey,
   fallbackValue,
+  action,
 }: {
   label: string;
   value: string | number;
@@ -184,6 +185,7 @@ function PaymentStatCard({
   loading?: boolean;
   cacheKey: string;
   fallbackValue?: string | number;
+  action?: React.ReactNode;
 }) {
   return (
     <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
@@ -200,7 +202,10 @@ function PaymentStatCard({
             className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums"
           />
         </div>
-        <Icon className={`h-5 w-5 shrink-0 ${tone}`} />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Icon className={`h-5 w-5 shrink-0 ${tone}`} />
+          {action}
+        </div>
       </CardContent>
     </Card>
   );
@@ -379,6 +384,16 @@ export default function Payments() {
             loading={isLoading}
             cacheKey="payments.enabled"
             fallbackValue={translateText("未启用")}
+            action={
+              <span className="inline-flex" title={translateText("关闭后无法下单")}>
+                <Switch
+                  checked={form.enabled}
+                  onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, enabled }))}
+                  disabled={isLoading || updateConfig.isPending}
+                  aria-label={translateText("启用支付功能")}
+                />
+              </span>
+            }
           />
           <PaymentStatCard
             label={translateText("已支付金额")}
@@ -429,13 +444,6 @@ export default function Payments() {
                 <CardDescription>{translateText("用于商店套餐购买。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-2">
-                <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3">
-                  <div>
-                    <div className="font-medium">{translateText("启用支付功能")}</div>
-                    <div className="text-sm text-muted-foreground">{translateText("关闭后无法下单")}</div>
-                  </div>
-                  <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, enabled }))} />
-                </div>
                 <Field label={translateText("商品名称")}>
                   <Input value={form.productName} onChange={(e) => setForm((prev) => ({ ...prev, productName: e.target.value }))} />
                 </Field>

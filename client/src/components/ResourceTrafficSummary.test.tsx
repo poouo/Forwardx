@@ -4,7 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ResourceTrafficSummary } from "./ResourceTrafficSummary";
 
 test("resource traffic cards show total and both directions with an explicit accounting scope", () => {
-  const html = renderToStaticMarkup(<ResourceTrafficSummary summary={{bytesIn:1024,bytesOut:2048,totalBytes:3072,ruleCount:2}} />);
+  const html = renderToStaticMarkup(<ResourceTrafficSummary summary={{bytesIn:1024,bytesOut:2048,totalBytes:3072,ruleCount:2,daily:{bytesIn:128,bytesOut:256,totalBytes:384}}} />);
+  assert.ok(html.indexOf('>当日流量<') < html.indexOf('>累计流量<'));
+  assert.match(html, /384 B/);
+  assert.match(html, /入向.*128 B/);
+  assert.match(html, /出向.*256 B/);
+  assert.match(html, /grid-cols-2/);
+  assert.match(html, /北京时间 00:00/);
   assert.match(html, /累计流量/);
   assert.match(html, /3\.00 KB/);
   assert.match(html, /入向.*1\.00 KB/);
@@ -17,8 +23,10 @@ test("resource traffic cards show total and both directions with an explicit acc
 });
 
 test("compact resource totals retain directional details and empty resources show zero", () => {
-  const html = renderToStaticMarkup(<ResourceTrafficSummary compact summary={{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0}} />);
-  assert.equal((html.match(/0 B/g) || []).length,3);
+  const html = renderToStaticMarkup(<ResourceTrafficSummary compact summary={{bytesIn:0,bytesOut:0,totalBytes:0,ruleCount:0,daily:{bytesIn:0,bytesOut:0,totalBytes:0}}} />);
+  assert.match(html,/>当日流量</);
+  assert.match(html,/>累计流量</);
+  assert.equal((html.match(/>0 B</g) || []).length,2);
   assert.match(html,/入向/);
   assert.match(html,/出向/);
   assert.match(html,/>0<\/span>/);

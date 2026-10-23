@@ -3,6 +3,10 @@ import { t as translateText } from "@/i18n";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { PlanDescriptionEditor } from "@/components/PlanDescriptionEditor";
+import { PlanDetails } from "@/components/PlanDetails";
+import { MeteredRuleLimitBadge, ProductStockBadge, ProductStockField } from "@/components/ProductStock";
+import { MAX_PRODUCT_STOCK } from "@shared/productStock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { OptimisticSwitch, Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+import { planDescriptionTemplate } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -153,7 +157,10 @@ function storeBillingConfigViewMode(viewMode: BillingConfigViewMode) {
 }
 
 type BillingConfigForm = {
+  stockLimit: string;
+  maxRulesPerUser: string;
   id?: number;
+  name: string;
   resourceCategory: BillingResourceCategory;
   resourceType: BillingResourceType;
   resourceId: string;
@@ -165,12 +172,15 @@ type BillingConfigForm = {
 };
 
 const defaultBillingConfigForm = (): BillingConfigForm => ({
+  name: "",
   resourceCategory: "port",
   resourceType: "forward_group",
   resourceId: "",
   resourceName: "",
   description: "",
   price: "",
+  stockLimit: "0",
+  maxRulesPerUser: "0",
   enabled: true,
   requiresPermission: false,
 });
@@ -314,7 +324,10 @@ function BillingConfigCard({
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           {config.resourceType === "host" ? <Server className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Route className="h-4 w-4 shrink-0 text-muted-foreground" />}
-          <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
+          <div className="min-w-0">
+            <div className="break-words text-sm font-medium">{config.name || config.resourceName}</div>
+            {config.name && <div className="mt-0.5 truncate text-xs text-muted-foreground" title={config.resourceName}>{config.resourceName}</div>}
+          </div>
         </div>
         <div className="-mr-2 -mt-2 flex shrink-0 items-center gap-1">
           {dragHandle}
@@ -327,9 +340,12 @@ function BillingConfigCard({
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-        <MobileInfoRow label={translateText("类型")}>{config.resourceKind || (config.resourceType === "host" ? translateText("历史主机") : config.resourceType === "tunnel" ? translateText("隧道转发") : translateText("转发资源"))} #{config.resourceId}</MobileInfoRow>
-        <MobileInfoRow label={translateText("单价")}>{formatPricePerGb(config)} / GB</MobileInfoRow>
-        <MobileInfoRow label={translateText("倍率")}>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</MobileInfoRow>
+        <div className="flex flex-wrap gap-2"><ProductStockBadge product={config} /><MeteredRuleLimitBadge config={{ maxRulesPerUser: config.maxRulesPerUser }} /></div>
+        <PlanDetails description={config.description}>
+          <MobileInfoRow label={translateText("类型")}>{config.resourceKind || (config.resourceType === "host" ? translateText("历史主机") : config.resourceType === "tunnel" ? translateText("隧道转发") : translateText("转发资源"))} #{config.resourceId}</MobileInfoRow>
+          <MobileInfoRow label={translateText("单价")}>{formatPricePerGb(config)} / GB</MobileInfoRow>
+          <MobileInfoRow label={translateText("倍率")}>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</MobileInfoRow>
+        </PlanDetails>
         <MobileInfoRow label={translateText("权限")}>
           <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
             {config.requiresPermission ? translateText("需要授权") : translateText("公开可用")}
@@ -441,7 +457,7 @@ export default function TrafficBillingConfigManager({
   });
 
   const openCreate = () => {
-    setConfigForm(defaultBillingConfigForm());
+    setConfigForm({ ...defaultBillingConfigForm(), description: planDescriptionTemplate("metered") });
     setDialogOpen(true);
   };
 
@@ -459,12 +475,15 @@ export default function TrafficBillingConfigManager({
     const resourceCategory = resourceCategoryForConfig(config, forwardGroups);
     setConfigForm({
       id: Number(config.id),
+      name: String(config.name || ""),
       resourceCategory,
       resourceType: config.resourceType === "forward_group" ? "forward_group" : config.resourceType === "tunnel" ? "tunnel" : "host",
       resourceId: String(config.resourceId || ""),
       resourceName: String(config.resourceName || ""),
       description: String(config.description || ""),
       price: formatPriceInput(pricePerGbMilliCents(config)),
+      stockLimit: String(config.stockLimit ?? 0),
+      maxRulesPerUser: String(config.maxRulesPerUser ?? 0),
       enabled: config.enabled !== false,
       requiresPermission: !!config.requiresPermission,
     });
@@ -479,6 +498,9 @@ export default function TrafficBillingConfigManager({
     const resourceType = resourceTypeForCategory(configForm.resourceCategory);
     saveConfig.mutate({
       id: configForm.id,
+      name: configForm.name.trim(),
+      stockLimit: Number(configForm.stockLimit || 0),
+      maxRulesPerUser: Number(configForm.maxRulesPerUser || 0),
       resourceType,
       resourceId: id,
       enabled: configForm.enabled,
@@ -619,7 +641,7 @@ export default function TrafficBillingConfigManager({
               ) : (
                 <div key="billing-config-table-view" className="overflow-x-auto">
                   <Table>
-                    <TableHeader><TableRow><TableHead>{translateText("资源")}</TableHead><TableHead>{translateText("单价")}</TableHead><TableHead>{translateText("倍率")}</TableHead><TableHead>{translateText("权限")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead>{translateText("套餐名称")}</TableHead><TableHead>{translateText("单价")}</TableHead><TableHead>{translateText("倍率")}</TableHead><TableHead>{translateText("权限")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
                     <TableBody>
                       {configOrder.items.map((config: any) => (
                         <SortableItem key={config.id} id={Number(config.id)} itemKind="row" disabled={configSortDisabled}>
@@ -629,7 +651,11 @@ export default function TrafficBillingConfigManager({
                             <div className="flex items-center gap-2">
                               <SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />
                               {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
-                              <span>{config.resourceName}</span>
+                              <div className="min-w-0">
+                                <div className="break-words">{config.name || config.resourceName}</div>
+                                {config.name && <div className="truncate text-xs text-muted-foreground" title={config.resourceName}>{config.resourceName}</div>}
+                                <div className="mt-1 flex flex-wrap gap-1"><ProductStockBadge product={config} /><MeteredRuleLimitBadge config={{ maxRulesPerUser: config.maxRulesPerUser }} /></div>
+                              </div>
                               <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || translateText("转发资源")}</Badge>
                             </div>
                           </TableCell>
@@ -672,6 +698,10 @@ export default function TrafficBillingConfigManager({
             <DialogDescription>{translateText("选择资源并设置每 GB 单价；倍率继承资源配置。")}</DialogDescription>
           </DialogHeader>
           <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+            <div className="col-span-2 space-y-2">
+              <Label htmlFor="billing-config-name">{translateText("套餐名称")}</Label>
+              <Input id="billing-config-name" maxLength={255} value={configForm.name} onChange={(e) => setConfigForm((current) => ({ ...current, name: e.target.value }))} placeholder={translateText("留空使用资源名称")} />
+            </div>
             <div className="col-span-2 grid min-w-0 gap-3 sm:grid-cols-[11rem_minmax(0,1fr)]">
               <div className="space-y-2">
                 <Label>{translateText("资源类型")}</Label>
@@ -764,13 +794,13 @@ export default function TrafficBillingConfigManager({
                   : translateText("选择资源后显示")}
               </div>
             </div>
-            <div className="col-span-2 space-y-2">
-              <Label>{translateText("说明")}</Label>
-              <Textarea
-                value={configForm.description}
-                onChange={(e) => setConfigForm((current) => ({ ...current, description: e.target.value }))}
-                placeholder={translateText("留空时商店展示系统默认说明")}
-              />
+            <ProductStockField value={configForm.stockLimit} onChange={(stockLimit) => setConfigForm((current) => ({ ...current, stockLimit }))} metered />
+            <div className="space-y-2" title={translateText("0 为不限；仅统计逻辑规则，自动子规则不重复计数。") }>
+              <Label htmlFor="billing-user-rule-limit">{translateText("单用户规则上限")}</Label>
+              <Input id="billing-user-rule-limit" type="number" min={0} max={MAX_PRODUCT_STOCK} step={1} value={configForm.maxRulesPerUser} onChange={(e) => setConfigForm((current) => ({ ...current, maxRulesPerUser: e.target.value }))} />
+            </div>
+            <div className="col-span-2">
+              <PlanDescriptionEditor value={configForm.description} onChange={(description) => setConfigForm((current) => ({ ...current, description }))} />
             </div>
             <div className="col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
               <div className="min-w-0">

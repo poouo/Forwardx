@@ -2,6 +2,7 @@ import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { createQueryCache } from "../queryCache";
+import { displayQueries } from "../displayQueryCache";
 import { latencyHistoryQueryCache } from "../ruleLatencyQueryCache";
 import { latencyChartBucketSeconds } from "../../shared/latencyHistory";
 import { latencyHistoryWindowInput, resolveLatencyHistoryWindow } from "../latencyHistoryWindow";
@@ -206,10 +207,10 @@ export const forwardGroupsRouter = router({
       const visibleItems = accessScope
         ? db.filterForwardGroupFieldsForUse(hydratedItems, accessScope)
         : hydratedItems;
-      const trafficByGroupId = await db.getForwardGroupTrafficSummaries(
-        visibleItems.map((group: any) => Number(group.id)),
-        ctx.user.role === "admin" ? undefined : ctx.user.id,
-      );
+      const visibleIds = visibleItems.map((group: any) => Number(group.id)).sort((a, b) => a - b);
+      const trafficByGroupId = await displayQueries.get(ctx.user, "groups.traffic",
+        [visibleIds, Math.floor((Date.now() + 8 * 3600000) / 86400000)],
+        () => db.getForwardGroupTrafficSummaries(visibleIds, ctx.user.role === "admin" ? undefined : ctx.user.id));
       const items = visibleItems.map((group: any) => ({
         ...group,
         trafficSummary: trafficByGroupId.get(Number(group.id)),

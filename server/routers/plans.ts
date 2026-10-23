@@ -6,11 +6,13 @@ import { refreshUserForwardEndpoints } from "./helpers";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reorderProducts } from "../repositories/productOrder";
 import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
+import { MAX_PRODUCT_STOCK } from "../../shared/productStock";
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
   description: z.string().max(PLAN_DESCRIPTION_MAX_LENGTH).nullable().optional(),
   priceCents: z.number().int().min(0).max(100_000_000),
+  stockLimit: z.number().int().min(0).max(MAX_PRODUCT_STOCK).optional(),
   currency: z.string().trim().min(3).max(8).default("CNY"),
   durationDays: z.union([
     z.literal(30),

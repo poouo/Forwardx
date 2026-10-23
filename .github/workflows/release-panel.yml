@@ -68,7 +68,10 @@ jobs:
         run: pnpm build
 
       - name: Run panel tests
-        run: pnpm test:server
+        run: |
+          pnpm test:product-stock
+          pnpm test:performance
+          pnpm test:server
 
       - name: Run Agent tests and vet
         shell: bash

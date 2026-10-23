@@ -2092,7 +2092,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                             setStoreDetailItem(item);
                           }
                         }}
-                        className="group flex min-h-[17rem] flex-col rounded-2xl border border-border/40 bg-muted/20 p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:bg-muted/30 hover:shadow-lg hover:shadow-primary/5"
+                        className="pearl-hover-card group flex min-h-[17rem] flex-col rounded-2xl border border-border/40 bg-muted/20 p-4 text-left hover:bg-muted/30"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <PluginLogo logo={item.logo} name={item.name} />

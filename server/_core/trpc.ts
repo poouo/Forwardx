@@ -6,17 +6,24 @@ import { getSessionCookieOptions } from "./cookies";
 import { runWithConfigAuditContext } from "../configAudit";
 import { databaseHealth } from "../databaseHealthState";
 import { DATABASE_UNAVAILABLE_MESSAGE } from "../../shared/databaseHealth";
+import { displayQueries } from "../displayQueryCache";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
 });
 
 export const router = t.router;
-const databaseSafeProcedure = t.procedure.use(async ({ next }) => {
+const databaseSafeProcedure = t.procedure.use(async ({ next, type, ctx, path }) => {
   if (databaseHealth.snapshot().state === "unavailable") {
     throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
   }
-  const result = await next();
+  // Invalidate both before and after writes (also failed/partial writes).
+  // Readers already in flight cannot repopulate an invalidated generation.
+  const invalidatesDisplay = type === "mutation" && !!ctx.user && path !== "hosts.watchMetrics";
+  if (invalidatesDisplay) displayQueries.invalidate(ctx.user!);
+  let result;
+  try { result = await next(); }
+  finally { if (invalidatesDisplay) displayQueries.invalidate(ctx.user!); }
   if (!result.ok && databaseHealth.snapshot().state === "unavailable") {
     throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
   }

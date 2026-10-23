@@ -1,6 +1,7 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
+import HostStatusLabel from "@/components/HostStatusLabel";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,7 +26,6 @@ import {
   Loader2,
   RadioTower,
   Route,
-  ShieldCheck,
   Terminal,
   Wifi,
 } from "lucide-react";
@@ -546,13 +546,7 @@ export default function LookingGlass() {
     <DashboardLayout>
       <div className="space-y-5">
         <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="gap-1.5 border-chart-4/30 bg-chart-4/10 text-chart-4">
-                <ShieldCheck className="h-3.5 w-3.5" />{translateText("公网目标限定")}</Badge>
-            </div>
-            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("网络测试")}</h1>
-          </div>
+          <h1 className="min-w-0 text-xl font-bold tracking-tight sm:text-2xl">{translateText("网络测试")}</h1>
         </div>
 
         <HelpDetails>
@@ -575,9 +569,11 @@ export default function LookingGlass() {
                   </SelectTrigger>
                   <SelectContent>
                     {availableHosts.map((host: any) => (
-                      <SelectItem key={host.id} value={String(host.id)}>
-                        {host.name}
-                        {host.isOnline === false ? translateText(" / 离线") : ""}
+                      <SelectItem key={host.id} value={String(host.id)} showIndicator={false} className="data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground">
+                        <HostStatusLabel
+                          host={host}
+                          label={<>{host.name}{host.isOnline === false ? translateText(" / 离线") : ""}</>}
+                        />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -597,7 +593,7 @@ export default function LookingGlass() {
                     {methods.map((item) => {
                       const ItemIcon = item.icon;
                       return (
-                        <SelectItem key={item.value} value={item.value}>
+                        <SelectItem key={item.value} value={item.value} showIndicator={false} className="data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground">
                           <span className="flex items-center gap-2">
                             <ItemIcon className="h-4 w-4 text-primary" />
                             {item.label}

@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.201"
+var Version = "2.2.202"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -12454,7 +12454,7 @@ func startProtocolGuard(cfg Config, rule guardRule) {
 		server.tcpLn = ln
 	}
 	if guardUDPEnabled(rule) {
-		conn, err := net.ListenPacket("udp", listenAddress)
+		conn, err := listenUDPReplyConn("udp", listenAddress)
 		if err != nil {
 			server.close()
 			logf("protocol guard udp listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
@@ -12774,7 +12774,7 @@ func (s *protocolGuardServer) serveUDP() {
 			}
 			continue
 		}
-		key := clientAddr.String()
+		key := udpReplySessionKey(clientAddr)
 		sessionMu.Lock()
 		session := sessions[key]
 		if session == nil {
@@ -12827,7 +12827,12 @@ func (s *protocolGuardServer) copyUDPToClient(key string, clientAddr net.Addr, t
 			if err := s.waitRate(s.ctx, protocolGuardRateOut, n); err != nil {
 				break
 			}
-			_, _ = s.udpConn.WriteTo(buf[:n], clientAddr)
+			if _, err := s.udpConn.WriteTo(buf[:n], clientAddr); err != nil {
+				if shouldLogAgentReport(fmt.Sprintf("protocol-guard-udp-reply:%d", s.rule.RuleID), agentReportLogInterval) {
+					logf("protocol guard udp reply failed rule=%d client=%s: %v", s.rule.RuleID, key, err)
+				}
+				break
+			}
 		}
 		sessionMu.Lock()
 		if session := sessions[key]; session != nil && session.target == target {

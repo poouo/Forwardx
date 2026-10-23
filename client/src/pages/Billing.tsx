@@ -97,15 +97,16 @@ function BillingStatCard({
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground" title={title}>{title}</p>
             <AnimatedStatValue
               as="p"
               value={value}
               loading={loading}
               cacheKey={cacheKey}
               fallbackValue={fallbackValue}
-              className="break-words text-2xl font-bold tracking-tight tabular-nums"
+              className="truncate text-2xl font-bold tracking-tight tabular-nums"
+              title={String(value)}
             />
             {subtitle && (
               <AnimatedStatValue
@@ -114,7 +115,8 @@ function BillingStatCard({
                 loading={loading}
                 cacheKey={`${cacheKey}.subtitle`}
                 fallbackValue=""
-                className="break-words text-xs text-muted-foreground/80"
+                className="truncate text-xs text-muted-foreground/80"
+                title={subtitle}
               />
             )}
           </div>
@@ -147,24 +149,25 @@ function BillingToggleCard({
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground" title={title}>{title}</p>
             <AnimatedStatValue
               as="p"
               value={enabled ? translateText("已开启") : translateText("已关闭")}
               loading={loading}
               cacheKey={`billing.toggle.${title}`}
               fallbackValue={translateText("已关闭")}
-              className="break-words text-2xl font-bold tracking-tight"
+              className="truncate whitespace-nowrap text-2xl font-bold tracking-tight"
+              title={enabled ? translateText("已开启") : translateText("已关闭")}
             />
-            <p className="break-words text-xs text-muted-foreground/80">{translateText("入口状态")}</p>
           </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <OptimisticSwitch checked={enabled} onCheckedChangeAsync={onCheckedChange} disabled={loading} />
-            <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
-              <Icon className="h-5 w-5 text-white" />
-            </div>
+          <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
+            <Icon className="h-5 w-5 text-white" />
           </div>
+        </div>
+        <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
+          <p className="min-w-0 truncate text-xs text-muted-foreground/80" title={translateText("入口状态")}>{translateText("入口状态")}</p>
+          <OptimisticSwitch checked={enabled} onCheckedChangeAsync={onCheckedChange} disabled={loading} aria-label={title} />
         </div>
       </CardContent>
     </Card>
@@ -600,7 +603,7 @@ export default function Billing() {
           <h1 className="text-2xl font-semibold tracking-tight">{translateText("余额与营销")}</h1>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-4 [&>*]:min-w-0">
           <BillingStatCard
             title={translateText("用户余额总额")}
             value={money(totalBalance)}

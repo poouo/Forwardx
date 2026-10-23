@@ -93,7 +93,7 @@ test("direct port resources fan out to an entry group and preserve unrelated lis
         }
         const resourceTraffic = async (userId) => metrics.getForwardGroupTrafficSummaries([portId,entryId],userId);
         for (const id of [portId,entryId]) {
-          assert.deepEqual((await resourceTraffic()).get(id),{bytesIn:500,bytesOut:1000,totalBytes:1500,ruleCount:4});
+          assert.deepEqual((await resourceTraffic()).get(id),{bytesIn:500,bytesOut:1000,totalBytes:1500,ruleCount:4,daily:{bytesIn:500,bytesOut:1000,totalBytes:1500}});
           assert.equal((await resourceTraffic(1)).get(id).totalBytes,1200);
           assert.equal((await resourceTraffic(2)).get(id).totalBytes,300);
         }

@@ -44,7 +44,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
         "glass-panel pearl-card rounded-2xl transition-[border-color,box-shadow,transform] duration-300",
         variant === "featured" && "pearl-card-featured",
         interactive && "pearl-card-interactive",
-        hoverable && "pearl-hover-card duration-200",
+        hoverable && "pearl-hover-card",
         animateEnter && "stagger-card",
         className,
       )}

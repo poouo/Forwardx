@@ -38,7 +38,6 @@ import {
   Pencil,
   Plus,
   Server,
-  ShieldCheck,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -713,11 +712,6 @@ export default function AgentTokenManager({
           )}
         </div>
       </div>
-
-      <Alert className="border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-        <ShieldCheck className="h-4 w-4" />
-        <AlertTitle>{translateText("通讯已加密")}</AlertTitle>
-      </Alert>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardContent className="p-0">

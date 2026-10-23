@@ -81,6 +81,18 @@ test("rule groups clip during disclosure but let expanded card shadows remain vi
   assert.match(groupItems, /aria-hidden=\{!open\}/);
   assert.match(groupItems, /inert=\{!open\}/);
   assert.match(groupItems, /window\.clearTimeout\(timer\)/);
+  assert.doesNotMatch(groupItems, /<AutoAnimateContainer|<motion\.|\.animate\(/);
+  assert.match(groupItems, /transition-\[grid-template-rows,opacity\]/);
+});
+
+test("grouped rule cards use normal text rasterization without permanent compositing hints", () => {
+  const baseCss = readFileSync("client/src/index.css", "utf8");
+  for (const selector of [".rule-card-grid-static", ".rule-card-grid-static > *"]) {
+    const block = baseCss.slice(baseCss.indexOf(`${selector} {`)).split("}")[0];
+    assert.match(block, /transform: none !important/);
+    assert.doesNotMatch(block, /will-change:|backface-visibility:|text-rendering:|font-smoothing:/);
+    assert.match(block, /animation:[^;]* backwards;/);
+  }
 });
 
 test("wrapped rule and forwarding group content leaves space before pagination", () => {
@@ -563,6 +575,30 @@ test("standalone card hover is opt-in, pointer-only, reduced-motion safe and dis
   assert.match(reduced, /\.pearl-hover-card:hover \{ transform: none; \}/);
 });
 
+test("card shadows ease in and out slowly without delaying layout changes or sortable transforms", () => {
+  assert.match(css, /--pearl-card-shadow-duration: 480ms;/);
+  assert.match(css, /--pearl-card-shadow-ease: cubic-bezier\(\.4, 0, \.2, 1\);/);
+  const feedback = css.match(/--pearl-card-feedback-transition:([^;]+);/)?.[1];
+  assert.ok(feedback);
+  assert.match(feedback, /box-shadow var\(--pearl-card-shadow-duration\) var\(--pearl-card-shadow-ease\)/);
+  assert.match(feedback, /min-height 300ms/);
+  assert.match(feedback, /opacity 300ms/);
+  assert.doesNotMatch(feedback, /transform|all |will-change/);
+  assert.match(css, /^\.pearl-card-interactive,\s*\.pearl-hover-card \{\s*transition: var\(--pearl-card-feedback-transition\);/m);
+  assert.match(css, /^\.pearl-hover-card \{\s*transition: var\(--pearl-card-feedback-transition\), transform 300ms/m);
+  for (const selector of ["pearl-card-interactive", "pearl-hover-card"]) {
+    const hover = css.match(new RegExp(`\\.${selector}:hover \\{([^}]+)\\}`))?.[1];
+    assert.ok(hover);
+    assert.match(hover, /box-shadow: var\(--pearl-card-hover-shadow\)/);
+    assert.doesNotMatch(hover, /pearl-overlay-shadow/);
+  }
+  assert.equal((css.match(/--pearl-card-hover-shadow:/g) || []).length, 2, "light and dark themes have dedicated subtle card shadows");
+  const card = readFileSync("client/src/components/ui/card.tsx", "utf8");
+  assert.doesNotMatch(card, /pearl-hover-card duration-200/);
+  assert.match(readFileSync("client/src/pages/HostMonitor.tsx", "utf8"), /hoverable=\{!!onSelect\}/);
+  assert.match(readFileSync("client/src/pages/Plugins.tsx", "utf8"), /className="pearl-hover-card group flex min-h-\[17rem\]/);
+});
+
 test("Content switches render real content immediately without initial fade or layout scaling", () => {
   const html = renderToStaticMarkup(<ContentTransition transitionKey="rules" className="test-content">
     <button type="button">Existing action</button>
@@ -589,4 +625,19 @@ test("Limit disclosures remain native, collapsed by default and keep editable fo
   assert.match(css, /@supports \(interpolate-size: allow-keywords\)/);
   assert.match(css, /pearl-disclosure::details-content/);
   assert.match(css, /html\[data-forwardx-motion-paused\] \.tab-content-enter/);
+});
+
+test("network test selectors show host status without redundant selection checkmarks", () => {
+  const source = readFileSync("client/src/pages/LookingGlass.tsx", "utf8");
+  assert.doesNotMatch(source, /公网目标限定|ShieldCheck/);
+  assert.match(source, /<SelectItem key=\{host\.id\}[^>]*showIndicator=\{false\}[^>]*data-\[state=checked\]:bg-accent/);
+  assert.match(source, /<HostStatusLabel\s+host=\{host\}/);
+  assert.match(source, /<SelectItem key=\{item\.value\}[^>]*showIndicator=\{false\}[^>]*data-\[state=checked\]:bg-accent/);
+  assert.match(source, /<ItemIcon className="h-4 w-4 text-primary"/);
+});
+
+test("agent token management removes the decorative encryption banner but retains actionable install warnings", () => {
+  const source = readFileSync("client/src/components/AgentTokenManager.tsx", "utf8");
+  assert.doesNotMatch(source, /通讯已加密|ShieldCheck/);
+  assert.match(source, /当前安装地址是本机回环地址/);
 });

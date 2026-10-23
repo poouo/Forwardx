@@ -14,6 +14,7 @@ import { databaseHealth } from "./databaseHealthState";
 import { dashboardSummaries, operationsSummaries } from "./backgroundSummaryCache";
 import { seamlessDatabaseOperation } from "./seamlessMigrationState";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
+import { displayQueries } from "./displayQueryCache";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -678,6 +679,7 @@ export async function closeDatabase() {
   // Drop both cached values and in-flight registrations before changing it.
   dashboardSummaries.clear();
   operationsSummaries.clear();
+  displayQueries.invalidate();
   if (_pool) {
     await _pool.end().catch(() => undefined);
   }

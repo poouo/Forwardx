@@ -15,6 +15,8 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { planDescription, planResourceText } from "@/lib/planDisplay";
 import { PlanDetails } from "@/components/PlanDetails";
+import { MeteredRuleLimitBadge, ProductStockBadge } from "@/components/ProductStock";
+import { productStock } from "@shared/productStock";
 import { trpc } from "@/lib/trpc";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
@@ -112,6 +114,7 @@ export function StorePlanCard({
 }) {
   const description = planDescription(plan);
   const benefits = planBenefitItems(plan);
+  const soldOut = productStock(plan).soldOut;
 
   return (
     <div className="pearl-hover-card pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm">
@@ -133,6 +136,7 @@ export function StorePlanCard({
           </Badge>
         </div>
 
+        <div><ProductStockBadge product={plan} /></div>
         {description ? (
           <div className="pearl-store-plan-details flex-1 rounded-md border border-border/40 p-4">
             <PlanDetails description={description} />
@@ -176,9 +180,9 @@ export function StorePlanCard({
           <Button
             className="h-9 shrink-0 px-4"
             onClick={onBuy}
-            disabled={purchasing}
+            disabled={purchasing || soldOut}
           >
-            <ShoppingBag className="mr-2 h-4 w-4" />{translateText("购买套餐")}</Button>
+            <ShoppingBag className="mr-2 h-4 w-4" />{soldOut ? translateText("已售罄") : translateText("购买套餐")}</Button>
         </div>
       </div>
     </div>
@@ -188,9 +192,11 @@ export function StorePlanCard({
 export default function Store() {
   const utils = trpc.useUtils();
   const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
-  const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery(undefined, { placeholderData: (previousData) => previousData });
+  const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery(undefined, { placeholderData: (previousData) => previousData, refetchInterval: 10_000, refetchIntervalInBackground: false });
   const { data: trafficBillingStore, isLoading: trafficBillingLoading } = trpc.trafficBilling.storeResources.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
     placeholderData: (previousData) => previousData,
   });
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { placeholderData: (previousData) => previousData });
@@ -213,6 +219,7 @@ export default function Store() {
   const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
 
   const createOrder = trpc.payment.createOrder.useMutation({
+    onSettled: () => { void utils.plans.storeList.invalidate(); },
     onSuccess: (order) => {
       toast.success(translateText("订单已创建"));
       setSelectedPlan(null);
@@ -227,6 +234,7 @@ export default function Store() {
   });
 
   const buyWithBalance = trpc.billing.purchasePlanWithBalance.useMutation({
+    onSettled: () => { void utils.plans.storeList.invalidate(); },
     onSuccess: () => {
       toast.success(translateText("套餐已购买"));
       setSelectedPlan(null);
@@ -263,6 +271,8 @@ export default function Store() {
 
   const confirmBuy = () => {
     if (!selectedPlan) return;
+    const current = plans.find((plan) => plan.id === selectedPlan.id);
+    if (!current || productStock(current).soldOut) return toast.error(translateText("套餐库存不足或已售罄"));
     if (payMode === "balance") {
       buyWithBalance.mutate({ planId: selectedPlan.id, discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined });
       return;
@@ -341,33 +351,33 @@ export default function Store() {
                     <Card key={`${config.resourceType}-${config.resourceId}`} hoverable className="flex flex-col">
                       <CardHeader>
                         <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <CardTitle className="flex items-center gap-2">
-                              {config.resourceType === "host" ? <Server className="h-5 w-5" /> : <Route className="h-5 w-5" />}
-                              {config.resourceName}
+                          <div className="min-w-0">
+                            <CardTitle className="flex min-w-0 items-start gap-2">
+                              {config.resourceType === "host" ? <Server className="mt-0.5 h-5 w-5 shrink-0" /> : <Route className="mt-0.5 h-5 w-5 shrink-0" />}
+                              <span className="min-w-0 break-words">{config.name || config.resourceName}</span>
                             </CardTitle>
+                            {config.name && <p className="mt-1 truncate text-xs text-muted-foreground" title={config.resourceName}>{config.resourceName}</p>}
                             <CardDescription className="mt-2">{translateText("余额可用时可直接在转发规则中使用。")}</CardDescription>
                           </div>
                           <Badge variant="outline">{config.resourceKind || (config.resourceType === "host" ? translateText("历史主机") : config.resourceType === "tunnel" ? translateText("隧道转发") : translateText("转发资源"))}</Badge>
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <ProductStockBadge product={config} />
+                          <MeteredRuleLimitBadge config={config} />
+                          {config.currentUserRuleCount > 0 ? <Badge variant="secondary">{translateText("已占用库存")}</Badge> : productStock(config).soldOut && <Badge variant="destructive">{translateText("已售罄")}</Badge>}
+                        </div>
                         <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">{translateText("/ 计费 GB")}</span></div>
-                        {billingDescription(config) ? (
-                          <div className="whitespace-pre-line break-words text-sm leading-7 text-muted-foreground">
-                            {billingDescription(config)}
+                        <PlanDetails description={billingDescription(config)}>
+                          <div className="grid gap-2 text-sm text-muted-foreground">
+                            <div>{translateText("基础单价：")}{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
+                            <div>{translateText("倍率：")}{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
+                            <div>{translateText("资源编号：#")}{config.resourceId}</div>
+                            <div>{translateText("创建规则时选择该资源，按实际计费流量从余额扣费。")}</div>
                           </div>
-                        ) : (
-                          <>
-                            <div className="grid gap-2 text-sm text-muted-foreground">
-                              <div>{translateText("基础单价：")}{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
-                              <div>{translateText("倍率：")}{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</div>
-                              <div>{translateText("资源编号：#")}{config.resourceId}</div>
-                              <div>{translateText("创建规则时选择该资源，按实际计费流量从余额扣费。")}</div>
-                            </div>
-                            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("该资源无需购买套餐；账户有余额即可使用。")}</div>
-                          </>
-                        )}
+                          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">{translateText("该资源无需购买套餐；账户有余额即可使用。")}</div>
+                        </PlanDetails>
                       </CardContent>
                     </Card>
                   ))}
@@ -466,7 +476,7 @@ export default function Store() {
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setSelectedPlan(null)}>{translateText("取消")}</Button>
-              <Button onClick={confirmBuy} disabled={createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
+              <Button onClick={confirmBuy} disabled={!plans.some((plan) => plan.id === selectedPlan?.id && !productStock(plan).soldOut) || createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
                 {payMode === "balance" ? (walletLoading ? translateText("余额加载中") : translateText("余额购买")) : translateText("去支付")}
               </Button>

@@ -1,11 +1,12 @@
 {
   "name": "forwardx",
-  "version": "2.3.288",
+  "version": "2.3.289",
   "description": "ForwardX 多主机端口转发与隧道管理面板",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:product-stock": "node --import tsx --test server/productStock.test.ts client/src/components/ProductStock.test.tsx",
     "test:list-settings": "node --import tsx --test shared/ruleTableLayout.test.ts shared/hostTableLayout.test.ts server/ruleTableLayout.test.ts client/src/components/ListSettings.test.tsx client/src/components/ResourceTrafficSummary.test.tsx client/src/lib/floatingTableScrollbar.test.ts",
     "test:url-probe": "node --import tsx --test server/urlProbe.test.ts client/src/components/hosts/HostUrlProbeFields.test.tsx",
     "test:motion": "node --import tsx --test server/userMotionPreference.test.ts server/userMotionSchema.test.ts client/src/components/AnimationPreferencesCard.test.tsx client/src/components/LoginLayout.test.tsx",
@@ -40,7 +41,7 @@
     "dev": "tsx server/index.ts",
     "dev:panel": "node scripts/dev-panel.mjs",
     "perf:local": "node scripts/load-test.mjs",
-    "test:performance": "node --import tsx --test server/backgroundSummaryCache.test.ts server/trafficQueryScope.test.ts server/trafficBatch.test.ts server/linkAccessView.test.ts server/metricsRepositorySqlite.test.ts server/session.test.ts",
+    "test:performance": "node --import tsx --test server/queryCache.test.ts server/displayQueryRoutes.test.ts server/backgroundSummaryCache.test.ts server/trafficQueryScope.test.ts server/trafficBatch.test.ts server/linkAccessView.test.ts server/metricsRepositorySqlite.test.ts server/session.test.ts",
     "dev:hosts-showcase": "node scripts/dev-panel.mjs",
     "build": "vite build && node scripts/check-client-delivery.mjs && node esbuild.config.mjs",
     "build:client": "vite build && node scripts/check-client-delivery.mjs",

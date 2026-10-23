@@ -946,6 +946,7 @@ export const paymentOrders = table("payment_orders", {
   subscriptionId: int("subscriptionId"),
   discountCodeId: int("discountCodeId"),
   discountConsumed: boolean("discountConsumed").notNull().default(false),
+  stockReserved: boolean("stockReserved").notNull().default(false),
   discountAmountCents: bigint("discountAmountCents", { mode: "number" }).notNull().default(0),
   clientIp: text("clientIp"),
   rawNotify: text("rawNotify"),
@@ -965,6 +966,8 @@ export const subscriptionPlans = table("subscription_plans", {
   id: serial("id"),
   name: text("name").notNull(),
   description: text("description"),
+  stockLimit: int("stockLimit").notNull().default(0),
+  stockUsed: int("stockUsed").notNull().default(0),
   priceCents: bigint("priceCents", { mode: "number" }).notNull().default(0),
   currency: varchar("currency", { length: 16 }).notNull().default("CNY"),
   durationDays: int("durationDays").notNull().default(30),
@@ -1084,6 +1087,9 @@ export type InsertBalanceTransaction = typeof balanceTransactions.$inferInsert;
 export const trafficBillingConfigs = table("traffic_billing_configs", {
   id: serial("id"),
   sortOrder: int("sortOrder").notNull().default(0),
+  name: varchar("name", { length: 255 }).notNull().default(""),
+  stockLimit: int("stockLimit").notNull().default(0),
+  maxRulesPerUser: int("maxRulesPerUser").notNull().default(0),
   resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel | forward_group
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),

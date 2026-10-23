@@ -1,5 +1,5 @@
 // Usage: node scripts/load-test.mjs [--quick] [--no-sql] [--output=dist/load-test/result.json]
-// Optional diagnostics: --stages=paced-100,paced-200 --backlog=4096
+// Optional diagnostics: --stages=paced-100,paced-200 --backlog=4096 --users=500
 // Creates its own temporary SQLite DB. No .env or external jobs; local summary refresh only.
 import fs from "node:fs";
 import os from "node:os";
@@ -14,6 +14,8 @@ import superjson from "superjson";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const quick = process.argv.includes("--quick");
+const fixtureUsers = Number(process.argv.find((arg) => arg.startsWith("--users="))?.slice(8) || 500);
+if (!Number.isInteger(fixtureUsers) || fixtureUsers < 10 || fixtureUsers > 5000) throw new Error("Invalid --users (10..5000)");
 const gcCheck = process.argv.includes("--gc-check");
 const selectedStages = process.argv.find((arg) => arg.startsWith("--stages="))?.slice(9).split(",");
 const backlog = Number(process.argv.find((arg) => arg.startsWith("--backlog="))?.slice(10) || 511);
@@ -32,6 +34,7 @@ const jwtSecret = (await import("node:crypto")).randomBytes(48).toString("hex");
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(path|systemroot|windir|temp|tmp|appdata|localappdata|userprofile|comspec|pathext|number_of_processors)$/i.test(key)));
 Object.assign(env, { NODE_ENV: "production", DATABASE_TYPE: "sqlite", SQLITE_PATH: path.join(directory, "fixture.db"), DATABASE_CONFIG_PATH: path.join(directory, "database.json"), MYSQL_CONFIG_PATH: path.join(directory, "mysql.json"), JWT_SECRET: jwtSecret, FORWARDX_DEV_PANEL: "0", FORWARDX_LOG_DIR: path.join(directory, "logs"), FORWARDX_SEAMLESS_MIGRATION_STATE_PATH: path.join(directory, "migration.json"), FORWARDX_BENCH_DIR: directory, FORWARDX_BENCH_SQL: process.argv.includes("--no-sql") ? "0" : "1", TELEGRAM_BOT_POLLING: "false" });
 env.FORWARDX_BENCH_BACKLOG = String(backlog);
+env.FORWARDX_BENCH_USERS = String(fixtureUsers);
 const log = fs.openSync(path.join(directory, "server.log"), "w");
 const child = spawn(process.execPath, [...(gcCheck ? ["--expose-gc"] : []), bundle], { cwd: root, env, stdio: ["ignore", log, log, "ipc"], windowsHide: true });
 fs.closeSync(log);
@@ -182,11 +185,17 @@ try {
   const adminStats = await request(1, "dashboard.stats");
   assert.equal(adminStats.totalRules, 0, "admin home summary remains self-scoped");
   await assert.rejects(request(2, "rules.update", { id: 21, name: "Forbidden" }, true));
+  await request(2, "rules.listPage", { page: 1, pageSize: 100 });
   await request(2, "rules.update", { id: 1, name: "Bench verified write" }, true);
   assert.equal(await control("verifyWrite", { ruleId: 1 }), "Bench verified write");
+  const updatedPage = await request(2, "rules.listPage", { page: 1, pageSize: 100 });
+  assert.equal(updatedPage.items.find((row) => row.id === 1)?.name, "Bench verified write", "writes invalidate cached list data immediately");
   console.log("Smoke checks passed: session auth, user isolation, admin self/all scope, foreign-write denial, persisted update.");
-  for (const count of quick ? [10] : [10, 50, 100, 200]) await runStage(`paced-${count}`, count, "paced");
-  await runStage(`paced-${quick ? 10 : 100}-with-50-agents`, quick ? 10 : 100, "paced", { agents: true });
+  for (const count of quick ? [10] : [10, 50, 100, 200]) {
+    if (count <= fixtureUsers) await runStage(`paced-${count}`, count, "paced");
+  }
+  const agentViewers = Math.min(quick ? 10 : 100, fixtureUsers);
+  await runStage(`paced-${agentViewers}-with-50-agents`, agentViewers, "paced", { agents: true });
   for (const count of quick ? [10] : [10, 50, 100]) await runStage(`saturated-${count}`, count, "saturated");
   if (!quick) await runStage("saturated-100-profile", 100, "saturated", { profile: true });
   await runStage("writes-10", 10, "write", { pace: true });

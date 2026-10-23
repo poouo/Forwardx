@@ -747,20 +747,16 @@
 
   .rule-card-grid-static {
     animation: rule-card-grid-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-    backface-visibility: hidden;
     /* Layout isolation must not clip card shadows or hover/focus rings. */
     contain: layout;
     transform: none !important;
-    will-change: opacity, clip-path, transform;
   }
 
   .rule-card-grid-static > * {
     animation: rule-card-item-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-    backface-visibility: hidden;
     transform: none !important;
-    text-rendering: geometricPrecision;
-    -webkit-font-smoothing: antialiased;
-    will-change: opacity, clip-path, transform;
+    /* Use the same text rasterization as ungrouped/sortable rule cards.
+       Persistent layer hints can flatten ClearType into softer grayscale text. */
   }
 
   .rule-card-grid-static-standard {

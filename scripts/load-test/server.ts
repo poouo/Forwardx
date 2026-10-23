@@ -80,6 +80,7 @@ const { databaseHealth } = await import("../../server/databaseHealthState");
 databaseHealth.healthy();
 const stopSummaries = (await import("../../server/dashboardSummaryRefresh")).startDashboardSummaryRefresh();
 const { dashboardSummaries, operationsSummaries } = await import("../../server/backgroundSummaryCache");
+const { displayQueries } = await import("../../server/displayQueryCache");
 
 type SqlStat = { sql: string; calls: number; ms: number; maxMs: number; args: any[]; endpoints: Record<string, number> };
 const requests = new AsyncLocalStorage<string>();
@@ -136,6 +137,7 @@ const snapshot = () => {
     loopP95Ms: loop.percentile(95) / 1e6, loopP99Ms: loop.percentile(99) / 1e6, loopMaxMs: loop.max / 1e6,
     sqlCalls: rows.reduce((sum, row) => sum + row.calls, 0), sqlMs: rows.reduce((sum, row) => sum + row.ms, 0),
     sqlKeys: sqlStats.size, summaryCache: { dashboard: dashboardSummaries.size(), operations: operationsSummaries.size() },
+    displayCache: displayQueries.stats(),
     sql: rows.slice(0, 20).map(({ args, ...row }) => {
       let plan: unknown = null;
       if (/^\s*select\b/i.test(row.sql)) {

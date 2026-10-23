@@ -44,6 +44,15 @@
   --pearl-highlight: rgb(255 255 255 / 88%);
   --pearl-shadow: 0 2px 3px rgb(28 44 38 / 3%), 0 12px 28px -16px rgb(28 44 38 / 15%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(20 34 28 / 8%), 0 30px 80px -24px rgb(20 34 28 / 24%), inset 0 1px 0 var(--pearl-highlight);
+  --pearl-card-hover-shadow: 0 4px 16px -8px var(--theme-glow), 0 16px 36px -16px rgb(28 44 38 / 20%), inset 0 1px 0 var(--pearl-highlight);
+  --pearl-card-shadow-duration: 480ms;
+  --pearl-card-shadow-ease: cubic-bezier(.4, 0, .2, 1);
+  --pearl-card-feedback-transition:
+    border-color 300ms var(--pearl-ease),
+    box-shadow var(--pearl-card-shadow-duration) var(--pearl-card-shadow-ease),
+    background-color 300ms var(--pearl-ease),
+    opacity 300ms var(--pearl-ease),
+    min-height 300ms var(--pearl-ease);
   --pearl-ease: cubic-bezier(.22, 1, .36, 1);
   --theme-glow: rgb(35 109 233 / 20%);
 }
@@ -86,6 +95,7 @@
   --pearl-highlight: rgb(255 255 255 / 7%);
   --pearl-shadow: 0 2px 3px rgb(0 0 0 / 10%), 0 12px 28px -16px rgb(0 0 0 / 32%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(0 0 0 / 20%), 0 30px 80px -24px rgb(0 0 0 / 60%), inset 0 1px 0 var(--pearl-highlight);
+  --pearl-card-hover-shadow: 0 4px 16px -8px var(--theme-glow), 0 16px 36px -16px rgb(0 0 0 / 44%), inset 0 1px 0 var(--pearl-highlight);
   --theme-glow: rgb(118 167 255 / 22%);
 }
 
@@ -139,11 +149,6 @@
     -webkit-backdrop-filter: blur(12px);
   }
   .pearl-card { min-width: 0; }
-  .pearl-hover-card {
-    transition-property: transform, border-color, box-shadow;
-    transition-duration: 200ms;
-    transition-timing-function: ease-out;
-  }
   /* Component-layer defaults let page-specific utility padding still win. */
   .pearl-card-header { padding: 1.5rem; }
   .pearl-card-content, .pearl-card-footer { padding: 0 1.5rem 1.5rem; }
@@ -405,7 +410,7 @@
     .pearl-button:active:not(:disabled) { transform: scale(.965); }
     .pearl-card-interactive:hover {
       border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
-      box-shadow: 0 4px 20px -4px var(--theme-glow, rgb(0 0 0 / 12%)), var(--pearl-overlay-shadow);
+      box-shadow: var(--pearl-card-hover-shadow);
     }
   }
   .pearl-icon-badge {
@@ -438,12 +443,22 @@
   }
 }
 
+/* Unlayered so page-level duration/easing utilities cannot make shadows snap.
+   Keep layout/opacity timings unchanged and never transition sortable transforms. */
+.pearl-card-interactive,
+.pearl-hover-card {
+  transition: var(--pearl-card-feedback-transition);
+}
+.pearl-hover-card {
+  transition: var(--pearl-card-feedback-transition), transform 300ms var(--pearl-card-shadow-ease);
+}
+
 /* Unlayered so the hover feedback also works on cards with border/shadow utilities. */
 @media (hover: hover) and (pointer: fine) {
   .pearl-hover-card:hover {
     transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
-    box-shadow: 0 4px 20px -4px var(--theme-glow, rgb(0 0 0 / 12%)), var(--pearl-overlay-shadow);
+    box-shadow: var(--pearl-card-hover-shadow);
   }
 }
 

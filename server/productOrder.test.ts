@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PLAN_DESCRIPTION_MAX_LENGTH } from "../shared/planDescription";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-product-order-"));
 process.env.DATABASE_TYPE = "sqlite";
@@ -92,4 +93,57 @@ test("invalid order inputs and unauthorized callers cannot write either product 
     await assert.rejects(() => router.createCaller(context(null)).reorder({ ids: [1] }), { code: "UNAUTHORIZED" });
     assert.deepEqual(await runtime.queryRaw(`SELECT * FROM ${table} ORDER BY id`), before);
   }
+});
+
+test("metered plan names survive schema upgrades, editing and store queries without renaming resources", async () => {
+  const caller = billing.createCaller(context());
+  const initial = (await caller.configs()).configs.find((item: { id: number }) => item.id === 1)!;
+  assert.equal(initial.name, "", "old installations receive an empty optional product name");
+  assert.equal(initial.resourceName, "host-1");
+  const input = { id: 1, resourceType: "host" as const, resourceId: 1, enabled: true, requiresPermission: false, pricePerGbMilliCents: 1000 };
+  const saved = await caller.saveConfig({ ...input, name: "  香港精品按量  " });
+  assert.equal(saved.name, "香港精品按量");
+  const listed = (await caller.configs()).configs.find((item: { id: number }) => item.id === 1)!;
+  assert.equal(listed.name, "香港精品按量");
+  assert.equal(listed.resourceName, "host-1");
+  assert.equal((await billing.createCaller(context("user")).storeResources()).configs.find((item: { id: number }) => item.id === 1)?.name, "香港精品按量");
+  await (await import("./dbSchema")).ensureDatabaseSchema();
+  assert.equal((await caller.configs()).configs.find((item: { id: number }) => item.id === 1)?.name, "香港精品按量");
+  // Toggling a configuration without sending a name must not erase it.
+  await caller.saveConfig({ ...input, enabled: false });
+  assert.equal((await caller.configs()).configs.find((item: { id: number }) => item.id === 1)?.name, "香港精品按量");
+  await assert.rejects(() => caller.saveConfig({ ...input, name: "x".repeat(256) }), { code: "BAD_REQUEST" });
+  await assert.rejects(() => billing.createCaller(context("user")).saveConfig({ ...input, name: "unauthorized" }), { code: "FORBIDDEN" });
+  await caller.saveConfig({ ...input, name: "   " });
+  const cleared = (await caller.configs()).configs.find((item: { id: number }) => item.id === 1)!;
+  assert.equal(cleared.name, "");
+  assert.equal(cleared.resourceName, "host-1");
+  // Exercise both creation and resource-key upserts, not just edit-by-id.
+  await runtime.insertAndGetId("hosts", { id: 5, name: "host-5", ip: "127.0.0.5", userId: 1 });
+  const created = await caller.saveConfig({ ...input, id: undefined, resourceId: 5, name: "新按量套餐" });
+  assert.equal(created.name, "新按量套餐");
+  const updated = await caller.saveConfig({ ...input, id: undefined, resourceId: 5, name: "更新后的套餐" });
+  assert.equal(updated.id, created.id);
+  assert.equal(updated.name, "更新后的套餐");
+});
+
+test("metered descriptions accept the shared rich-content limit and retain billing settings", async () => {
+  const caller = billing.createCaller(context());
+  const input = { id: 1, resourceType: "host" as const, resourceId: 1, enabled: true, requiresPermission: false, pricePerGbMilliCents: 180000 };
+  const content = "## 按量介绍\n\n- **线路**：精品线路\n\n" + "中".repeat(600);
+  await caller.saveConfig({ ...input, description: content });
+  const findConfig = async () => (await caller.configs()).configs.find((item: { id: number }) => item.id === 1)!;
+  assert.equal((await findConfig()).description, content);
+  assert.equal((await billing.createCaller(context("user")).storeResources()).configs.find((item: { id: number }) => item.id === 1)?.description, content);
+  const boundary = "中".repeat(PLAN_DESCRIPTION_MAX_LENGTH);
+  await caller.saveConfig({ ...input, description: boundary });
+  assert.equal((await findConfig()).description, boundary);
+  await assert.rejects(() => caller.saveConfig({ ...input, description: boundary + "中" }), { code: "BAD_REQUEST" });
+  assert.equal((await findConfig()).description, boundary, "rejected writes do not change saved content");
+  await caller.saveConfig({ ...input, description: "   " });
+  const cleared = await findConfig();
+  assert.equal(cleared.description, null);
+  assert.equal(cleared.pricePerGbMilliCents, input.pricePerGbMilliCents);
+  assert.equal(cleared.enabled, true);
+  assert.equal(cleared.requiresPermission, false);
 });

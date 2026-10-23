@@ -20,6 +20,7 @@ import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-ta
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
 import { PlanDetails } from "@/components/PlanDetails";
+import { ProductStockBadge, ProductStockField } from "@/components/ProductStock";
 import { PlanDescriptionEditor } from "@/components/PlanDescriptionEditor";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -32,6 +33,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
 type PlanForm = {
+  stockLimit: string;
   id?: number;
   name: string;
   description: string;
@@ -78,6 +80,7 @@ const PLAN_MANAGE_TAB_STORAGE_KEY = "forwardx.plans.tab";
 const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
 
 const emptyForm: PlanForm = {
+  stockLimit: "0",
   name: "",
   description: "",
   price: "0",
@@ -259,6 +262,7 @@ function PlanCard({
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+        <ProductStockBadge product={plan} />
         <PlanDetails description={plan.description}>
         <MobileInfoRow label={translateText("价格")}>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
         <MobileInfoRow label={translateText("资源")}>
@@ -572,6 +576,7 @@ function PlanSelectedResourceList({
 
 function toForm(plan: any): PlanForm {
   return {
+    stockLimit: String(plan.stockLimit ?? 0),
     id: plan.id,
     name: plan.name || "",
     description: plan.description || "",
@@ -603,6 +608,7 @@ function toForm(plan: any): PlanForm {
 function payload(form: PlanForm) {
   const durationDays = Number(form.durationDays || 30);
   return {
+    stockLimit: Number(form.stockLimit || 0),
     name: form.name.trim(),
     description: form.description.trim() || null,
     priceCents: Math.round(Number(form.price || 0) * 100),
@@ -1122,6 +1128,7 @@ export default function Plans() {
                                     <div className="font-medium">{plan.name}</div>
                                   </div>
                                   {!planDescription(plan) && <div className="text-xs text-muted-foreground">{translateText("无描述")}</div>}
+                                  <ProductStockBadge product={plan} />
                                 </TableCell>
                                 {planDescription(plan) ? (
                                   <TableCell colSpan={3} className="max-w-xl">
@@ -1286,6 +1293,7 @@ export default function Plans() {
               <Label>{translateText("排序")}</Label>
               <Input type="number" min={0} value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
             </div>
+            <ProductStockField value={form.stockLimit} onChange={(stockLimit) => setForm({ ...form, stockLimit })} />
                 </div>
 
                 <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">

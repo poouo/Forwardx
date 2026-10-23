@@ -44,6 +44,7 @@ export default function PaymentCheckoutDialog({ order, onClose }: { order: Check
     void utils.billing.ledgerPage.invalidate();
     void utils.billing.listTransactionsPage.invalidate();
     void utils.plans.mySubscriptions.invalidate();
+    void utils.plans.storeList.invalidate();
     onClose();
   }, [order, state, onClose, utils]);
 

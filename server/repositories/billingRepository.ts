@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { reservePlanStock, releasePlanStock } from "./productStockRepository";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import {
   balanceTransactions, InsertBalanceTransaction,
@@ -8,7 +9,7 @@ import {
   forwardRules,
   paymentOrders, InsertPaymentOrder, type PaymentOrder,
   redemptionCodes, InsertRedemptionCode,
-  subscriptionPlans, InsertSubscriptionPlan,
+  subscriptionPlans, InsertSubscriptionPlan, type SubscriptionPlan,
   subscriptionPlanForwardGroups,
   subscriptionPlanHosts,
   subscriptionPlanTrafficAddons,
@@ -105,6 +106,10 @@ export async function createPaymentOrder(order: InsertPaymentOrder) {
         .where(eq(subscriptionPlans.id, Number(order.planId)))
         .limit(1);
       if (!plan[0]) throw new Error("套餐已删除，无法创建支付订单");
+      if (!order.subscriptionId) {
+        await reservePlanStock(Number(order.planId));
+        order = { ...order, stockReserved: true };
+      }
     }
     await db.insert(paymentOrders).values(order);
     return getPaymentOrderByOutTradeNo(order.outTradeNo);
@@ -483,7 +488,7 @@ export async function listSubscriptionPlans(includeHidden = true) {
   const rows = includeHidden
     ? await db.select().from(subscriptionPlans).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id))
     : await db.select().from(subscriptionPlans).where(and(eq(subscriptionPlans.isActive, true), eq(subscriptionPlans.isStoreVisible, true))).orderBy(asc(subscriptionPlans.sortOrder), desc(subscriptionPlans.createdAt), desc(subscriptionPlans.id));
-  return attachPlanResources(rows);
+  return attachPlanResources(rows as SubscriptionPlan[]);
 }
 
 export async function listSubscriptionPlanOptions(includeHidden = true) {
@@ -582,7 +587,7 @@ export async function listSubscriptionPlansPage(input: PageRequest) {
     .limit(window.pageSize)
     .offset(window.offset);
   return {
-    ...pageResult(await attachPlanResources(rows), totalItems, window),
+    ...pageResult(await attachPlanResources(rows as SubscriptionPlan[]), totalItems, window),
     activeItems,
   };
 }
@@ -2274,6 +2279,18 @@ async function applySubscriptionToUserUnlocked(
   overrideDurationDays?: number | null,
   targetSubscriptionId?: number | null,
 ) {
+  const paymentOrder = source === "payment" && paymentOrderNo ? await getPaymentOrderByOutTradeNoForUpdate(paymentOrderNo) : null;
+  if (source === "payment" && paymentOrderNo) {
+    if (!paymentOrder || Number(paymentOrder.planId) !== planId || Number(paymentOrder.userId) !== userId) throw new Error("套餐订单不匹配");
+    if (!["paid", "processing", "completed"].includes(paymentOrder.status)) throw new Error("套餐订单尚未支付");
+    const existing = paymentOrder.status === "completed" && paymentOrder.subscriptionId
+      ? await getUserSubscriptionById(Number(paymentOrder.subscriptionId))
+      : await getUserSubscriptionByPaymentOrderNo(paymentOrderNo);
+    if (existing) {
+      if (Number(existing.userId) !== userId || Number(existing.planId) !== planId) throw new Error("套餐订单不匹配");
+      return { subscriptionId: Number(existing.id), portRangeStart: Number(existing.portRangeStart), portRangeEnd: Number(existing.portRangeEnd), expiresAt: existing.expiresAt, extended: !!targetSubscriptionId };
+    }
+  }
   const plan = await getSubscriptionPlanById(planId);
   if (!plan) throw new Error("套餐不存在");
   if (!plan.isActive) throw new Error("套餐已停用");
@@ -2370,6 +2387,12 @@ async function applySubscriptionToUserUnlocked(
     };
   }
 
+  if (source === "payment" && paymentOrderNo) {
+    if (!paymentOrder!.stockReserved) {
+      await reservePlanStock(planId);
+      await updatePaymentOrder(paymentOrderNo, { stockReserved: true });
+    }
+  } else await reservePlanStock(planId);
   const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
   if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const expiresAt = durationDays > 0 ? addSubscriptionDays(now, durationDays) : null;
@@ -3370,13 +3393,21 @@ export async function listPaymentOrders(limit = 100, userId?: number, selectedId
 }
 
 export async function updatePaymentOrder(outTradeNo: string, data: Partial<InsertPaymentOrder>) {
-  const db = await getDb();
-  if (!db) return undefined;
-  await db
-    .update(paymentOrders)
-    .set({ ...data, updatedAt: nowDate() } as Partial<InsertPaymentOrder>)
-    .where(eq(paymentOrders.outTradeNo, outTradeNo));
-  return getPaymentOrderByOutTradeNo(outTradeNo);
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return undefined;
+    if (data.status && ["expired", "failed", "cancelled"].includes(data.status)) {
+      const previous = await getPaymentOrderByOutTradeNoForUpdate(outTradeNo);
+      if (!previous || previous.status !== "pending") return previous;
+      if (previous.stockReserved && previous.planId) await releasePlanStock(Number(previous.planId));
+      data = { ...data, stockReserved: false };
+    }
+    await db
+      .update(paymentOrders)
+      .set({ ...data, updatedAt: nowDate() } as Partial<InsertPaymentOrder>)
+      .where(eq(paymentOrders.outTradeNo, outTradeNo));
+    return getPaymentOrderByOutTradeNo(outTradeNo);
+  });
 }
 
 export async function setPaymentOrderCheckout(outTradeNo: string, data: { tradeNo: string | null; payUrl: string | null; qrCode: string | null }) {

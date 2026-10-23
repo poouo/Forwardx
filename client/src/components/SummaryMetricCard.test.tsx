@@ -41,6 +41,31 @@ test("payment status and paid amount icons stay colorful independently of the th
   assert.doesNotMatch(cards.join(""), /tone="text-primary"|text-muted-foreground/);
 });
 
+test("billing overview keeps status text on one line and reserves a separate row for toggles", () => {
+  const source = readFileSync("client/src/pages/Billing.tsx", "utf8");
+  const cards = source.slice(source.indexOf("function BillingStatCard("), source.indexOf("function normalizeCodeInput("));
+  const toggle = cards.slice(cards.indexOf("function BillingToggleCard("));
+  assert.match(source, /grid-cols-\[repeat\(auto-fit,minmax\(min\(100%,12rem\),1fr\)\)\]/);
+  assert.doesNotMatch(cards, /break-words/);
+  assert.match(toggle, /className="truncate whitespace-nowrap text-2xl/);
+  assert.match(toggle, /className="mt-2 flex min-w-0 items-center justify-between gap-3"[\s\S]*?<OptimisticSwitch/);
+  assert.match(toggle, /<OptimisticSwitch[^>]*aria-label=\{title\}/);
+  assert.equal((cards.match(/title=\{title\}/g) || []).length, 2);
+});
+
+test("payment enable switch lives in the status card and retains explicit configuration saving", () => {
+  const source = readFileSync("client/src/pages/Payments.tsx", "utf8");
+  const statusCard = source.slice(source.indexOf('<PaymentStatCard'), source.indexOf('cacheKey="payments.paidAmount"'));
+  const basicTab = source.slice(source.indexOf('<TabsContent value="basic"'), source.indexOf('<TabsContent value="easypay"'));
+  assert.match(statusCard, /action=\{[\s\S]*<Switch[\s\S]*checked=\{form\.enabled\}/);
+  assert.match(statusCard, /onCheckedChange=\{\(enabled\) => setForm\(\(prev\) => \(\{ \.\.\.prev, enabled \}\)\)\}/);
+  assert.match(statusCard, /disabled=\{isLoading \|\| updateConfig\.isPending\}/);
+  assert.match(statusCard, /aria-label=\{translateText\("启用支付功能"\)\}/);
+  assert.match(statusCard, /title=\{translateText\("关闭后无法下单"\)\}/);
+  assert.doesNotMatch(basicTab, /启用支付功能|checked=\{form\.enabled\}/);
+  assert.match(source, /<Button onClick=\{save\}/);
+});
+
 test("missing overview and product hover treatments are covered without moving sortable tunnel cards", () => {
   const checks = [
     ["client/src/pages/Affiliates.tsx", /<Card key=\{label\} hoverable/],

@@ -2,9 +2,22 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.289] - 2026-10-23
 
+- Compact operations ranking cards to fit their content; preview five entries and view the top ten in a dialog to reduce empty space.
+- Add plan and metered-resource stock with sold-out visibility and ∞ for unlimited supply. Metered stock is per user, with per-user rule limits and release after all logical rules are deleted; transactional checks prevent overselling.
+- Add short-lived display caches, request coalescing and bounded read queues, with write invalidation and per-user isolation.
+- Give metered-plan descriptions the same Markdown/HTML editor, preview, templates and length limit as subscription plans.
+- Address soft text in the forwarding-rule All view by removing persistent layer hints and duplicate card scaling while preserving expand/collapse transitions.
+- Add custom metered-plan names in management and the store, falling back to resource names when blank.
+- Show today's traffic on the left and cumulative traffic on the right of link-management cards, with days starting at 00:00 UTC+8.
 - Fix initialization stalls during installation or upgrades on some MySQL 8.0 servers.
+- Fix incorrect UDP reply source addresses in Agent-managed forwarding on multi-IP hosts; preserve the actual entry IP and separate sessions targeting different local IPs. Requires an Agent update.
+- Fix text wrapping in narrow balance and promotion cards; give toggles a separate row and adapt the card grid to available width.
+- Move the payment master switch into the top status card and remove its duplicate basic-settings section.
+- Unify hover feedback across host, rule, overview and plugin cards with softer shadows and smoother transitions.
+
+- Versions: panel `2.3.289`, Android / iOS `2.4.7`, Agent `2.2.202`, ForwardX FXP runtime `2.2.121`. Update the Agent for the multi-IP UDP fix.
 
 ## [2.3.288] - 2026-10-22
 
@@ -212,16 +225,3 @@ Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are
 ### Versions
 
 - Panel/APK release: 2.3.280; Agent: 2.2.194; ForwardX FXP runtime: 2.2.117; Android: 2.3.97.
-
-## [2.3.279] - 2026-09-03
-
-### Fixes and improvements
-
-- Improve heartbeat, traffic, recovery and diagnostic logs across the panel, Agent and FXP, reducing CPU/memory/event-loop pressure during failures.
-- Add backpressure, timeouts, deduplication and bounds to SSE, support bundles, logs, caches and queues.
-- Optimize SQLite metrics/history cleanup, Agent registration/upgrades and Realm-compatible asset fallback.
-- Prevent old failover groups silently inheriting tool or PROXY settings during upgrades; preserve existing member runtime settings.
-
-### Versions
-
-- Panel/APK release: 2.3.279; Agent: 2.2.193; ForwardX FXP runtime: 2.2.117; Android: 2.3.97.

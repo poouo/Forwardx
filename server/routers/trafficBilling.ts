@@ -4,6 +4,8 @@ import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { reconcileTrafficBillingAuthorization } from "../trafficBillingAuthorization";
 import { reorderProducts } from "../repositories/productOrder";
+import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
+import { MAX_PRODUCT_STOCK } from "../../shared/productStock";
 
 const resourceTypeSchema = z.enum(["host", "tunnel", "forward_group"]);
 
@@ -33,12 +35,12 @@ export const trafficBillingRouter = router({
     .input(z.object({ ids: z.array(z.number().int().positive()).min(1), startIndex: z.number().int().min(0).default(0) }))
     .mutation(({ input }) => reorderProducts("traffic_billing_configs", input.ids, input.startIndex)),
 
-  storeResources: protectedProcedure.query(async () => {
+  storeResources: protectedProcedure.query(async ({ ctx }) => {
     const enabled = await db.isTrafficBillingEnabled();
     if (!enabled) return { enabled, configs: [] };
     return {
       enabled,
-      configs: (await db.listTrafficBillingConfigs()).filter((item: any) => item.enabled && !item.requiresPermission),
+      configs: (await db.listTrafficBillingConfigs(ctx.user.id)).filter((item: any) => item.enabled && !item.requiresPermission),
     };
   }),
 
@@ -59,11 +61,14 @@ export const trafficBillingRouter = router({
   saveConfig: adminProcedure
     .input(z.object({
       id: z.number().optional(),
+      name: z.string().trim().max(255).optional(),
+      stockLimit: z.number().int().min(0).max(MAX_PRODUCT_STOCK).optional(),
+      maxRulesPerUser: z.number().int().min(0).max(MAX_PRODUCT_STOCK).optional(),
       resourceType: resourceTypeSchema,
       resourceId: z.number().int().positive(),
       enabled: z.boolean().default(true),
       requiresPermission: z.boolean().default(false),
-      description: z.string().trim().max(500).optional(),
+      description: z.string().trim().max(PLAN_DESCRIPTION_MAX_LENGTH).optional(),
       pricePerGbCents: z.number().int().min(0).max(100_000_000).optional(),
       pricePerGbMilliCents: z.number().int().min(0).max(100_000_000_000).optional(),
       multiplier: z.number().int().min(1).max(5000).optional(),

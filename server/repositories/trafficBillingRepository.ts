@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { getTrafficRuleUsageForUser, getTrafficStockUsage } from "./productStockRepository";
 import {
   balanceTransactions,
   forwardGroups,
@@ -478,10 +479,11 @@ export function trafficBillingSnapshotResourceState(
   };
 }
 
-export async function listTrafficBillingConfigs() {
+export async function listTrafficBillingConfigs(viewerUserId?: number) {
   const db = await getDb();
   if (!db) return [];
   const configs = await db.select().from(trafficBillingConfigs).orderBy(asc(trafficBillingConfigs.sortOrder), desc(trafficBillingConfigs.updatedAt), desc(trafficBillingConfigs.id));
+  if (configs.length === 0) return [];
   const hostIds = Array.from(new Set((configs as any[])
     .filter((config: any) => config.resourceType === "host")
     .map((config: any) => Number(config.resourceId))
@@ -519,8 +521,14 @@ export async function listTrafficBillingConfigs() {
   const hostNames = new Map(hostRows.map((host: any) => [Number(host.id), host.name]));
   const tunnelById = new Map<number, any>(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel]));
   const forwardGroupById = new Map<number, any>(forwardGroupRows.map((group: any) => [Number(group.id), group]));
+  const [stockUsage, ownUsage] = await Promise.all([
+    getTrafficStockUsage(),
+    viewerUserId ? getTrafficRuleUsageForUser(viewerUserId) : Promise.resolve(new Map<number, number>()),
+  ]);
   return configs.map((config: any) => ({
     ...config,
+    stockUsed: stockUsage.get(Number(config.id)) || 0,
+    currentUserRuleCount: ownUsage.get(Number(config.id)) || 0,
     pricePerGbMilliCents: configPriceMilliCents(config),
     ...(() => {
       const resourceId = Number(config.resourceId);
@@ -629,6 +637,9 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
   const payload = {
     resourceType,
     resourceId,
+    ...(data.name !== undefined ? { name: String(data.name).trim() } : {}),
+    ...(data.stockLimit !== undefined ? { stockLimit: data.stockLimit } : {}),
+    ...(data.maxRulesPerUser !== undefined ? { maxRulesPerUser: data.maxRulesPerUser } : {}),
     enabled: !!(data as any).enabled,
     requiresPermission: !!(data as any).requiresPermission,
     description: String((data as any).description || "").trim() || null,
@@ -650,8 +661,9 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
     await db.update(trafficBillingConfigs).set(payload as any).where(eq(trafficBillingConfigs.id, existing[0].id));
     return { ...existing[0], ...payload };
   }
-  const createdId = await insertAndGetId("traffic_billing_configs", { ...payload, createdAt: nowDate() });
-  return { id: createdId, ...payload };
+  const created = { name: "", ...payload, createdAt: nowDate() };
+  const createdId = await insertAndGetId("traffic_billing_configs", created);
+  return { id: createdId, ...created };
 }
 
 export async function deleteTrafficBillingConfig(id: number) {

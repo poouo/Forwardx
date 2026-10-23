@@ -27,6 +27,7 @@ import { deleteExpiredHistoryRows } from "./historyRetention";
 import { mapLatencyChartBucket, queryLatencyChartBuckets, queryLatestHistoryRows } from "./latencyHistoryRepository";
 import { scopedTrafficSource } from "./trafficQueryScope";
 import { dashboardSummaries } from "../backgroundSummaryCache";
+import { billingStartOfCalendarDay } from "../../shared/billingTime";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -1962,7 +1963,8 @@ export async function getTotalTraffic(userId?: number) {
 }
 
 /** Resource totals use logical-rule counters, never host/interface totals or hop sums.
- * Only requested resources are hydrated; no raw history scan or per-card query.
+ * Only requested resources are hydrated; period queries are bounded to today
+ * and requested rules, never a per-card query or an unfiltered history scan.
  * A shared resource exposes only the caller's own rule usage to non-admins.
  */
 export async function getForwardGroupTrafficSummaries(groupIds: number[], userId?: number) {
@@ -1975,7 +1977,10 @@ export async function getTunnelTrafficSummaries(tunnelIds: number[], userId?: nu
 
 async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds: number[], userId?: number) {
   const ids = Array.from(new Set(resourceIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)));
-  const totals = new Map(ids.map((id) => [id, { bytesIn: 0, bytesOut: 0, totalBytes: 0, ruleCount: 0 }]));
+  const totals = new Map(ids.map((id) => [id, {
+    bytesIn: 0, bytesOut: 0, totalBytes: 0, ruleCount: 0,
+    daily: { bytesIn: 0, bytesOut: 0, totalBytes: 0 },
+  }]));
   const db = await getDb();
   if (!db || ids.length === 0) return totals;
   const q = quoteIdentifier;
@@ -2056,6 +2061,7 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
   for (const [id, logicalIds] of logicalRulesByResource) totals.get(id)!.ruleCount = logicalIds.size;
   // Bound the size of SQL IN lists for large resources. Guard the empty case:
   // the existing counter API intentionally treats [] as an unfiltered request.
+  const since = billingStartOfCalendarDay(nowDate());
   for (const managedChildren of [false, true]) {
     const ruleIds = Array.from(resourcesByRule)
       .filter(([id, link]) => (id !== link.logicalRuleId) === managedChildren && link.resourceIds.length > 0)
@@ -2071,6 +2077,19 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
           total.bytesIn += row.bytesIn;
           total.bytesOut += row.bytesOut;
           total.totalBytes += row.bytesIn + row.bytesOut;
+        }
+      }
+      // Tunnel children keep their own traffic attribution; normalizing them
+      // to the parent would mix traffic from other tunnels in that group.
+      const dailyRows = managedChildren
+        ? await getTrafficSummaryRowsForPeriod({ ...opts, since })
+        : await getTrafficSummaryByRule({ ...opts, since, includeLatency: false });
+      for (const row of dailyRows) {
+        for (const id of resourcesByRule.get(row.ruleId)?.resourceIds || []) {
+          const daily = totals.get(id)!.daily;
+          daily.bytesIn += row.bytesIn;
+          daily.bytesOut += row.bytesOut;
+          daily.totalBytes += row.bytesIn + row.bytesOut;
         }
       }
     }
@@ -2128,6 +2147,17 @@ export async function getTrafficCounterSummaryByRule(opts: {
   });
 }
 
+async function getTrafficSummaryRowsForPeriod(queryOpts: {
+  userId?: number; hostId?: number; since: Date; ruleIds?: number[];
+}) {
+  const bucketRows = await getTrafficSummaryRowsFromBuckets(queryOpts);
+  if (!bucketRows) return getTrafficSummaryRowsFromStats(queryOpts);
+  // Raw samples are authoritative within retention; buckets fill missing
+  // rule/host pairs, including historical versions with partial bucket writes.
+  const rawRows = await getTrafficSummaryRowsFromStats(queryOpts).catch(() => null);
+  return rawRows ? fillMissingTrafficSummaryRows(rawRows, bucketRows) : bucketRows;
+}
+
 /** Summarize traffic by rule. */
 export async function getTrafficSummaryByRule(opts: {
   userId?: number;
@@ -2146,20 +2176,7 @@ export async function getTrafficSummaryByRule(opts: {
     : requestedRuleIds;
   const since = opts.since ?? new Date(Date.now() - TRAFFIC_BUCKET_RETENTION_HOURS * 60 * 60 * 1000);
   const queryOpts = { ...opts, since, ruleIds: expandedRuleIds };
-  const bucketRows = await getTrafficSummaryRowsFromBuckets(queryOpts);
-  let result: TrafficSummaryRow[];
-  if (bucketRows) {
-    const rawRows = await getTrafficSummaryRowsFromStats(queryOpts).catch(() => null);
-    // Raw samples are authoritative inside their retention window. Historical
-    // versions could commit a raw row while failing to update its bucket, so a
-    // partially populated bucket must not hide newer samples for the same
-    // rule/host pair. Buckets only fill pairs whose raw rows are unavailable.
-    result = rawRows
-      ? fillMissingTrafficSummaryRows(rawRows, bucketRows)
-      : bucketRows;
-  } else {
-    result = await getTrafficSummaryRowsFromStats(queryOpts);
-  }
+  let result = await getTrafficSummaryRowsForPeriod(queryOpts);
   result = await normalizeTrafficSummaryRowsForRules(result, opts, requestedRuleIds);
 
   if (result.length === 0) return withEmptyTrafficLatency(result);
