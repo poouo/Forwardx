@@ -1,6 +1,6 @@
 import { t as translateText } from "@/i18n";
 import DataSectionLoading from "@/components/DataSectionLoading";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Activity, LayoutGrid, List, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
@@ -18,10 +18,11 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/localizedToast";
-import HostChinaHealthSettings, { createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft } from "./HostChinaHealthSettings";
-import HostResourceAlertSettings from "./HostResourceAlertSettings";
+import HostChinaHealthSettings, { createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft, type HostProbeServiceMode } from "./HostChinaHealthSettings";
+import HostResourceAlertSettings, { type ResourceAlertSaveState } from "./HostResourceAlertSettings";
 import HostUrlProbeFields from "./HostUrlProbeFields";
 import { normalizeHostProbeMethod, urlProbeOptionsSchema, type HostProbeMethod } from "@shared/urlProbe";
+import type { ResourceAlertService } from "@shared/operationsMonitor";
 
 type ServiceForm = {
   name: string;
@@ -79,11 +80,13 @@ function storeServiceViewMode(viewMode: HostProbeServiceViewMode) {
 }
 
 function serviceTarget(service: any) {
+  if (service.resourceAlert) return `${service.threshold}%`;
   if (service.method === "url") return service.targetUrl || "—";
   return service.method === "ping" ? service.targetIp : `${service.targetIp}:${service.targetPort || "-"}`;
 }
 
 function serviceMethodLabel(service: any) {
+  if (service.resourceAlert) return translateText("资源告警") + " · " + (service.metric === "cpu" ? "CPU" : translateText(service.metric === "memory" ? "内存" : "磁盘"));
   return service.method === "url" ? translateText("URL 连接检测") : service.method;
 }
 
@@ -173,10 +176,10 @@ function ServiceEnabledSwitch({
     <OptimisticSwitch
       checked={enabled}
       onCheckedChangeAsync={(checked) => onToggle(service, checked)}
-      onToggleSuccess={(checked) => toast.success(checked ? translateText("探测服务已开启") : translateText("探测服务已关闭"))}
+      onToggleSuccess={(checked) => toast.success(service.resourceAlert ? translateText(checked ? "已启用" : "已关闭") : checked ? translateText("探测服务已开启") : translateText("探测服务已关闭"))}
       onToggleError={(error) => toast.error(error instanceof Error ? error.message : translateText("切换探测服务状态失败"))}
       className="scale-75"
-      title={translateText("{0}探测服务 {1}", [enabled ? translateText("停用") : translateText("启用"), service.name || ""])}
+      title={translateText("{0}服务 {1}", [enabled ? translateText("停用") : translateText("启用"), service.name || ""])}
       aria-label={translateText("{0}服务 {1}", [enabled ? translateText("停用") : translateText("启用"), service.name || ""])}
     />
   );
@@ -224,12 +227,12 @@ function ServiceCard({
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="min-w-0 rounded-md bg-muted/25 p-3">
-            <p className="mb-1 text-xs text-muted-foreground">{translateText("目标")}</p>
+            <p className="mb-1 text-xs text-muted-foreground">{translateText(service.resourceAlert ? "阈值 (%)" : "目标")}</p>
             <p className="truncate font-mono text-xs" title={target}>{target}</p>
           </div>
           <div className="min-w-0 rounded-md bg-muted/25 p-3">
-            <p className="mb-1 text-xs text-muted-foreground">{translateText("运行时间")}</p>
-            <p className="text-sm tabular-nums">{service.intervalSeconds || 30}S</p>
+            <p className="mb-1 text-xs text-muted-foreground">{translateText(service.resourceAlert ? "连续超限时长（秒）" : "运行时间")}</p>
+            <p className="text-sm tabular-nums">{service.resourceAlert ? service.durationSeconds : service.intervalSeconds || 30}S</p>
           </div>
         </div>
 
@@ -269,6 +272,8 @@ export default function HostProbeServiceManager({
   const confirmDialog = useConfirmDialog();
   const { data: hosts = [] } = trpc.hosts.options.useQuery(undefined, { staleTime: 30000 });
   const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
+  const resourceAlertsQuery = trpc.hosts.resourceAlertServices.useQuery(undefined, { staleTime: 30000 });
+  const resourceServices = resourceAlertsQuery.data ?? [];
   const serviceItems = useMemo(() => (services as any[] | undefined) || [], [services]);
   const hostsById = useMemo(() => new Map((hosts as any[]).map((host) => [Number(host.id), host])), [hosts]);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
@@ -284,13 +289,39 @@ export default function HostProbeServiceManager({
     getId: (service: any) => Number(service.id),
   });
   const displayedServiceItems = serviceOrder.items;
+  const filteredResourceServices = resourceServices.filter(service => !isTextFiltered || `${service.name} ${serviceMethodLabel({ ...service, resourceAlert: true })} ${scopeText(service, hostsById)}`.toLowerCase().includes(normalizedSearchQuery));
   useEffect(() => {
-    onFilterStatsChange?.({ filtered: filteredServiceItems.length, total: serviceItems.length });
-  }, [filteredServiceItems.length, onFilterStatsChange, serviceItems.length]);
+    onFilterStatsChange?.({ filtered: filteredServiceItems.length + filteredResourceServices.length, total: serviceItems.length + resourceServices.length });
+  }, [filteredServiceItems.length, filteredResourceServices.length, onFilterStatsChange, serviceItems.length, resourceServices.length]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
+  const [serviceMode, setServiceMode] = useState<HostProbeServiceMode>("standard");
+  const [editingResource, setEditingResource] = useState<ResourceAlertService | null>(null);
+  const resourceAlertFormId = useId();
+  const [resourceAlertSaveState, setResourceAlertSaveState] = useState<ResourceAlertSaveState>({ ready: false, pending: false });
   const [internalViewMode, setInternalViewMode] = useState<HostProbeServiceViewMode>(() => getStoredServiceViewMode());
+  const refreshResourceServices = () => {
+    void utils.hosts.resourceAlertServices.invalidate();
+    void utils.hosts.managementCounts.invalidate();
+    void utils.operations.monitor.invalidate();
+  };
+  const toggleResourceMutation = trpc.hosts.toggleResourceAlertService.useMutation({ onSuccess: refreshResourceServices });
+  const deleteResourceMutation = trpc.hosts.deleteResourceAlertService.useMutation({
+    onSuccess: () => { refreshResourceServices(); toast.success(translateText("服务已删除")); },
+    onError: error => toast.error(error.message),
+  });
+  const openResourceEdit = (service: ResourceAlertService) => {
+    setEditingId(null);
+    setEditingResource(service);
+    setServiceMode("resource");
+    setDialogOpen(true);
+  };
+  const deleteResource = async (service: ResourceAlertService) => {
+    if (await confirmDialog({ title: translateText("删除服务"), description: translateText("确定要删除“{0}”吗？", [service.name]), confirmText: translateText("删除"), tone: "destructive" })) {
+      deleteResourceMutation.mutate({ id: service.id });
+    }
+  };
   const viewMode = controlledViewMode ?? internalViewMode;
   const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
   const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
@@ -362,7 +393,9 @@ export default function HostProbeServiceManager({
   useEffect(() => {
     if (createSignal <= 0) return;
     setEditingId(null);
+    setEditingResource(null);
     setForm(defaultForm);
+    setServiceMode("standard");
     setDialogOpen(true);
     onCreateSignalHandled();
   }, [createSignal, onCreateSignalHandled]);
@@ -416,7 +449,9 @@ export default function HostProbeServiceManager({
   };
 
   const openEdit = (service: any) => {
+    setEditingResource(null);
     setEditingId(Number(service.id));
+    setServiceMode(service.health?.enabled ? "china" : "standard");
     setForm({
       name: service.name || "",
       method: normalizeHostProbeMethod(service.method),
@@ -446,7 +481,6 @@ export default function HostProbeServiceManager({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end"><HostResourceAlertSettings hosts={hosts as { id: number; name: string }[]} /></div>
       {!hideViewModeToggle && (
       <div className="flex justify-end">
         <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
@@ -472,7 +506,24 @@ export default function HostProbeServiceManager({
       </div>
       )}
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      {resourceAlertsQuery.error && <p role="alert" className="text-sm text-destructive">{resourceAlertsQuery.error.message}</p>}
+      {filteredResourceServices.length > 0 && <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardContent className="p-0">
+          {viewMode === "card" ? <div className="standard-card-grid gap-4 p-3">
+            {filteredResourceServices.map(service => <ServiceCard key={service.id} service={{ ...service, resourceAlert: true, isEnabled: service.enabled }} hostsById={hostsById} onEdit={() => openResourceEdit(service)} onDelete={() => deleteResource(service)} onToggle={(_, enabled) => toggleResourceMutation.mutateAsync({ id: service.id, enabled })} />)}
+          </div> : <div className="overflow-x-auto"><Table>
+            <TableHeader><TableRow><TableHead>{translateText("服务")}</TableHead><TableHead>{translateText("阈值 (%)")}</TableHead><TableHead>{translateText("主机范围")}</TableHead><TableHead>{translateText("连续超限时长（秒）")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
+            <TableBody>{filteredResourceServices.map(service => <TableRow key={service.id}>
+              <TableCell><div className="font-medium">{service.name}</div><Badge variant="outline" className="mt-1 text-[10px]">{serviceMethodLabel({ ...service, resourceAlert: true })}</Badge></TableCell>
+              <TableCell className="tabular-nums">{service.threshold}%</TableCell><TableCell className="max-w-[360px] truncate" title={scopeText(service, hostsById)}>{scopeText(service, hostsById)}</TableCell><TableCell>{service.durationSeconds}S</TableCell>
+              <TableCell><ServiceEnabledSwitch service={{ ...service, resourceAlert: true, isEnabled: service.enabled }} onToggle={(_, enabled) => toggleResourceMutation.mutateAsync({ id: service.id, enabled })} /></TableCell>
+              <TableCell><ServiceActionButtons service={service} onEdit={() => openResourceEdit(service)} onDelete={() => deleteResource(service)} /></TableCell>
+            </TableRow>)}</TableBody>
+          </Table></div>}
+        </CardContent>
+      </Card>}
+
+      {(displayedServiceItems.length > 0 || (filteredResourceServices.length === 0 && !resourceAlertsQuery.isLoading)) && <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-4">
@@ -589,18 +640,23 @@ export default function HostProbeServiceManager({
             </div>
           )}
         </CardContent>
-      </Card>
+      </Card>}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="flex max-h-[88vh] flex-col gap-3 overflow-hidden sm:max-w-xl">
+        <DialogContent className="max-h-[88svh] grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden sm:max-w-xl">
           <DialogHeader className="shrink-0">
-            <DialogTitle>{editingId ? translateText("编辑服务") : translateText("添加服务")}</DialogTitle>
-            <DialogDescription>{translateText("配置主机 Ping / TCPing / URL 连接检测")}</DialogDescription>
+            <DialogTitle>{editingId || editingResource ? translateText("编辑服务") : translateText("添加服务")}</DialogTitle>
+            <DialogDescription>{translateText(serviceMode === "resource" ? "资源告警" : "配置主机 Ping / TCPing / URL 连接检测")}</DialogDescription>
           </DialogHeader>
-          <HostProbeServiceModeTabs mode={form.health.enabled ? "china" : "standard"} onModeChange={mode => setForm(previous => {
-            const next = applyHostProbeServiceMode(previous, mode);
-            return mode === "china" && previous.method === "url" ? { ...next, method: "tcping" } : next;
-          })}>
+          <HostProbeServiceModeTabs mode={serviceMode} onModeChange={mode => {
+            setServiceMode(mode);
+            if (mode === "resource") return;
+            setForm(previous => {
+              const next = applyHostProbeServiceMode(previous, mode);
+              return mode === "china" && previous.method === "url" ? { ...next, method: "tcping" } : next;
+            });
+          }}>
+            {serviceMode === "resource" ? <HostResourceAlertSettings hosts={hosts} formId={resourceAlertFormId} onSaveStateChange={setResourceAlertSaveState} service={editingResource} onSaved={() => setDialogOpen(false)} /> : <>
             <div className="grid gap-2.5 sm:grid-cols-2">
               <div className="min-w-0 space-y-1">
                 <Label htmlFor="probe-service-name" className="flex min-h-5 items-center text-xs">{translateText("服务名")}</Label>
@@ -674,10 +730,11 @@ export default function HostProbeServiceManager({
               </div>
             )}
             <HostChinaHealthSettings value={form.health} onChange={health => setForm(previous => ({ ...previous, health }))} />
+            </>}
           </HostProbeServiceModeTabs>
           <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>{translateText("取消")}</Button>
-            <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>
+            {serviceMode === "resource" ? <Button type="submit" form={resourceAlertFormId} disabled={!resourceAlertSaveState.ready || resourceAlertSaveState.pending}>{resourceAlertSaveState.pending ? translateText("处理中...") : translateText("保存")}</Button> : <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

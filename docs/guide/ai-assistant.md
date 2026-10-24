@@ -17,7 +17,7 @@ AI 助手用于所选机器人渠道的自然语言查询和管理指令解析�
 1. 选择供应商：DeepSeek、SiliconFlow 或自定义 OpenAI 兼容接口。
 2. 填写 API Key。
 3. 检查 Base URL。DeepSeek 默认是 `https://api.deepseek.com`，SiliconFlow 默认是 `https://api.siliconflow.cn/v1`。
-4. 选择或填写模型名称。
+4. 先保存 API Key，再打开「模型」下拉框，自动获取当前供应商的可用模型，可搜索、选择或点击「刷新」。列表不可用或使用私有模型时，输入完整模型名称并选择「自定义」即可；切换供应商不会覆盖各自保存的模型配置。
 5. 按需调整最大输出 Tokens 和温度。
 6. 打开"启用 AI 助手"并保存。
 

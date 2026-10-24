@@ -536,22 +536,6 @@
     padding-bottom: max(0.75rem, var(--forwardx-safe-area-bottom));
   }
 
-  html.capacitor-native [data-latency-stats="true"] {
-    gap: 0.375rem;
-  }
-
-  html.capacitor-native [data-latency-stats="true"] .latency-stat-card {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.5rem 0.625rem;
-  }
-
-  html.capacitor-native [data-latency-stats="true"] .latency-stat-card p {
-    margin-top: 0;
-    white-space: nowrap;
-  }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
   [type="button"]:not(:disabled),
@@ -572,6 +556,26 @@
   box-sizing: border-box;
   padding-top: var(--forwardx-safe-area-top);
   padding-bottom: var(--forwardx-safe-area-bottom);
+}
+
+/* Keep dialogs inside system bars, including edge-to-edge native WebViews.
+   Flex shrinking respects each panel's own height limit and the usable viewport. */
+.dialog-positioner {
+  --dialog-edge-gap: 0.75rem;
+  padding-top: max(var(--dialog-edge-gap), var(--forwardx-safe-area-top));
+  padding-bottom: max(var(--dialog-edge-gap), var(--forwardx-safe-area-bottom));
+  padding-left: max(var(--dialog-edge-gap), var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
+  padding-right: max(var(--dialog-edge-gap), var(--safe-area-inset-right, env(safe-area-inset-right, 0px)));
+}
+
+.dialog-positioner > .dialog-panel {
+  flex-shrink: 1;
+}
+
+@media (min-width: 640px) {
+  .dialog-positioner {
+    --dialog-edge-gap: 1.5rem;
+  }
 }
 
 /* Unified scrollbar style and gutter to avoid text overlap with right-side bars */

@@ -1861,7 +1861,7 @@ function DashboardLayoutContent({
       </Dialog>
 
       <Dialog open={showMobileUpdateDialog} onOpenChange={setShowMobileUpdateDialog}>
-        <DialogContent className="w-[calc(100vw-2rem)] max-w-[420px] overflow-hidden rounded-xl border-border/60 bg-background p-0 shadow-2xl">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-[420px] rounded-xl border-border/60 bg-background p-0 shadow-2xl">
           <div className="border-b border-border/40 bg-primary/10 px-5 py-4">
             <DialogTitle className="flex items-center gap-2 text-base">
               <Download className="h-5 w-5 text-primary" />{translateText("发现 APP 新版本")}</DialogTitle>

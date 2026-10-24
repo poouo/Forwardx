@@ -14,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -28,7 +27,7 @@ import { planDescription, planDescriptionTemplate } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
-import { CheckCircle2, Coins, LayoutGrid, List, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
+import { CheckCircle2, Coins, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
@@ -67,7 +66,6 @@ type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
 type AssignDurationDays = 0 | 30 | 90 | 180;
 type PlanManageTab = "plans" | "billing";
 type PlanDialogTab = "settings" | "resources";
-type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
 type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 type PlanResourcePart = { label: string; count: number };
@@ -77,7 +75,6 @@ const PLAN_MANAGE_TAB_ITEMS = [
   { value: "billing", label: translateText("按量计费资源"), icon: Coins },
 ] as const satisfies readonly SlidingTabItem<PlanManageTab>[];
 const PLAN_MANAGE_TAB_STORAGE_KEY = "forwardx.plans.tab";
-const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
 
 const emptyForm: PlanForm = {
   stockLimit: "0",
@@ -101,25 +98,6 @@ const emptyForm: PlanForm = {
   forwardGroupIds: [],
   trafficAddons: [],
 };
-
-function getStoredPlanListViewMode(): PlanListViewMode {
-  if (typeof window === "undefined") return "card";
-  try {
-    const value = window.localStorage.getItem(PLAN_LIST_VIEW_MODE_STORAGE_KEY);
-    return value === "table" ? "table" : "card";
-  } catch {
-    return "card";
-  }
-}
-
-function storePlanListViewMode(viewMode: PlanListViewMode) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(PLAN_LIST_VIEW_MODE_STORAGE_KEY, viewMode);
-  } catch {
-    // View preference is optional.
-  }
-}
 
 function money(cents?: number, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((cents || 0) / 100);
@@ -652,7 +630,6 @@ export default function Plans() {
     defaultValue: "plans",
     storageKey: PLAN_MANAGE_TAB_STORAGE_KEY,
   });
-  const [planViewMode, setPlanViewMode] = useState<PlanListViewMode>(() => getStoredPlanListViewMode());
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
   const [statusUpdatingPlanId, setStatusUpdatingPlanId] = useState<number | null>(null);
 
@@ -941,11 +918,6 @@ export default function Plans() {
     openPlanCreate();
   };
 
-  const handlePlanViewModeChange = (viewMode: PlanListViewMode) => {
-    setPlanViewMode(viewMode);
-    storePlanListViewMode(viewMode);
-  };
-
   const save = () => {
     if (!form.name.trim()) {
       setPlanDialogTab("settings");
@@ -1053,128 +1025,36 @@ export default function Plans() {
                   <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(" 套餐列表")}</CardTitle>
                   <CardDescription>{translateText("订阅后分配连续端口段。")}</CardDescription>
                 </div>
-                <div className="flex items-center overflow-hidden rounded-md border border-border/40">
-                  <Button
-                    variant={planViewMode === "card" ? "secondary" : "ghost"}
-                    size="icon"
-                    className="h-8 w-8 rounded-none"
-                    title={translateText("卡片视图")}
-                    onClick={() => handlePlanViewModeChange("card")}
-                  >
-                    <LayoutGrid className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant={planViewMode === "table" ? "secondary" : "ghost"}
-                    size="icon"
-                    className="h-8 w-8 rounded-none"
-                    title={translateText("列表视图")}
-                    onClick={() => handlePlanViewModeChange("table")}
-                  >
-                    <List className="h-4 w-4" />
-                  </Button>
-                </div>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
                   <DataSectionLoading label={translateText("正在加载套餐数据")} />
                 ) : (
-                  <SortableReorderContext sortable={planSortable} strategy={planViewMode === "card" ? "rect" : "vertical"}>
-                    {planViewMode === "card" ? (
-                      <div key="plan-card-view" className="standard-card-grid gap-3">
-                        {planOrder.items.map((plan: any) => (
-                          <SortableItem key={plan.id} id={Number(plan.id)} disabled={planSortDisabled}>
-                            {({ itemProps, handleProps, isDragging }) => (
-                              <div {...itemProps} className="group/sortable min-w-0">
-                                <PlanCard
-                                  dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderPlans.isPending} />}
-                                  isDragging={isDragging}
-                                  plan={plan}
-                                  resourceParts={planResourcePartsForDisplay(plan, forwardGroupMap)}
-                                  toggling={statusUpdatingPlanId === Number(plan.id)}
-                                  onEdit={() => openPlanEdit(plan)}
-                                  onDelete={() => deletePlan.mutate({ id: plan.id })}
-                                  onToggleActive={() => togglePlanActive(plan)}
-                                  onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
-                                />
-                              </div>
-                            )}
-                          </SortableItem>
-                        ))}
-                        {plans.length === 0 && (
-                          <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("还没有套餐")}</div>
-                        )}
-                      </div>
-                    ) : (
-                      <div key="plan-table-view" className="overflow-x-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>{translateText("套餐")}</TableHead>
-                              <TableHead>{translateText("价格")}</TableHead>
-                              <TableHead>{translateText("资源")}</TableHead>
-                              <TableHead>{translateText("限制")}</TableHead>
-                              <TableHead>{translateText("状态")}</TableHead>
-                              <TableHead className="text-right">{translateText("操作")}</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {planOrder.items.map((plan: any) => (
-                              <SortableItem key={plan.id} id={Number(plan.id)} itemKind="row" disabled={planSortDisabled}>
-                                {({ itemProps, handleProps }) => (
-                              <TableRow {...itemProps} className="group/sortable">
-                                <TableCell>
-                                  <div className="flex items-center gap-2">
-                                    <SortableDragHandle dragHandleProps={handleProps} busy={reorderPlans.isPending} />
-                                    <div className="font-medium">{plan.name}</div>
-                                  </div>
-                                  {!planDescription(plan) && <div className="text-xs text-muted-foreground">{translateText("无描述")}</div>}
-                                  <ProductStockBadge product={plan} />
-                                </TableCell>
-                                {planDescription(plan) ? (
-                                  <TableCell colSpan={3} className="max-w-xl">
-                                    <PlanDetails description={plan.description} />
-                                  </TableCell>
-                                ) : (<>
-                                <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
-                                <TableCell>
-                                  <div className="flex flex-wrap gap-1">
-                                    {planResourcePartsForDisplay(plan, forwardGroupMap).map((item) => (
-                                      <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
-                                    ))}
-                                  </div>
-                                </TableCell>
-                                <TableCell className="text-sm text-muted-foreground">
-                                  <div>{plan.portCount}{translateText(" 个端口")}</div>
-                                  <div>{translateText("规则 ")}{plan.maxRules || translateText("不限")}{translateText(" · 流量 ")}{bytes(plan.trafficLimit)}</div>
-                                  <div>{translateText("附加流量 ")}{plan.trafficAddons?.length || 0}{translateText(" 档")}</div>
-                                  <div>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}{translateText(" · 限速 ")}{speed(plan.rateLimitMbps)}</div>
-                                </TableCell>
-                                </>)}
-                                <TableCell>
-                                  <PlanStatusQuickToggle
-                                    plan={plan}
-                                    disabled={statusUpdatingPlanId === Number(plan.id)}
-                                    onToggleActive={() => togglePlanActive(plan)}
-                                    onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
-                                  />
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => openPlanEdit(plan)} title={translateText("编辑套餐")} aria-label={translateText("编辑套餐")}><Pencil className="h-4 w-4" /></Button>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })} title={translateText("删除")} aria-label={translateText("删除")}>
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                                )}
-                              </SortableItem>
-                            ))}
-                            {plans.length === 0 && (
-                              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{translateText("还没有套餐")}</TableCell></TableRow>
-                            )}
-                          </TableBody>
-                        </Table>
-                      </div>
-                    )}
+                  <SortableReorderContext sortable={planSortable} strategy="rect">
+                    <div className="standard-card-grid gap-3">
+                      {planOrder.items.map((plan: any) => (
+                        <SortableItem key={plan.id} id={Number(plan.id)} disabled={planSortDisabled}>
+                          {({ itemProps, handleProps, isDragging }) => (
+                            <div {...itemProps} className="group/sortable min-w-0">
+                              <PlanCard
+                                dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderPlans.isPending} />}
+                                isDragging={isDragging}
+                                plan={plan}
+                                resourceParts={planResourcePartsForDisplay(plan, forwardGroupMap)}
+                                toggling={statusUpdatingPlanId === Number(plan.id)}
+                                onEdit={() => openPlanEdit(plan)}
+                                onDelete={() => deletePlan.mutate({ id: plan.id })}
+                                onToggleActive={() => togglePlanActive(plan)}
+                                onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
+                              />
+                            </div>
+                          )}
+                        </SortableItem>
+                      ))}
+                      {plans.length === 0 && (
+                        <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("还没有套餐")}</div>
+                      )}
+                    </div>
                   </SortableReorderContext>
                 )}
               </CardContent>
@@ -1228,20 +1108,20 @@ export default function Plans() {
       </Dialog>
 
       <Dialog open={editing} onOpenChange={setEditing}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
+        <DialogContent className="max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-0 sm:max-w-2xl">
           <DialogHeader className="px-4 pt-4 sm:px-5 sm:pt-5">
             <DialogTitle>{form.id ? translateText("编辑套餐") : translateText("新增套餐")}</DialogTitle>
             <DialogDescription>{translateText("配置套餐限制，并绑定订阅后可用资源。")}</DialogDescription>
           </DialogHeader>
 
-          <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="flex min-h-0 flex-1 flex-col px-4 sm:px-5">
-            <TabsList className="grid h-auto w-full grid-cols-2">
+          <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden px-4 sm:px-5">
+            <TabsList className="grid h-auto w-full shrink-0 grid-cols-2">
               <TabsTrigger value="settings">{translateText("套餐设置")}</TabsTrigger>
               <TabsTrigger value="resources">{translateText("资源绑定")}</TabsTrigger>
             </TabsList>
 
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-              <TabsContent value="settings" className="mt-4 space-y-4">
+            <div className="min-h-0 touch-pan-y overflow-y-auto overscroll-contain pb-1 pr-1 [scrollbar-gutter:stable]">
+              <TabsContent value="settings" className="m-0 space-y-4 !animate-none">
                 <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 [&>*]:min-w-0">
             <div className="col-span-2 space-y-2 md:col-span-1">
               <Label>{translateText("套餐名称")}</Label>
@@ -1343,7 +1223,7 @@ export default function Plans() {
                 <PlanDescriptionEditor value={form.description} onChange={(description) => setForm({ ...form, description })} />
               </TabsContent>
 
-              <TabsContent value="resources" className="mt-3 space-y-3">
+              <TabsContent value="resources" className="m-0 space-y-3 !animate-none">
                 <div className="space-y-3">
                   {true ? (
                     <>

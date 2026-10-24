@@ -71,6 +71,8 @@ jobs:
         run: |
           pnpm test:product-stock
           pnpm test:performance
+          pnpm test:rule-batch
+          pnpm test:ai-models
           pnpm test:server
 
       - name: Run Agent tests and vet

@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { advanceResourceAlert } from "../shared/operationsMonitor";
+import { advanceResourceAlert, resourceAlertPolicySchema, resourceAlertIncludesHost, resourceAlertServiceSchema } from "../shared/operationsMonitor";
 import { networkTestSummary } from "../shared/networkTestSummary";
 import { preciseQuery } from "./ai/preciseQuery";
 import { trafficQuerySchema, trafficRange } from "./ai/analytics";
@@ -41,6 +41,20 @@ test("resource alerts require sustained samples and hysteresis, not transient sp
   assert.equal(advanceResourceAlert(state, 95, 90, 2000, 60, 30).state?.since, 2000);
   assert.equal(advanceResourceAlert(next.state, 80, 90, 2000, 60, 30).event, undefined);
 });
+test("resource alert scope validates specific hosts and dynamically includes all/excluded host sets", () => {
+  const all = resourceAlertPolicySchema.parse({ settings: { enabled: true } });
+  assert.equal(resourceAlertIncludesHost(all, 999), true);
+  const specific = resourceAlertPolicySchema.parse({ hostScope: "specific", hostIds: [1, 2, 2] });
+  assert.deepEqual(specific.hostIds, [1, 2]);
+  assert.equal(resourceAlertIncludesHost(specific, 1), true);
+  assert.equal(resourceAlertIncludesHost(specific, 999), false);
+  const exclude = resourceAlertPolicySchema.parse({ hostScope: "exclude", excludeHostIds: [2] });
+  assert.equal(resourceAlertIncludesHost(exclude, 1), true);
+  assert.equal(resourceAlertIncludesHost(exclude, 2), false);
+  assert.equal(resourceAlertIncludesHost(exclude, 999), true);
+  assert.throws(() => resourceAlertPolicySchema.parse({ hostScope: "specific" }), /请选择/);
+  assert.throws(() => resourceAlertPolicySchema.parse({ hostScope: "invalid" }));
+});
 test("network summaries preserve unknown hops and do not equate intermediate nonresponse with destination loss", () => {
   const ping = networkTestSummary("ping", "4 packets transmitted, 3 received, 25% packet loss\nrtt min/avg/max/mdev = 1.00/2.00/3.00/0.50 ms");
   assert.equal(ping.lossPercent, 25); assert.equal(ping.avgMs, 2); assert.equal(ping.jitterMs, 0.5);
@@ -49,6 +63,22 @@ test("network summaries preserve unknown hops and do not equate intermediate non
   const mtr = networkTestSummary("mtr", " 1.|-- ??? 100.0% 10 0.0 0.0 0.0 0.0 0.0\n 2.|-- 192.0.2.1 0.0% 10 10.0 11.0 9.0 12.0 1.0");
   assert.equal(mtr.hops[1].avgMs, 11);
   assert.deepEqual(networkTestSummary("ping", "unknown output"), { hops: [] });
+});
+test("each resource alert service validates exactly one metric and its independent threshold", () => {
+  for (const metric of ["cpu", "memory", "disk"]) {
+    const service = resourceAlertServiceSchema.parse({ name: "Alert", metric, threshold: 85, hostScope: "exclude", excludeHostIds: [2, 2] });
+    assert.equal(service.metric, metric);
+    assert.equal(service.threshold, 85);
+    assert.deepEqual(service.excludeHostIds, [2]);
+    assert.equal(resourceAlertIncludesHost(service, 2), false);
+    assert.equal(resourceAlertIncludesHost(service, 3), true);
+  }
+  for (const input of [
+    { name: "Alert", metric: "network" }, { name: "Alert", metric: "cpu", threshold: 0 },
+    { name: "Alert", metric: "cpu", threshold: 101 }, { name: " ", metric: "cpu" },
+    { name: "Alert", metric: "cpu", memory: 80 }, { name: "Alert", metric: "cpu", notifyUserId: 2 },
+    { name: "Alert", metric: "cpu", hostScope: "specific", hostIds: [] },
+  ]) assert.equal(resourceAlertServiceSchema.safeParse(input).success, false);
 });
 test("MCP exposes executable JSON schemas for read tools only and follows role restrictions", () => {
   assert.ok(mcpTools("admin").some(tool => tool.name === "traffic.rank"));

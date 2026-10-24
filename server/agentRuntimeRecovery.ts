@@ -17,6 +17,7 @@ export const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 
 export type AgentRuntimeRecoveryOptions = {
   preserveReportedRuntime?: boolean;
+  force?: boolean;
 };
 
 export type AgentRuntimeRecoveryCoordinatorOptions = {
@@ -76,7 +77,7 @@ export class AgentRuntimeRecoveryCoordinator {
     // wait for it, then run its own full recovery if needed.
     if (state.inFlight) {
       const running = state.inFlight;
-      if (running.strength >= strength) {
+      if (!options.force && running.strength >= strength) {
         try {
           await running.promise;
           return false;
@@ -97,7 +98,7 @@ export class AgentRuntimeRecoveryCoordinator {
 
     const now = this.now();
     if (
-      now - state.lastSuccessAt < this.cooldownMs
+      !options.force && now - state.lastSuccessAt < this.cooldownMs
       && state.lastSuccessStrength >= strength
     ) {
       return false;

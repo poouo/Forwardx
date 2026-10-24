@@ -35,6 +35,22 @@ export function batchOperationErrorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason || translateText("未知错误"));
 }
 
+/** Allocate fixed listeners first, so random allocation cannot steal a later explicit port. */
+export async function runPortOrderedBatch<T extends { sourcePort: number }, R>(
+  items: readonly T[], concurrency: number, operation: (item: T, index: number) => Promise<R>,
+): Promise<Array<BatchOperationResult<T, R>>> {
+  const indexed = items.map((item, index) => ({ item, index }));
+  const results = new Array<BatchOperationResult<T, R>>(items.length);
+  for (const batch of [indexed.filter(({ item }) => item.sourcePort > 0), indexed.filter(({ item }) => item.sourcePort <= 0)]) {
+    const phase = await runBatchOperations(batch, concurrency, ({ item, index }) => operation(item, index));
+    for (const result of phase) {
+      const { item, index } = result.item;
+      results[index] = result.status === "fulfilled" ? { item, status: "fulfilled", value: result.value } : { item, status: "rejected", reason: result.reason };
+    }
+  }
+  return results;
+}
+
 export function isBatchPortConflictError(reason: unknown) {
   const message = batchOperationErrorMessage(reason);
   return /(?:端口.*(?:占用|冲突|正在被.*分配)|(?:源|入口|监听|套餐)端口.*(?:必须|仅限|不在|超出).*?(?:范围|区间|允许|内)|(?:source|entry|listener|plan) port.*?(?:range|allowed)|(?:port|entry agent port).*?(?:already (?:used|in use)|being allocated)|EADDRINUSE)/i.test(message);

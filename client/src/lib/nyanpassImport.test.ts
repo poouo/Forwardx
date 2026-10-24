@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {createImportedRule,parseCompatibleRuleTransferText,validateNyanpassImportTarget} from "./nyanpassImport";
 import {runBatchOperations} from "./batchOperations";
-import {RULE_TRANSFER_FILE_KIND,RULE_TRANSFER_FILE_VERSION} from "./ruleTransfer";
+import {RULE_TRANSFER_FILE_KIND,RULE_TRANSFER_FILE_VERSION,serializeRuleTransferText} from "./ruleTransfer";
 
 const row=(extra:Record<string,unknown>={})=>({name:"ny test",listen_port:10001,dest:["example.com:443"],...extra});
 const parse=(raw:unknown)=>parseCompatibleRuleTransferText(JSON.stringify(raw));
@@ -92,4 +92,33 @@ test("ny batch keeps conflicting ports and retains only failures for retry; nati
   const nativeCalls:number[]=[];
   await createImportedRule(10001,false,async port=>{nativeCalls.push(port);if(port)throw new Error("Entry agent port 10001 is already used");return port;});
   assert.deepEqual(nativeCalls,[10001,0]);
+});
+
+test("user-assigned import ports never fall back on conflicts or authorization ranges", async () => {
+  for (const message of ["Entry agent port 10001 is already used", "源端口必须在允许范围内：20000-20999"]) {
+    const calls: number[] = [];
+    await assert.rejects(createImportedRule(10001, true, async port => {
+      calls.push(port);
+      throw new Error(message);
+    }), error => error instanceof Error && error.message === message);
+    assert.deepEqual(calls, [10001]);
+  }
+});
+
+test("file importer recognizes exported TXT without treating it as experimental ny JSON", async () => {
+  const original = rules([row({ listen_port: 12345 }), row({ listen_port: 12346, dest: ["[2001:db8::1]:53"] }), row({ listen_port: 0 })]);
+  const parsed = parseCompatibleRuleTransferText(serializeRuleTransferText(original));
+  assert.ok(parsed.ok);
+  assert.equal(parsed.file.importSource, "text");
+  assert.deepEqual(parsed.file.rules.map(({ sourcePort, targetIp, targetPort }) => ({ sourcePort, targetIp, targetPort })), original.map(({ sourcePort, targetIp, targetPort }) => ({ sourcePort, targetIp, targetPort })));
+  for (const text of ["[2001:db8::1]:53", "[2001:db8::1] : 53", "[2001:db8::1]：53"]) {
+    const ipv6 = parseCompatibleRuleTransferText(text);
+    assert.ok(ipv6.ok);
+    assert.equal(ipv6.file.importSource, "text");
+  }
+  const calls: number[] = [];
+  await assert.rejects(createImportedRule(parsed.file.rules[0].sourcePort, parsed.file.importSource === "text", async port => {
+    calls.push(port); throw new Error("Entry agent port 12345 is already used");
+  }));
+  assert.deepEqual(calls, [12345], "TXT round-trip never silently replaces a fixed listener");
 });

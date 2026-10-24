@@ -8,6 +8,7 @@ import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
 import { TunnelCardLatency, TunnelCardRoute } from "@/components/TunnelCardSummary";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
+import { LatencyChartDialogHeader } from "@/components/LatencyChartDialogHeader";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { LatencyHistoryDayStrip, LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
 import {
@@ -1385,19 +1386,14 @@ function TunnelLatencyDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
-        <DialogHeader>
-          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
-            <div className="min-w-0">
-              <DialogTitle className="text-base sm:text-lg">{translateText("隧道链路延迟 - ")}{tunnelName}</DialogTitle>
-              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 路径延迟与逐跳连接探测统计。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
-              <LatencyHistoryTodayButton onClick={history.today} />
-              <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
-            </div>
-          </div>
-        </DialogHeader>
+        <LatencyChartDialogHeader
+          title={<>{translateText("隧道链路延迟 - ")}{tunnelName}</>}
+          description={history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 路径延迟与逐跳连接探测统计。", [latencyTimeRangeLabel(timeRangeHours)])}
+        >
+          <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+          <LatencyHistoryTodayButton onClick={history.today} />
+          <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+        </LatencyChartDialogHeader>
         <div className="dialog-scroll-area min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
         <div className="h-[42svh] min-h-[220px] w-full sm:h-72">
           {showInitialLoading ? (
@@ -4586,11 +4582,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{translateText("新增链路")}</DialogTitle>
           </DialogHeader>
-          <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
@@ -4895,11 +4891,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{editingId ? translateText("编辑隧道") : translateText("添加链路")}</DialogTitle>
           </DialogHeader>
-          <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
             <div className="space-y-2">
               <Label>{translateText("隧道名称")}</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 华东-香港隧道")} />

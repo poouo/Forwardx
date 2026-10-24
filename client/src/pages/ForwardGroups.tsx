@@ -8,6 +8,7 @@ import { PortEntryRuntimeSummary } from "@/components/PortEntryRuntimeSummary";
 import { ForwardGroupMembers } from "@/components/ForwardGroupMembers";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
+import { LatencyChartDialogHeader } from "@/components/LatencyChartDialogHeader";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { LatencyHistoryDayStrip, LatencyHistoryTodayButton, useLatencyHistoryDays } from "@/components/LatencyHistoryDays";
 import {
@@ -516,19 +517,14 @@ function ForwardGroupLatencyDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
-        <DialogHeader>
-          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
-            <div className="min-w-0">
-              <DialogTitle>{translateText("转发链延迟 - ")}{groupName}</DialogTitle>
-              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
-              <LatencyHistoryTodayButton onClick={history.today} />
-              <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
-            </div>
-          </div>
-        </DialogHeader>
+        <LatencyChartDialogHeader
+          title={<>{translateText("转发链延迟 - ")}{groupName}</>}
+          description={history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : translateText("最近 {0} 链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。", [latencyTimeRangeLabel(timeRangeHours)])}
+        >
+          <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+          <LatencyHistoryTodayButton onClick={history.today} />
+          <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+        </LatencyChartDialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
         <div className="h-[42svh] min-h-[220px] rounded-lg border border-border/60 bg-muted/20 p-2 sm:h-[260px] sm:p-3">
           {(isLoading || waitForFreshSeries) && !seriesData ? (
@@ -2111,11 +2107,11 @@ export function ForwardGroupsContent({
         open={showDialog}
         onOpenChange={handleDialogOpenChange}
       >
-        <DialogContent className={"flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:p-5 " + (isChainMode || isPortMode ? "sm:max-w-xl" : "sm:max-w-2xl")}>
+        <DialogContent className={"max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden p-4 sm:p-5 " + (isChainMode || isPortMode ? "sm:max-w-xl" : "sm:max-w-2xl")}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+          <div className="min-h-0 touch-pan-y space-y-3 overflow-y-auto overscroll-contain pb-2 pr-1">
             <div className={"grid gap-3 " + (isPortMode ? "sm:grid-cols-2" : isChainMode ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
               <div className="space-y-2">
                 <Label>{isPortMode ? translateText("端口转发名称") : isChainMode ? translateText("转发链名称") : translateText("组名称")}</Label>

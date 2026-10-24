@@ -24,6 +24,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogHeader,
   DialogFooter,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -2080,9 +2081,11 @@ function UsersContent() {
 
       {/* Traffic & Permission Settings Dialog */}
       <Dialog open={showTrafficSettings} onOpenChange={setShowTrafficSettings}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
-          <DialogTitle>{translateText("流量与权限设置")}</DialogTitle>
-          <DialogDescription>{translateText("设置 \"")}{trafficUserName}{translateText("\" 的管理员额外配额和权限；套餐权益在订阅管理中单独体现。")}</DialogDescription>
+        <DialogContent className="sm:max-w-lg max-h-[90svh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{translateText("流量与权限设置")}</DialogTitle>
+            <DialogDescription>{translateText("设置 \"")}{trafficUserName}{translateText("\" 的管理员额外配额和权限；套餐权益在订阅管理中单独体现。")}</DialogDescription>
+          </DialogHeader>
           <Tabs defaultValue="permission" className="flex-1 min-h-0 flex flex-col">
             <div className="shrink-0 min-w-0 overflow-x-auto pb-1">
               <TabsList className="w-max min-w-full flex-nowrap [&>[role=tab]]:shrink-0 [&>[role=tab]]:whitespace-nowrap">

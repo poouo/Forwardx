@@ -93,7 +93,7 @@ test("standard tabs wrap long labels and dialog actions may grow without shrinki
     <Tabs value="a"><TabsList className="grid grid-cols-2"><TabsTrigger value="a">Long translated action</TabsTrigger></TabsList></Tabs>
     <DialogFooter><Button><Send />Save Notification Settings</Button></DialogFooter>
   </>);
-  assert.match(html, /min-h-10 flex-wrap/);
+  assert.match(html, /min-h-10 shrink-0 flex-wrap/);
   assert.match(html, /whitespace-normal text-center/);
   assert.match(html, /responsive-actions/);
   assert.match(html, /sm:flex-wrap/);

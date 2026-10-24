@@ -2815,7 +2815,7 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
               <DialogDescription>{actionInputDialog.description}</DialogDescription>
             )}
           </DialogHeader>
-          <div className="grid gap-4 overflow-y-auto px-4 py-2 sm:grid-cols-2 sm:px-6">
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain px-4 py-2 sm:grid-cols-2 sm:px-6">
             {(Array.isArray(actionInputDialog?.inputSchema) ? actionInputDialog.inputSchema as PluginSettingField[] : []).map((field) => (
               <div key={field.key} className={field.type === "textarea" || field.type === "boolean" ? "sm:col-span-2" : ""}>
                 <PluginSettingInput

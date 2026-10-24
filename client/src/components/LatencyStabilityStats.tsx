@@ -35,29 +35,29 @@ export function LatencyStabilityStats({
 }: LatencyStabilityStatsProps) {
   return (
     <div className="space-y-2" data-latency-stats="true">
-      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6 sm:gap-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,6.5rem),1fr))] gap-1.5 sm:gap-2">
         <StatCard label={sampleLabel}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{counterStatistics !== undefined && !counterStatistics?.available ? "--" : stats.total}</p>
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">{counterStatistics !== undefined && !counterStatistics?.available ? "--" : stats.total}</p>
         </StatCard>
         <StatCard label={translateText("最大延迟")}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.max)}</p>
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.max)}</p>
         </StatCard>
         <StatCard label={failureLabel}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">
             {stats.total === 0 ? "--" : `${stats.lossRate.toFixed(2)}%`}
           </p>
         </StatCard>
         <StatCard label={translateText("最小延迟")}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.min)}</p>
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.min)}</p>
         </StatCard>
         <StatCard label={translateText("平均延迟")}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.avg)}</p>
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.avg)}</p>
         </StatCard>
         <StatCard label={translateText("探测稳定性")}>
-          <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">
+          <p className="break-words text-xs font-semibold tabular-nums sm:text-sm">
             {stats.score === null ? "--" : `${stats.score}/100`}
           </p>
-          <p className={`truncate text-[10px] font-medium sm:text-[11px] ${stats.rating.className}`}>
+          <p className={`break-words text-[10px] font-medium sm:text-[11px] ${stats.rating.className}`}>
             {stats.rating.label}
           </p>
         </StatCard>

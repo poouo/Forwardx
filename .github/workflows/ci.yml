@@ -95,6 +95,8 @@ jobs:
           pnpm test:google-auth
           pnpm test:port-access-limits
           pnpm test:rule-groups
+          pnpm test:rule-batch
+          pnpm test:ai-models
           pnpm test:plan-display
           pnpm test:host-deletion
           pnpm test:host-notifications

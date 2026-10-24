@@ -4,6 +4,16 @@ import {
   AgentRuntimeRecoveryCoordinator,
 } from "./agentRuntimeRecovery";
 
+test("a replacement registration bypasses the previous recovery cooldown", async () => {
+  const coordinator = new AgentRuntimeRecoveryCoordinator({ now: () => 1_000 });
+  let calls = 0;
+  const reset = async () => { calls += 1; };
+  assert.equal(await coordinator.run(1, {}, reset), true);
+  assert.equal(await coordinator.run(1, {}, reset), false);
+  assert.equal(await coordinator.run(1, { force: true }, reset), true);
+  assert.equal(calls, 2);
+});
+
 test("coalesces same-host recovery and applies cooldown after success", async () => {
   let now = 1_000;
   const coordinator = new AgentRuntimeRecoveryCoordinator({ cooldownMs: 60_000, now: () => now });

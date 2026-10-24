@@ -1,5 +1,6 @@
 import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue, { StatValuePersistenceContext } from "@/components/AnimatedStatValue";
 import { useMotionEnabled } from "@/components/MotionPolicy";
@@ -128,7 +129,7 @@ export function DashboardStatCard({
 }) {
   return (
     <div
-      className={className}
+      className={cn("min-w-0", className)}
     >
       <Card enterIndex={index} interactive hoverable className="pearl-stat group h-full border-border/40">
         <div aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.07] ${tone}`} />
@@ -648,6 +649,7 @@ function DashboardContent() {
           loading={isLoading || !stats}
           cacheKey="home.stats.totalRules"
           fallbackValue="—"
+          className={isAdmin ? undefined : "col-span-2 lg:col-span-1"}
           index={isAdmin ? 1 : 0}
         />
         <DashboardStatCard
@@ -659,7 +661,6 @@ function DashboardContent() {
           loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficIn"
           fallbackValue="—"
-          className="col-span-2 sm:col-span-1"
           index={isAdmin ? 2 : 1}
         />
         <DashboardStatCard
@@ -671,7 +672,6 @@ function DashboardContent() {
           loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficOut"
           fallbackValue="—"
-          className="col-span-2 sm:col-span-1"
           index={isAdmin ? 3 : 2}
         />
       </div>
@@ -685,7 +685,7 @@ function DashboardContent() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                 <Shield className="h-4 w-4" />{translateText("我的消耗")}</CardTitle>
-              <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">
+              <Badge variant="outline" className="w-fit self-start border-emerald-500/30 text-emerald-600">
                 <AnimatedStatValue
                   value={translateText("管理员权限")}
                   loading={false}
@@ -696,7 +696,7 @@ function DashboardContent() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 [&>*]:min-w-0 [&_.forwardx-stat-value]:break-words [&_.forwardx-stat-value]:[overflow-wrap:anywhere] [&_svg]:shrink-0">
               <div className="pearl-hover-card rounded-lg border border-border/50 bg-background/35 p-3">
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Activity className="h-3 w-3" />{translateText("我的已用流量")}</p>

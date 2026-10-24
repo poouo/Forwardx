@@ -28,6 +28,7 @@ export const MIGRATION_TABLES = [
   "ai_bot_workflows",
   "users",
   "hosts",
+  "agent_installations",
   "host_groups",
   "host_group_members",
   "tunnels",
@@ -154,7 +155,8 @@ const tables: TableDef[] = [
   { name: "host_probe_health", columns: [c("id", "id"), c("serviceId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("config", "text", { notNull: true }), c("hookCiphertext", "longtext"), c("state", "text"), c("updatedAt", "epoch", { notNull: true })], unique: [["serviceId"]], indexes: [["hostId"]] },
   { name: "host_ip_switch_attempts", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("serviceId", "int", { notNull: true }), c("incidentId", "varchar", { length: 64, notNull: true }), c("status", "varchar", { length: 40, notNull: true }), c("createdAt", "epoch", { notNull: true }), c("finishedAt", "epoch"), c("newIp", "varchar", { length: 64 }), c("acknowledged", "bool", { notNull: true, default: false })], unique: [["incidentId"]], indexes: [["hostId", "createdAt"], ["serviceId", "createdAt"]] },
   { name: "operations_alert_state", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("metric", "varchar", { length: 16, notNull: true }), c("phase", "varchar", { length: 16, notNull: true }), c("since", "epoch", { notNull: true }), c("lastSeen", "epoch", { notNull: true }), c("peak", "int", { notNull: true })], unique: [["hostId", "metric"]], indexes: [["lastSeen"]] },
-  { name: "operations_alert_events", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("hostName", "varchar", { length: 255, notNull: true }), c("metric", "varchar", { length: 16, notNull: true }), c("type", "varchar", { length: 16, notNull: true }), c("value", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true })], indexes: [["createdAt"], ["hostId", "createdAt"]] },
+  { name: "resource_alert_service_state", columns: [c("id", "id"), c("serviceId", "varchar", { length: 64, notNull: true }), c("hostId", "int", { notNull: true }), c("metric", "varchar", { length: 16, notNull: true }), c("phase", "varchar", { length: 16, notNull: true }), c("since", "epoch", { notNull: true }), c("lastSeen", "epoch", { notNull: true }), c("peak", "int", { notNull: true })], unique: [["hostId", "serviceId"]], indexes: [["lastSeen"]] },
+  { name: "operations_alert_events", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("hostName", "varchar", { length: 255, notNull: true }), c("serviceId", "varchar", { length: 64 }), c("serviceName", "varchar", { length: 80 }), c("metric", "varchar", { length: 16, notNull: true }), c("type", "varchar", { length: 16, notNull: true }), c("value", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true })], indexes: [["createdAt"], ["hostId", "createdAt"]] },
   // Credentials deliberately do not travel with merge migrations: issue fresh tokens at the destination.
   { name: "external_mcp_tokens", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("name", "varchar", { length: 80, notNull: true }), c("tokenHash", "varchar", { length: 64, notNull: true }), c("prefix", "varchar", { length: 20, notNull: true }), c("expiresAt", "epoch", { notNull: true }), c("createdAt", "epoch", { notNull: true }), c("lastUsedAt", "epoch")], unique: [["tokenHash"]], indexes: [["userId"], ["expiresAt"]] },
   { name: "operations_traffic_daily", columns: [c("id", "id"), c("dayStart", "epoch", { notNull: true }), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("userId", "int", { notNull: true }), c("logicalRuleId", "int", { notNull: true }), c("resourceKey", "varchar", { length: 64, notNull: true }), c("ruleName", "varchar", { length: 255, notNull: true }), c("hostName", "varchar", { length: 255, notNull: true }), c("resourceName", "varchar", { length: 255, notNull: true }), c("bytesIn", "bigint", { notNull: true, default: 0 }), c("bytesOut", "bigint", { notNull: true, default: 0 }), c("connections", "bigint", { notNull: true, default: 0 })], unique: [["dayStart", "ruleId", "hostId", "userId", "resourceKey"]], indexes: [["dayStart", "userId"], ["logicalRuleId", "dayStart"], ["hostId", "dayStart"], ["resourceKey", "dayStart"]] },
@@ -208,6 +210,11 @@ const tables: TableDef[] = [
     columns: [c("id", "id"), c("title", "varchar", { length: 120, notNull: true }), c("content", "longtext", { notNull: true }), c("updatedAt", "epoch", { notNull: true, default: "now" })],
   },
   { name: "ai_bot_workflows", columns: [c("id", "varchar", { length: 96, notNull: true }), c("scopeKey", "varchar", { length: 64, notNull: true }), c("status", "varchar", { length: 32, notNull: true }), c("payload", "longtext", { notNull: true }), c("result", "longtext"), c("updatedAt", "bigint", { notNull: true })], unique: [["id"]], indexes: [["scopeKey"], ["status", "updatedAt"]] },
+  {
+    name: "agent_installations",
+    columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("installationId", "varchar", { length: 64, notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })],
+    unique: [["hostId", "installationId"]],
+  },
   {
     name: "probe_counter_snapshots",
     columns: [
@@ -278,7 +285,7 @@ const tables: TableDef[] = [
       c("id", "id"), c("name", "text", { notNull: true }), c("ip", "text", { notNull: true }),
       c("ipv4", "text"), c("ipv6", "text"), c("hostType", "varchar", { length: 32, notNull: true, default: "slave" }),
       c("ipv4Addresses", "text"), c("ipv6Addresses", "text"), c("preferredIpv4", "text"), c("preferredIpv6", "text"),
-      c("agentToken", "text"), c("entryIp", "text"), c("tunnelEntryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
+      c("agentToken", "text"), c("agentInstallationId", "varchar", { length: 64 }), c("entryIp", "text"), c("tunnelEntryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
       c("memoryTotal", "bigint"), c("agentVersion", "text"),
       c("mimicAvailable", "bool"), c("mimicVersion", "text"), c("mimicStatus", "varchar", { length: 64 }),
       c("mimicMessage", "text"), c("mimicCheckedAt", "epoch"),

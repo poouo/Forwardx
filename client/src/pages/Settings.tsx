@@ -4,6 +4,7 @@ import NotificationSettingsCard from "@/components/NotificationSettingsCard";
 import GoogleLoginSettingsCard from "@/components/GoogleLoginSettingsCard";
 import AuthorSupportDialog from "@/components/AuthorSupportDialog";
 import McpAccessCard from "@/components/McpAccessCard";
+import AiModelSelect from "@/components/AiModelSelect";
 import AuthCaptchaSettingsFields from "@/components/AuthCaptchaSettingsFields";
 import { normalizeAuthCaptchaProvider, type AuthCaptchaProvider } from "@shared/authCaptcha";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -2667,9 +2668,6 @@ function DeepSeekSettingsCard() {
   const activeProviderDefaults = aiProviderDefaults[deepseekProvider];
   const providerLabel = aiProviderOptions.find((item) => item.value === deepseekProvider)?.label || deepseekProvider;
   const models = Array.isArray(aiModelsQuery.data?.models) ? aiModelsQuery.data.models : [];
-  const knownFreeCount = Number(aiModelsQuery.data?.freeCount || 0);
-  const knownPaidCount = Number(aiModelsQuery.data?.paidCount || 0);
-  const unknownFreeCount = Number(aiModelsQuery.data?.unknownCount || 0);
 
   return (
     <>
@@ -2764,57 +2762,20 @@ function DeepSeekSettingsCard() {
                   />
                 </div>
                 <div className="space-y-2 lg:col-span-4">
-                  <Label>{translateText("模型")}</Label>
-                  <Input
-                    type="text"
+                  <Label htmlFor="ai-model">{translateText("模型")}</Label>
+                  <AiModelSelect
+                    key={deepseekProvider}
+                    id="ai-model"
                     value={deepseekModel}
-                    onChange={(e) => updateActiveProviderConfig({ model: e.target.value })}
+                    onValueChange={(model) => updateActiveProviderConfig({ model })}
                     placeholder={activeProviderDefaults.model}
-                    className="font-mono"
+                    models={models}
+                    loading={aiModelsQuery.isFetching}
+                    configured={providerConfigured}
+                    error={aiModelsQuery.data?.error || (aiModelsQuery.error ? translateText("暂未获取到模型列表，可手动输入模型名称。") : undefined)}
+                    onRefresh={() => void aiModelsQuery.refetch()}
                   />
                 </div>
-              </div>
-
-              <div className="rounded-lg border border-border/40 bg-background/50 p-2.5">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-xs text-muted-foreground">{translateText("可用聊天模型（支持展示 Free 状态）")}</p>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => aiModelsQuery.refetch()}
-                    disabled={!providerConfigured || aiModelsQuery.isFetching}
-                  >
-                    {aiModelsQuery.isFetching && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}{translateText("刷新")}</Button>
-                </div>
-                {!!providerConfigured && models.length > 0 && (
-                  <Select
-                    value={models.some((item: any) => String(item?.id || "") === deepseekModel) ? deepseekModel : undefined}
-                    onValueChange={(value) => updateActiveProviderConfig({ model: value })}
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue placeholder={translateText("从列表选择模型")} />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-72">
-                      {models.map((item: any) => (
-                        <SelectItem key={String(item?.id || "")} value={String(item?.id || "")}>
-                          {String(item?.id || "")}
-                          {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : "")}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                {!!providerConfigured && models.length > 0 ? (
-                  <p className="mt-2 text-xs text-muted-foreground">{translateText("共 ")}{models.length}{translateText(" 个，Free ")}{knownFreeCount}{translateText(" 个，付费 ")}{knownPaidCount}{translateText(" 个，未知 ")}{unknownFreeCount}{translateText(" 个。")}</p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    {providerConfigured
-                      ? (aiModelsQuery.data?.error || translateText("暂未获取到模型列表，可手动输入模型名称。"))
-                      : translateText("保存 API Key 后可拉取模型列表。")}
-                  </p>
-                )}
               </div>
 
               <div className="grid min-w-0 grid-cols-2 gap-3 sm:max-w-[560px] [&>*]:min-w-0">
@@ -3924,7 +3885,7 @@ function PersonalizationSettingsSection() {
             </DialogTitle>
             <DialogDescription>{translateText("配置左侧导航名称、页面地址、打开方式和可见范围。")}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 overflow-y-auto px-4 py-2 sm:px-6">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-2 sm:px-6">
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
               <div className="space-y-2">
                 <Label htmlFor="custom-sidebar-name">{translateText("菜单名称")}</Label>
@@ -4802,8 +4763,8 @@ function SystemInfoSection() {
           </CardContent>
         </Card>
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="responsive-actions gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-            <div className="min-w-0 flex-1 basis-40 space-y-1.5">
+          <CardHeader className="responsive-actions space-y-0 gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+            <div className="min-w-0 space-y-1.5 sm:flex-1 sm:basis-40">
               <CardTitle className="flex items-center gap-2 text-base">
                 <ShieldCheck className="h-4 w-4 text-primary" />{translateText("转发协议总开关")}</CardTitle>
             </div>
@@ -5435,8 +5396,8 @@ function SystemInfoSection() {
         </Card>
 
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="responsive-actions gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-            <div className="min-w-0 flex-1 basis-40 space-y-1.5">
+          <CardHeader className="responsive-actions space-y-0 gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+            <div className="min-w-0 space-y-1.5 sm:flex-1 sm:basis-40">
               <CardTitle className="flex items-center gap-2 text-base">
                 <PanelLeft className="h-4 w-4 text-primary" />{translateText("左侧导航栏菜单展示设置")}</CardTitle>
             </div>
@@ -5553,9 +5514,9 @@ function SystemInfoSection() {
         </DialogContent>
       </Dialog>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
         {/* 版本升级 */}
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <Card className="@container/panel-upgrade min-w-0 border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1.5">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -5563,16 +5524,16 @@ function SystemInfoSection() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(220px,0.9fr)]">
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+            <div className="grid min-w-0 gap-3 @min-[20rem]/panel-upgrade:grid-cols-2 @min-[38rem]/panel-upgrade:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(14rem,1.2fr)]">
+              <div className="min-w-0 rounded-lg border border-border/40 bg-muted/20 p-3">
                 <p className="text-xs text-muted-foreground">{translateText("当前面板版本")}</p>
-                <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
+                <p className="mt-1 break-all font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
               </div>
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0 rounded-lg border border-border/40 bg-muted/20 p-3">
                 <p className="text-xs text-muted-foreground">{translateText("当前 Agent 目标版本")}</p>
-                <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentAgentVersion || settings?.agentVersion || "-"}</p>
+                <p className="mt-1 break-all font-mono text-sm">v{upgradeStatus?.currentAgentVersion || settings?.agentVersion || "-"}</p>
               </div>
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="col-span-full flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 @min-[38rem]/panel-upgrade:col-span-1">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{translateText("自动检查更新")}</p>
                   <p className="text-xs text-muted-foreground">{translateText("开启后定期检查面板和 Agent 更新。")}</p>
@@ -5614,20 +5575,20 @@ function SystemInfoSection() {
 
           {updateInfo?.hasUpdate && (
             <div className="rounded-xl border border-primary/30 bg-primary/10 p-4 shadow-sm">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-[1_1_14rem] items-start gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                     <Rocket className="h-5 w-5" />
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold text-primary">{translateText("发现新版本 ")}{updateInfo.latestVersion}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{translateText("来源：")}{updateInfo.source === "release" ? "GitHub Release" : updateInfo.source === "tag" ? "GitHub Tag" : updateInfo.source === "main" ? translateText("main 分支") : "GitHub"}
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-semibold text-primary">{translateText("发现新版本 ")}{updateInfo.latestVersion}</p>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">{translateText("来源：")}{updateInfo.source === "release" ? "GitHub Release" : updateInfo.source === "tag" ? "GitHub Tag" : updateInfo.source === "main" ? translateText("main 分支") : "GitHub"}
                       {updateInfo.publishedAt ? translateText("，发布时间：{0}", [new Date(updateInfo.publishedAt).toLocaleString(getFormatLocale())]) : ""}
                       {updateInfo.latestAgentVersion ? translateText("，Agent 目标：v{0}", [updateInfo.latestAgentVersion]) : ""}
                     </p>
                   </div>
                 </div>
-                <Badge className="w-fit">{translateText("可升级")}</Badge>
+                <Badge className="w-fit shrink-0 whitespace-nowrap">{translateText("可升级")}</Badge>
               </div>
             </div>
           )}
@@ -5690,8 +5651,8 @@ function SystemInfoSection() {
 
           {upgradeStatus?.job && upgradeStatus.job.status !== "idle" && (
             <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex items-start gap-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-[1_1_14rem] items-start gap-3">
                   <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
                     upgradeStatus.job.status === "error"
                       ? "bg-destructive/10 text-destructive"
@@ -5711,7 +5672,7 @@ function SystemInfoSection() {
                       <Rocket className="h-5 w-5 animate-pulse" />
                     )}
                   </div>
-                  <div>
+                  <div className="min-w-0 flex-1 break-words">
                     <p className="text-sm font-semibold">
                       {upgradeStatus.job.status === "success"
                         ? (upgradeStatus.job.mode === "rollback" ? translateText("回退成功") : translateText("升级成功"))
@@ -5732,7 +5693,7 @@ function SystemInfoSection() {
                     </p>
                   </div>
                 </div>
-                <Badge variant={upgradeStatus.job.status === "error" ? "destructive" : "outline"} className={`w-fit ${upgradeStatus.job.status === "waiting_assets" ? "border-amber-500/30 text-amber-500" : ""}`}>
+                <Badge variant={upgradeStatus.job.status === "error" ? "destructive" : "outline"} className={`w-fit shrink-0 whitespace-nowrap ${upgradeStatus.job.status === "waiting_assets" ? "border-amber-500/30 text-amber-500" : ""}`}>
                   {upgradeStatus.job.targetVersion}
                 </Badge>
               </div>
@@ -5743,7 +5704,7 @@ function SystemInfoSection() {
                   <span>{upgradeProgress.percent}%</span>
                 </div>
                 <Progress value={upgradeProgress.percent} className="h-2" />
-                <div className="grid gap-2 sm:grid-cols-4">
+                <div className="grid gap-2 grid-cols-[repeat(auto-fit,minmax(min(100%,7rem),1fr))]">
                   {upgradeProgress.steps.map((step) => (
                     <div
                       key={step.label}

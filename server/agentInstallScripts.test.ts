@@ -16,6 +16,14 @@ function scriptSection(script: string, start: string, end: string) {
   return script.slice(startIndex, endIndex);
 }
 
+test("only explicit installation rotates identity; normal upgrades preserve retirement", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  const install = scriptSection(script, "do_install() {", "do_upgrade() {");
+  const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");
+  assert.match(install, /rm -f "\$CONFIG_DIR\/installation\.json"/);
+  assert.doesNotMatch(upgrade, /rm -f "\$CONFIG_DIR\/installation\.json"/);
+});
+
 test("install and upgrade provision optional conntrack and verify persistent source accounting", () => {
   const script = generateInstallScript("https://panel.example.com");
   const packages = scriptSection(script, "install_conntrack_optional() {", "persist_source_accounting_setting() {");

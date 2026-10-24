@@ -31,8 +31,8 @@ import { withDatabaseTransaction } from "../dbRuntime";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeHostIp, hostAddressOptions, normalizeHostDdnsIpVersion } from "../../shared/hostAddresses";
 import { mergeAgentReportedAddress } from "../agentAddressState";
-import { getMonitorSettings, saveMonitorSettings } from "../operationsMonitor";
-import { operationsMonitorSchema } from "../../shared/operationsMonitor";
+import { getMonitorSettings, saveMonitorSettings, getResourceAlertPolicy, saveResourceAlertPolicy, getResourceAlertServices, saveResourceAlertService, toggleResourceAlertService, deleteResourceAlertService } from "../operationsMonitor";
+import { operationsMonitorSchema, resourceAlertPolicySchema, resourceAlertServiceSchema } from "../../shared/operationsMonitor";
 import { normalizeHostProbeMethod, urlProbeOptionsSchema } from "../../shared/urlProbe";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
@@ -596,7 +596,28 @@ function scheduleOrphanedAgentHostCleanup() {
 }
 
 export const hostsRouter = router({
-  managementCounts: adminProcedure.query(() => db.getHostManagementCounts()),
+  managementCounts: adminProcedure.query(async () => {
+    const [counts, alerts] = await Promise.all([db.getHostManagementCounts(), getResourceAlertServices()]);
+    return { ...counts, services: counts.services + alerts.length };
+  }),
+  resourceAlertServices: adminProcedure.query(() => getResourceAlertServices()),
+  saveResourceAlertService: adminProcedure.input(z.object({ id: z.string().min(1).max(64).optional(), service: resourceAlertServiceSchema })).mutation(async ({ input }) => {
+    try { return await saveResourceAlertService(input.service, input.id); }
+    catch (error) {
+      if (error instanceof RangeError) throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+      throw error;
+    }
+  }),
+  toggleResourceAlertService: adminProcedure.input(z.object({ id: z.string().min(1).max(64), enabled: z.boolean() })).mutation(({ input }) => toggleResourceAlertService(input.id, input.enabled)),
+  deleteResourceAlertService: adminProcedure.input(z.object({ id: z.string().min(1).max(64) })).mutation(({ input }) => deleteResourceAlertService(input.id)),
+  resourceAlertPolicy: adminProcedure.query(() => getResourceAlertPolicy()),
+  saveResourceAlertPolicy: adminProcedure.input(resourceAlertPolicySchema).mutation(async ({ input }) => {
+    try { return await saveResourceAlertPolicy(input); }
+    catch (error) {
+      if (error instanceof RangeError) throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+      throw error;
+    }
+  }),
   resourceAlertSettings: adminProcedure.input(z.object({ hostId: z.number().int().positive() })).query(async ({ input }) => {
     if (!await db.getHostById(input.hostId)) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
     return getMonitorSettings(input.hostId);

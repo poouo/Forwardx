@@ -713,6 +713,7 @@ const IMPORT_TABLE_ORDER = [
   "ai_bot_workflows",
   "users",
   "hosts",
+  "agent_installations",
   "host_groups",
   "host_group_members",
   "tunnels",
@@ -1235,6 +1236,10 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.hostId = mapOptionalId(maps, "hosts", source.hostId);
       row.isUsed = !!row.hostId || !!row.isUsed;
       return { row, existingWhere: { token: row.token } };
+
+    case "agent_installations":
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { hostId: row.hostId, installationId: row.installationId } };
 
     case "host_metrics":
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);

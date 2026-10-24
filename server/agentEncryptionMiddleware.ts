@@ -165,6 +165,7 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
     res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
     req.body = payload;
     (req as any).agentToken = token;
+    (req as any).agentInstallationId = payload?.installationId;
     const tunneledPath = isSyncRequest ? normalizeTunnelPath(req.body?.path) : "";
     if (isSyncRequest && !tunneledPath) {
       res.status(400).json({ error: "Invalid encrypted request" });

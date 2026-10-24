@@ -8,7 +8,8 @@ import { queryPanelCall } from "./ai/panelTools";
 import { readPanelResources } from "./ai/resources";
 import { createMcpToken, listMcpTokens } from "./mcpTokens";
 import { mcpHttpRouter } from "./mcpRoutes";
-import { observeHostResources, saveMonitorSettings, monitorOverview, getMonitorSettings } from "./operationsMonitor";
+import { observeHostResources, saveMonitorSettings, monitorOverview, getMonitorSettings, getResourceAlertPolicy, saveResourceAlertPolicy, getResourceAlertServices, saveResourceAlertService, toggleResourceAlertService, deleteResourceAlertService } from "./operationsMonitor";
+import { withKeyedTaskLock } from "./keyedTaskLock";
 import { hostsRouter } from "./routers/hosts";
 import { hostChinaHealthSchema } from "../shared/hostChinaHealth";
 import { setSetting } from "./repositories/settingsRepository";
@@ -73,7 +74,132 @@ try {
   await assert.rejects(hostCaller(2, "user").saveResourceAlertSettings({ hostId: 2, settings: { enabled: true } } as any), (error: any) => error.code === "FORBIDDEN");
   assert.equal((await hostCaller(1, "admin").resourceAlertSettings({ hostId: 2 })).enabled, false);
   await assert.rejects(hostCaller(1, "admin").resourceAlertSettings({ hostId: 99999 }), (error: any) => error.code === "NOT_FOUND");
-  await assert.rejects(saveMonitorSettings(1, { notifyUserId: 99999 }), /通知用户不存在/);
+  assert.equal((await saveMonitorSettings(1, { notifyUserId: 99999 })).notifyUserId, null);
+
+  // Scoped policies are administrator-only, persisted, and apply to future hosts.
+  await assert.rejects(hostCaller(2, "user").resourceAlertPolicy(), (error: any) => error.code === "FORBIDDEN");
+  await assert.rejects(hostCaller(2, "user").saveResourceAlertPolicy({ hostScope: "all", settings: { enabled: true } } as any), (error: any) => error.code === "FORBIDDEN");
+  assert.equal((await getResourceAlertPolicy()).settings.enabled, false);
+  const scopedSettings = { enabled: true, notify: false, cpu: 80, memory: 0, disk: 0, durationSeconds: 60, recoverySeconds: 30, notifyUserId: 2 };
+  await hostCaller(1, "admin").saveResourceAlertPolicy({ hostScope: "all", settings: scopedSettings } as any);
+  assert.equal((await getResourceAlertPolicy()).settings.notifyUserId, null);
+  assert.equal((await getMonitorSettings(1)).enabled, true);
+  assert.equal((await getMonitorSettings(2)).enabled, true);
+  await runtime.insertAndGetId("hosts", { id: 3, name: "主机 C", ip: "192.0.2.3", userId: 1 });
+  assert.equal((await getMonitorSettings(3)).enabled, true, "all hosts includes new hosts without another save");
+  assert.ok((await runtime.queryRaw<any>("SELECT value FROM system_settings WHERE key = ?", ["hostResourceAlertPolicy"]))[0]?.value);
+
+  await saveResourceAlertPolicy({ hostScope: "exclude", excludeHostIds: [1], settings: scopedSettings });
+  assert.equal((await getMonitorSettings(1)).enabled, false, "exclusion overrides a previously enabled per-host configuration");
+  assert.equal((await getMonitorSettings(2)).enabled, true);
+  assert.equal((await getMonitorSettings(3)).enabled, true);
+  for (const offset of [300, 330, 360]) {
+    await observeHostResources({ id: 1 }, { cpu: 95 }, now + offset);
+    await observeHostResources({ id: 2 }, { cpu: 95 }, now + offset);
+  }
+  monitor = await monitorOverview();
+  assert.equal(monitor.active.length, 1);
+  assert.equal(monitor.active[0].hostId, 2);
+  const historyCount = monitor.events.length;
+  await saveResourceAlertPolicy({ hostScope: "specific", hostIds: [1, 3, 3], settings: scopedSettings });
+  assert.deepEqual((await hostCaller(1, "admin").resourceAlertPolicy()).hostIds, [1, 3]);
+  assert.equal((await getMonitorSettings(2)).enabled, false);
+  assert.equal((await getMonitorSettings(3)).enabled, true);
+  assert.equal((await monitorOverview()).active.length, 0, "scope changes reset active state");
+  assert.equal((await monitorOverview()).events.length, historyCount, "scope changes retain history");
+  await runtime.insertAndGetId("hosts", { id: 4, name: "主机 D", ip: "192.0.2.4", userId: 1 });
+  assert.equal((await getMonitorSettings(4)).enabled, false, "specific selection does not include new hosts");
+  await assert.rejects(hostCaller(1, "admin").saveResourceAlertPolicy({ hostScope: "specific", hostIds: [99999], settings: scopedSettings } as any), (error: any) => error.code === "NOT_FOUND");
+  await assert.rejects(hostCaller(1, "admin").saveResourceAlertPolicy({ hostScope: "specific", hostIds: [], settings: scopedSettings } as any), (error: any) => error.code === "BAD_REQUEST");
+  assert.deepEqual((await getResourceAlertPolicy()).hostIds, [1, 3], "invalid saves do not modify the policy");
+
+  // An already queued observation cannot repopulate state after a policy save.
+  let releaseObservation!: () => void;
+  const observationGate = new Promise<void>(resolve => { releaseObservation = resolve; });
+  const held = withKeyedTaskLock("host-resource-alert:1", () => observationGate);
+  const queued = observeHostResources({ id: 1 }, { cpu: 95 }, now + 400);
+  let saved = false;
+  const replacing = saveResourceAlertPolicy({ hostScope: "exclude", excludeHostIds: [1], settings: scopedSettings }).then(value => { saved = true; return value; });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(saved, false, "policy save waits for the old observation before clearing state");
+  } finally { releaseObservation(); }
+  await Promise.all([held, queued, replacing]);
+  assert.equal((await getMonitorSettings(1)).enabled, false);
+  assert.equal((await runtime.queryRaw<any>("SELECT * FROM operations_alert_state")).length, 0);
+  assert.equal((await getMonitorSettings(4)).enabled, true, "excluded selection includes later hosts");
+  await saveResourceAlertPolicy({ hostScope: "all", settings: { enabled: false } });
+  assert.equal((await getMonitorSettings(3)).enabled, false);
+
+  await setSetting("hostResourceAlertPolicy", "invalid-json");
+  assert.equal((await getMonitorSettings(3)).enabled, false, "invalid policy fails closed");
+  await saveResourceAlertPolicy({ hostScope: "all", settings: { enabled: false } });
+
+  // Single-metric services preserve legacy settings, then observe independently per service and host.
+  for (const method of ["resourceAlertServices", "saveResourceAlertService", "toggleResourceAlertService", "deleteResourceAlertService"] as const) {
+    const input: any = method === "resourceAlertServices" ? undefined : method === "saveResourceAlertService" ? { service: { name: "CPU", metric: "cpu" } } : { id: "legacy-cpu", enabled: true };
+    await assert.rejects((hostCaller(2, "user")[method] as any)(input), (error: any) => error.code === "FORBIDDEN");
+  }
+  await saveResourceAlertPolicy({ hostScope: "specific", hostIds: [1], settings: { ...scopedSettings, memory: 85, disk: 0 } });
+  const converted = await getResourceAlertServices();
+  assert.deepEqual(converted.map(service => service.metric), ["cpu", "memory"]);
+  assert.equal(converted[0].threshold, 80);
+  assert.deepEqual(converted[0].hostIds, [1]);
+  assert.equal((await runtime.queryRaw("SELECT * FROM system_settings WHERE key = ?", ["hostResourceAlertServices"])).length, 0, "reading legacy services does not mutate storage");
+  const diskService = await hostCaller(1, "admin").saveResourceAlertService({ service: { name: "Disk alert", metric: "disk", threshold: 90, notify: false, durationSeconds: 60, recoverySeconds: 30, hostScope: "exclude", excludeHostIds: [2] } } as any);
+  assert.equal((await getResourceAlertServices()).length, 3);
+  assert.equal((await runtime.queryRaw("SELECT * FROM operations_alert_state")).length, 0, "legacy active states do not duplicate converted services");
+  const beforeServiceEvents = (await monitorOverview()).total;
+  for (const offset of [600, 630, 660]) {
+    await observeHostResources({ id: 1, name: "主机 A" }, { cpu: 95, memory: 90, disk: 96 }, now + offset);
+    await observeHostResources({ id: 2 }, { cpu: 95, memory: 90, disk: 96 }, now + offset);
+  }
+  monitor = await monitorOverview();
+  assert.equal(monitor.active.length, 3);
+  assert.equal(monitor.total, beforeServiceEvents + 3);
+  assert.ok(monitor.active.every(row => row.hostId === 1));
+  assert.ok(monitor.events.some(row => row.serviceName === "Disk alert" && row.metric === "disk"));
+  const [slow, high] = await Promise.all([
+    saveResourceAlertService({ name: "Slow CPU", metric: "cpu", threshold: 80, durationSeconds: 120, recoverySeconds: 30, notify: false, hostScope: "specific", hostIds: [1] }),
+    saveResourceAlertService({ name: "High CPU", metric: "cpu", threshold: 99, durationSeconds: 60, recoverySeconds: 30, notify: false, hostScope: "specific", hostIds: [1] }),
+  ]);
+  assert.equal((await getResourceAlertServices()).length, 5, "concurrent additions do not overwrite each other");
+  for (const offset of [690, 720]) await observeHostResources({ id: 1 }, { cpu: 95, memory: 90, disk: 96 }, now + offset);
+  const slowSince = (await runtime.queryRaw<any>("SELECT * FROM resource_alert_service_state WHERE serviceId = ?", [slow.id]))[0].since;
+  await saveResourceAlertService({ ...(({ id, ...input }) => input)(high), threshold: 85 }, high.id);
+  assert.equal((await runtime.queryRaw<any>("SELECT * FROM resource_alert_service_state WHERE serviceId = ?", [slow.id]))[0].since, slowSince, "editing one service preserves another service's pending window");
+  for (const offset of [750, 780, 810]) await observeHostResources({ id: 1 }, { cpu: 95, memory: 90, disk: 96 }, now + offset);
+  assert.equal((await monitorOverview()).active.length, 5, "multiple CPU services do not share state or prevent each other from triggering");
+  await toggleResourceAlertService(converted[0].id, false);
+  assert.equal((await monitorOverview()).active.length, 4);
+  for (const offset of [840, 870]) await observeHostResources({ id: 1 }, { cpu: 95, memory: 60, disk: 96 }, now + offset);
+  assert.equal((await monitorOverview()).active.length, 3);
+  assert.ok((await monitorOverview()).events.some(row => row.serviceId === converted[1].id && row.type === "recovered"));
+  const retainedEvents = (await monitorOverview()).total;
+  await deleteResourceAlertService(diskService.id);
+  assert.equal((await monitorOverview()).active.length, 2);
+  assert.equal((await monitorOverview()).total, retainedEvents, "deleting a service preserves its named historical events");
+  await assert.rejects(saveResourceAlertService({ name: "Invalid", metric: "cpu", hostScope: "specific", hostIds: [9999] }), /主机不存在/);
+  await assert.rejects(saveResourceAlertService({ name: "Missing", metric: "cpu" }, "nonexistent"), /服务不存在/);
+  // Drain observations before disable/delete, including an observation already waiting on a host lock.
+  let releaseServiceObservation!: () => void;
+  const heldService = withKeyedTaskLock("host-resource-alert:1", () => new Promise<void>(resolve => { releaseServiceObservation = resolve; }));
+  const queuedService = observeHostResources({ id: 1 }, { cpu: 95 }, now + 900);
+  let serviceSaved = false;
+  const disabling = toggleResourceAlertService(slow.id, false).then(() => { serviceSaved = true; });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(serviceSaved, false);
+  } finally { releaseServiceObservation(); }
+  await Promise.all([heldService, queuedService, disabling]);
+  assert.equal((await runtime.queryRaw("SELECT * FROM resource_alert_service_state WHERE serviceId = ?", [slow.id])).length, 0);
+  for (const service of await getResourceAlertServices()) await deleteResourceAlertService(service.id);
+  assert.deepEqual(await getResourceAlertServices(), []);
+  await observeHostResources({ id: 1 }, { cpu: 100, memory: 100, disk: 100 }, now + 930);
+  assert.equal((await monitorOverview()).active.length, 0, "empty service list never revives the old enabled policy");
+  await setSetting("hostResourceAlertServices", "invalid-json");
+  assert.deepEqual(await getResourceAlertServices(), [], "invalid services fail closed");
+  await setSetting("hostResourceAlertServices", "[]");
 
   // Dashboard status/history includes IP changes without exposing any merchant configuration.
   const serviceId = await runtime.insertAndGetId("host_probe_services", { name: "国内探测", userId: 1, targetIp: "223.5.5.5", hostScope: "specific", hostIds: "[2]" });

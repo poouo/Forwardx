@@ -2,6 +2,20 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [2.3.290] - 2026-10-24
+
+- Use categorized dropdowns and single-column bulk workflows; add enable, pause, restart, delete, personal-group filters and failed-item retries. Restarts preserve paused states and statistics.
+- Filter grouping candidates by add/remove action and target groups; align controls, stabilize initial loading and fix pagination/Apply to the footer.
+- Import port ranges, lists and per-line `listener:target:port`; re-import TXT exports with listener ports and failed items preserved.
+- Add a searchable AI model picker with refresh and custom input; fix DeepSeek model-list requests.
+- Fix same-token replacement recovery. New Agents take ownership; updated retired instances stop syncing while preserving forwarding. Confirm copying linked installation commands.
+- Move resource alerts to a dedicated service-management tab; select CPU, memory or disk per service, with all/specific/excluded hosts and administrator-only notifications.
+- Fix clipping, blocked scrolling, crowded chart titles and overlapping metered controls in mobile dialogs; respect safe areas and browser-toolbar heights.
+- Add mobile sidebar swipes, refine dashboard cards and host actions, and remove unnecessary settings gaps.
+- Keep plans and metered resources card-only with drag sorting; improve narrow upgrade cards, version labels and statistics.
+- Avoid redundant group-maintenance writes and batch member-host reads while preserving configuration sync and online recovery dispatch.
+- Panel `2.3.290`; Android / iOS `2.4.8`; Agent `2.2.203`; ForwardX FXP runtime `2.2.122`. Same-token ownership requires matching Agent / FXP updates.
+
 ## [2.3.289] - 2026-10-23
 
 - Compact operations ranking cards to fit their content; preview five entries and view the top ten in a dialog to reduce empty space.
@@ -213,15 +227,3 @@ Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are
 ### Versions
 
 - Panel/APK release: 2.3.281; Android: 2.3.98; Agent: 2.2.194; ForwardX FXP runtime: `2.2.117`.
-
-## [2.3.280] - 2026-09-08
-
-### Fixes and improvements
-
-- Fix two-level link filtering and the main rule list disappearing when opening batch management.
-- Improve latency statistics, tunnel port allocation, group member limits and Agent runtime recovery.
-- Improve Agent/panel diagnostics and traffic reporting for long-running stability.
-
-### Versions
-
-- Panel/APK release: 2.3.280; Agent: 2.2.194; ForwardX FXP runtime: 2.2.117; Android: 2.3.97.

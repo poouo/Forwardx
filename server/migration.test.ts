@@ -127,6 +127,8 @@ test("essential migration skips rebuildable history while SQLite direct migratio
     source.prepare("INSERT INTO users (id, username, password, role) VALUES (1, 'admin', 'hash', 'admin')").run();
     source.prepare("INSERT INTO auth_sessions (id, sid, userId, kind, expiresAt) VALUES (1, 'session-1', 1, 'browser', ?)").run(now + 3600);
     source.prepare("INSERT INTO hosts (id, name, ip, userId, isOnline, lastHeartbeat) VALUES (1, 'edge', '192.0.2.1', 1, 1, ?)").run(now);
+    source.prepare("UPDATE hosts SET agentInstallationId = ? WHERE id = 1").run("b".repeat(64));
+    source.prepare("INSERT INTO agent_installations (hostId, installationId) VALUES (1, ?), (1, ?)").run("a".repeat(64), "b".repeat(64));
     source.prepare("INSERT INTO tunnels (id, name, entryHostId, exitHostId, listenPort, userId, isEnabled, isRunning) VALUES (1, 'tunnel', 1, 1, 22000, 1, 1, 1)").run();
     source.prepare("INSERT INTO forward_rules (id, hostId, name, forwardType, protocol, tunnelId, sourcePort, targetIp, targetPort, userId, isEnabled, isRunning, pendingDelete) VALUES (1, 1, 'rule', 'gost', 'tcp', 1, 12000, 'example.com', 443, 1, 1, 1, 0), (2, 1, 'deleted-rule', 'gost', 'tcp', 1, 12001, 'deleted.example.com', 443, 1, 0, 1, 1)").run();
     source.prepare("INSERT INTO host_metrics (id, hostId, cpuUsage, recordedAt) VALUES (1, 1, 77, ?)").run(now);
@@ -146,6 +148,7 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       });
       assert.equal(essential.dataScope, "essential");
       assert.equal(essential.tables.users.length, 1);
+      assert.equal(essential.tables.agent_installations.length, 2, "retired identities are essential business state");
       assert.equal(essential.tables.host_traffic_counters.length, 1);
       assert.equal(essential.tables.agent_traffic_reports.length, 1);
       assert.equal(essential.tables.host_metrics, undefined);
@@ -184,6 +187,8 @@ test("essential migration skips rebuildable history while SQLite direct migratio
       assert.equal(direct.result.transferMode, "sqlite-direct");
       assert.equal(direct.result.dataScope, "full");
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM users"))[0].count, 1);
+      assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM agent_installations"))[0].count, 2);
+      assert.equal((await runtime.queryRaw("SELECT agentInstallationId FROM hosts WHERE id = 1"))[0].agentInstallationId, "b".repeat(64));
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM host_metrics"))[0].count, 1);
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM tcping_stats"))[0].count, 1);
       assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS count FROM traffic_stat_buckets"))[0].count, 1);

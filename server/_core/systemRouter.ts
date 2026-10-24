@@ -12,6 +12,7 @@ import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getPanelLogPage } from "./panelLogger";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
+import { buildAiModelsEndpoint } from "../ai/models";
 import {
   decryptMigrationSnapshotBackup,
   encryptMigrationSnapshot,
@@ -1434,17 +1435,6 @@ function toAiProviderConfigView(config: AiProviderConfigRuntime): AiProviderConf
   };
 }
 
-function buildAiModelsEndpoint(provider: AiProvider, baseUrl: string, chatOnly: boolean) {
-  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
-  const modelPath = /\/models$/i.test(normalized) ? normalized : `${normalized}/models`;
-  if (provider === "siliconflow") {
-    if (!chatOnly) return modelPath;
-    return `${modelPath}${modelPath.includes("?") ? "&" : "?"}sub_type=chat`;
-  }
-  if (!chatOnly) return modelPath;
-  return `${modelPath}${modelPath.includes("?") ? "&" : "?"}type=chat`;
-}
-
 function pickPathValue(input: unknown, pathKey: string): unknown {
   const source = input && typeof input === "object" ? input as Record<string, unknown> : null;
   if (!source) return undefined;
@@ -2001,6 +1991,7 @@ export const systemRouter = router({
         const resp = await fetch(endpoint, {
           method: "GET",
           cache: "no-store",
+          signal: AbortSignal.timeout(10_000),
           headers: {
             Accept: "application/json",
             Authorization: `Bearer ${apiKey}`,

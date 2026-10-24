@@ -290,6 +290,15 @@ export function closeAgentControlStreams() {
   for (const client of [...agentEventClients.values()]) closeAgentEventClient(client);
 }
 
+export function supersedeAgentEventClient(hostId: number) {
+  const client = agentEventClients.get(hostId);
+  if (!client) return;
+  writeAgentEventFrame(client, encryptedEventFrame("agent-superseded", { preserveForwarding: true }, client.token));
+  // End even when backpressured; the ownership guard will repeat the directive
+  // if the old Agent reconnects before receiving the final event.
+  closeAgentEventClient(client, "end");
+}
+
 function sendAgentEvent(hostId: number, event: string, data: any) {
   if (seamlessBackgroundPaused()) return false;
   const client = agentEventClients.get(hostId);

@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -22,6 +27,68 @@ func resetTrafficBatchesForTest() {
 	trafficDiagnostics.Lock()
 	trafficDiagnostics.last = make(map[string]time.Time)
 	trafficDiagnostics.Unlock()
+}
+
+func TestTrafficReportsIncludeEncryptedInstallationIdentity(t *testing.T) {
+	resetTrafficBatchesForTest()
+	t.Cleanup(resetTrafficBatchesForTest)
+	const token = "installation-traffic-token"
+	wanted := strings.Repeat("b", 64)
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.NotFound(w, req)
+			return
+		}
+		var env envelope
+		if err := json.NewDecoder(req.Body).Decode(&env); err != nil {
+			t.Error(err)
+			w.WriteHeader(500)
+			return
+		}
+		iv, err := hex.DecodeString(env.IV)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		ct, err := hex.DecodeString(env.CT)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		key := sha256.Sum256([]byte(token + "|forwardx-agent-v1"))
+		block, err := aes.NewCipher(key[:])
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		plain := make([]byte, len(ct))
+		cipher.NewCTR(block, iv).XORKeyStream(plain, ct)
+		var payload struct {
+			InstallationID string `json:"installationId"`
+		}
+		if err := json.Unmarshal(plain, &payload); err != nil {
+			t.Error(err)
+			return
+		}
+		select {
+		case received <- payload.InstallationID:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := config{PanelURL: server.URL, Token: token, RuleID: 42, InstallationID: wanted}
+	enqueueTraffic(cfg, 10, 20)
+	flushTrafficBatches()
+	select {
+	case id := <-received:
+		if id != wanted {
+			t.Fatalf("traffic omitted installation identity: %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no traffic report received")
+	}
 }
 
 func TestTrafficBatchRetainsFailedReportsAndAcknowledgesSuccess(t *testing.T) {

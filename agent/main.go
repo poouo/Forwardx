@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.202"
+var Version = "2.2.203"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2642,6 +2642,7 @@ type fxpSpec struct {
 	TCPFastOpen              bool              `json:"tcpFastOpen"`
 	PanelURL                 string            `json:"panelUrl,omitempty"`
 	Token                    string            `json:"token,omitempty"`
+	InstallationID           string            `json:"installationId,omitempty"`
 	RelayExitHost            string            `json:"relayExitHost,omitempty"`
 	RelayExitPort            int               `json:"relayExitPort,omitempty"`
 	UDPRelayExitPort         int               `json:"udpRelayExitPort,omitempty"`
@@ -2714,6 +2715,9 @@ func main() {
 	}
 	cfg.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
 	activeConfigPath = resolvedConfigPath
+	if err := initializeAgentInstallation(resolvedConfigPath, cfg.Token); err != nil {
+		fatal("load installation identity: %v", err)
+	}
 	if err := configureAgentManagementProxy(cfg.ProxyURL); err != nil {
 		fatal("proxy configuration: %v", err)
 	}
@@ -2760,6 +2764,9 @@ func main() {
 	go agentMetricsScheduler(cfg)
 	go agentDNSWatchScheduler()
 	go func() {
+		if agentSuperseded.Load() {
+			return
+		}
 		restorePersistedForwardXRuntimes(cfg)
 		wakeHeartbeat()
 	}()
@@ -2767,6 +2774,10 @@ func main() {
 	metricsOnlyMode := false
 	for {
 		pending := atomic.LoadInt64(&actionPendingCount)
+		if agentSuperseded.Load() {
+			time.Sleep(time.Minute)
+			continue
+		}
 		fromSSE := heartbeatWakeFromSSE.Swap(false)
 		urgentRefresh := heartbeatUrgentWakeFromSSE.Swap(false)
 		forceReconcileWake := heartbeatForceReconcileWake.Swap(false)
@@ -3455,6 +3466,9 @@ func syncPanelURLFromResponse(panelURL string) {
 }
 
 func register(cfg Config) error {
+	if agentSuperseded.Load() {
+		return nil
+	}
 	ipv4, ipv6 := publicIPs()
 	ipv4Addresses, ipv6Addresses := publicAddressInventory()
 	primaryIP := ipv4
@@ -3477,7 +3491,13 @@ func register(cfg Config) error {
 		"ipv6Addresses": ipv6Addresses,
 	}
 	var out map[string]any
-	return post(cfg, "/api/agent/register", payload, &out)
+	if err := post(cfg, "/api/agent/register", payload, &out); err != nil {
+		return err
+	}
+	if !agentSuperseded.Load() {
+		agentInstallationRegistered.Store(true)
+	}
+	return nil
 }
 
 // logHeartbeatResponse records the control-plane result without including the
@@ -3733,6 +3753,9 @@ func defaultIPv6NetworkInterface(raw []byte) string {
 }
 
 func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
+	if agentSuperseded.Load() {
+		return heartbeatResult{NextInterval: 300}, nil
+	}
 	startedAt := time.Now()
 	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
@@ -3864,6 +3887,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
 	logHeartbeatResponse("full", &resp, time.Since(startedAt))
+	if agentSuperseded.Load() {
+		return heartbeatResult{NextInterval: 300}, nil
+	}
 	compactAgentReports.Store(resp.CompactReports)
 	agentPresenceSupported.Store(resp.PresenceSupported)
 	if resp.TrafficReportInterval > 0 {
@@ -3966,6 +3992,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 }
 
 func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
+	if agentSuperseded.Load() {
+		return heartbeatResult{NextInterval: 300}, nil
+	}
 	startedAt := time.Now()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
@@ -4063,6 +4092,9 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 		return heartbeatResult{NextInterval: cfg.Interval}, err
 	}
 	logHeartbeatResponse("keepalive", &resp, time.Since(startedAt))
+	if agentSuperseded.Load() {
+		return heartbeatResult{NextInterval: 300}, nil
+	}
 	compactAgentReports.Store(resp.CompactReports)
 	agentPresenceSupported.Store(resp.PresenceSupported)
 	if resp.TrafficReportInterval > 0 {
@@ -4096,6 +4128,9 @@ func heartbeatPresenceRetry(cfg Config, expectedGeneration uint64) (int, uint64,
 }
 
 func heartbeatPresenceRequest(cfg Config, expectedGeneration *uint64) (int, uint64, error) {
+	if agentSuperseded.Load() {
+		return 300, 0, nil
+	}
 	receivedRevision, appliedRevision, receivedHash, appliedHash := desiredRevisionSnapshot()
 	payload := map[string]any{
 		"mode":                      "presence",
@@ -4664,6 +4699,9 @@ func prepareAgentEventStreamRetry(cfg Config, err error) bool {
 func agentEventStream(cfg Config) {
 	delay := agentEventStreamReconnectMinDelay
 	for {
+		if agentSuperseded.Load() {
+			return
+		}
 		startedAt := time.Now()
 		if err := runAgentEventStream(cfg); err != nil {
 			logAgentCommError("event-stream", err)
@@ -4690,7 +4728,13 @@ func agentEventStream(cfg Config) {
 }
 
 func runAgentEventStream(cfg Config) error {
-	env, err := encrypt(map[string]any{"agentVersion": Version}, cfg.Token)
+	if err := ensureAgentInstallationRegistered(cfg); err != nil {
+		return err
+	}
+	if agentSuperseded.Load() {
+		return nil
+	}
+	env, err := encrypt(map[string]any{"agentVersion": Version, "installationId": currentAgentInstallationID()}, cfg.Token)
 	if err != nil {
 		return err
 	}
@@ -4780,6 +4824,9 @@ func runAgentEventStream(cfg Config) error {
 						}
 						go selfUpgrade(cfg, &up)
 					}
+				} else if msg.Type == "agent-superseded" {
+					markAgentSuperseded()
+					return nil
 				} else if msg.Type == "agent-refresh" {
 					var refresh agentRefreshEvent
 					if err := json.Unmarshal(msg.Data, &refresh); err != nil {
@@ -4877,6 +4924,9 @@ func decodeEventDataForPanel(raw string, token string, panelURL string, serverTi
 // 与心跳路径的 syncDesiredState 共享同一幂等性机制（签名 + desired_state_records.json），
 // 因此即使心跳和 SSE 推送同时触发也不会重复执行。
 func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
+	if agentSuperseded.Load() {
+		return
+	}
 	if push.DesiredState == nil && len(push.RunningRules) == 0 && len(push.RuleLatencyProbes) == 0 && len(push.StateSignatures) == 0 {
 		return
 	}
@@ -4915,6 +4965,9 @@ func handleActionWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate fu
 }
 
 func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate func(), previousRuntime *localActionRuntimeSnapshot, jobResult *actionJobResult) bool {
+	if agentSuperseded.Load() {
+		return false
+	}
 	if strings.TrimSpace(a.StatusType) == "runtime" && pluginAgentTaskIDPattern.MatchString(strings.TrimSpace(a.PluginID)) {
 		releasePluginLock := acquirePluginAgentTaskLock(pluginAgentTask{PluginID: strings.TrimSpace(a.PluginID), Intent: "write"})
 		defer releasePluginLock()
@@ -9494,7 +9547,7 @@ func fxpSpecPanelCredentialDigest(spec fxpSpec) (string, bool) {
 	if isFXPEntryGroup(spec) {
 		digest := ""
 		for _, entry := range spec.Entries {
-			candidate := fxpPanelCredentialDigest(entry.PanelURL, entry.Token)
+			candidate := agentInstallationBoundCredentialDigest(entry.PanelURL, entry.Token, entry.InstallationID)
 			if candidate == "" || (digest != "" && digest != candidate) {
 				return "", false
 			}
@@ -9502,7 +9555,7 @@ func fxpSpecPanelCredentialDigest(spec fxpSpec) (string, bool) {
 		}
 		return digest, digest != ""
 	}
-	digest := fxpPanelCredentialDigest(spec.PanelURL, spec.Token)
+	digest := agentInstallationBoundCredentialDigest(spec.PanelURL, spec.Token, spec.InstallationID)
 	return digest, digest != ""
 }
 
@@ -9510,7 +9563,7 @@ func currentFXPPanelCredentialDigest() (string, bool) {
 	panelURL := currentPanelURL(Config{})
 	token, _ := runtimeAgentToken.Load().(string)
 	if panelURL != "" && token != "" {
-		return fxpPanelCredentialDigest(panelURL, token), true
+		return agentInstallationBoundCredentialDigest(panelURL, token, currentAgentInstallationID()), true
 	}
 	path := strings.TrimSpace(activeConfigPath)
 	if path == "" {
@@ -9520,7 +9573,7 @@ func currentFXPPanelCredentialDigest() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	digest := fxpPanelCredentialDigest(currentPanelURL(cfg), cfg.Token)
+	digest := agentInstallationBoundCredentialDigest(currentPanelURL(cfg), cfg.Token, currentAgentInstallationID())
 	return digest, digest != ""
 }
 
@@ -9998,7 +10051,7 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 	}
 	originalSpec := spec
 	runtimeExecutable := currentFXPRuntimeExecutableInfo()
-	expectedCredentialDigest := fxpPanelCredentialDigest(currentPanelURL(cfg), cfg.Token)
+	expectedCredentialDigest := agentInstallationBoundCredentialDigest(currentPanelURL(cfg), cfg.Token, currentAgentInstallationID())
 
 	id := fxpServerID(spec)
 	wireGuardRefID := id
@@ -10115,10 +10168,12 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 	if spec.Role == "entry" {
 		spec.PanelURL = currentPanelURL(cfg)
 		spec.Token = cfg.Token
+		spec.InstallationID = currentAgentInstallationID()
 	} else if isFXPEntryGroup(spec) {
 		for index := range spec.Entries {
 			spec.Entries[index].PanelURL = currentPanelURL(cfg)
 			spec.Entries[index].Token = cfg.Token
+			spec.Entries[index].InstallationID = currentAgentInstallationID()
 		}
 	}
 	if isFXPEntryGroup(spec) || spec.Role == "exit" {
@@ -13574,6 +13629,14 @@ func postToPanelURL(cfg Config, panelURL string, path string, payload any, out a
 }
 
 func postWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
+	if path != "/api/agent/register" {
+		if err := ensureAgentInstallationRegistered(cfg); err != nil {
+			return err
+		}
+	}
+	if agentSuperseded.Load() {
+		return quietSupersededAgentResponse(out)
+	}
 	negotiationRetryUsed := false
 	rejectionRetryUsed := false
 	var err error
@@ -13613,10 +13676,14 @@ func postOnceWithClient(client *http.Client, cfg Config, path string, payload an
 }
 
 func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL string, path string, payload any, out any) error {
+	if agentSuperseded.Load() {
+		return quietSupersededAgentResponse(out)
+	}
 	startedAt := time.Now()
 	env, err := encrypt(map[string]any{
-		"path":    path,
-		"payload": payload,
+		"path":           path,
+		"payload":        payload,
+		"installationId": currentAgentInstallationID(),
 	}, cfg.Token)
 	if err != nil {
 		return err
@@ -13637,6 +13704,12 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+auth.proof)
 	res, err := client.Do(req)
+	if agentSuperseded.Load() {
+		if res != nil {
+			_ = res.Body.Close()
+		}
+		return quietSupersededAgentResponse(out)
+	}
 	if err != nil {
 		if isTransientAgentCommError(err) {
 			logAgentCommError("post:"+path, err)
@@ -13652,10 +13725,12 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 	decodedBody := resBody
 	var respEnv envelope
 	var decryptErr error
+	decryptedResponse := false
 	responseAuthenticated := strings.EqualFold(strings.TrimSpace(authResult), agentAuthResultAccepted)
 	if err := json.Unmarshal(resBody, &respEnv); err == nil && respEnv.V == 1 {
 		if plain, err := decryptForPanel(respEnv, cfg.Token, panelURL, res.Header.Get(encryptedResponseClockHeader)); err == nil {
 			decodedBody = plain
+			decryptedResponse = true
 			responseAuthenticated = true
 		} else {
 			decryptErr = err
@@ -13695,6 +13770,7 @@ func postOnceWithClientToPanelURL(client *http.Client, cfg Config, panelURL stri
 	if err := json.Unmarshal(decodedBody, out); err != nil {
 		return wrapAgentRequestAttemptError(err, auth, authResult, responseAuthenticated)
 	}
+	observeAgentOwnershipResponse(decodedBody, decryptedResponse)
 	if elapsed := time.Since(startedAt); elapsed >= agentSlowRequestThreshold && shouldLogAgentReport("post-slow:"+path, agentReportLogInterval) {
 		logf("agent request slow path=%s duration=%s status=%d", path, elapsed.Round(time.Millisecond), res.StatusCode)
 	}
@@ -13727,7 +13803,7 @@ func formatPanelErrorBody(body []byte) string {
 }
 
 func logAgentCommError(scope string, err error) {
-	if err == nil {
+	if err == nil || agentSuperseded.Load() {
 		return
 	}
 	scope = strings.TrimSpace(scope)

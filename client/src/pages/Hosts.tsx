@@ -2325,24 +2325,43 @@ function HostsContent() {
           )}
           {activeManageTab === "hosts" && (
             <>
-              <Button
-                variant="outline"
-                size="sm"
-                className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
-                disabled={checkingAgentUpdate}
-                onClick={handleCheckAgentUpdate}
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />{translateText("检查 Agent 更新")}</Button>
-              {user?.role === "admin" && (
+              <div className="col-span-2 grid min-w-0 grid-cols-3 gap-1.5 sm:contents">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
-                  disabled={onlineOutdatedCount === 0 || upgradeAgentsMutation.isPending}
-                  onClick={requestAllAgentUpgrades}
+                  className={`h-auto min-h-9 min-w-0 gap-1 px-1.5 text-xs sm:h-9 sm:min-h-0 sm:gap-2 sm:px-3 sm:text-sm ${user?.role === "admin" ? "w-full sm:w-auto" : "col-span-3 w-full sm:col-span-1 sm:w-auto"}`}
+                  title={translateText("检查 Agent 更新")}
+                  aria-label={translateText("检查 Agent 更新")}
+                  disabled={checkingAgentUpdate}
+                  onClick={handleCheckAgentUpdate}
                 >
-                  {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}{translateText("一键升级 Agent")}</Button>
-              )}
+                  <RefreshCw className={`h-3.5 w-3.5 shrink-0 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
+                  <span className="sm:hidden">{translateText("检查更新")}</span>
+                  <span className="hidden sm:inline">{translateText("检查 Agent 更新")}</span>
+                </Button>
+                {user?.role === "admin" && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-auto min-h-9 min-w-0 w-full gap-1 px-1.5 text-xs sm:h-9 sm:min-h-0 sm:w-auto sm:gap-2 sm:px-3 sm:text-sm"
+                      title={translateText("一键升级 Agent")}
+                      aria-label={translateText("一键升级 Agent")}
+                      disabled={onlineOutdatedCount === 0 || upgradeAgentsMutation.isPending}
+                      onClick={requestAllAgentUpgrades}
+                    >
+                      {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Download className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="sm:hidden">{translateText("一键升级")}</span>
+                      <span className="hidden sm:inline">{translateText("一键升级 Agent")}</span>
+                    </Button>
+                    <Button onClick={openCreate} className="h-auto min-h-9 min-w-0 w-full gap-1 px-1.5 text-xs sm:h-9 sm:min-h-0 sm:w-auto sm:gap-2 sm:px-3 sm:text-sm">
+                      <Plus className="h-4 w-4 shrink-0" />
+                      <span className="sm:hidden">{translateText("添加")}</span>
+                      <span className="hidden sm:inline">{translateText("添加主机")}</span>
+                    </Button>
+                  </>
+                )}
+              </div>
               <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
                 <Button
                   variant={viewMode === "compact-card" ? "secondary" : "ghost"}
@@ -2458,7 +2477,7 @@ function HostsContent() {
               </Button>
             </div>
           )}
-          {user?.role === "admin" && (
+          {user?.role === "admin" && activeManageTab !== "hosts" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
               {activeManageTab === "services" ? translateText("添加服务") : activeManageTab === "groups" ? translateText("添加分组") : translateText("添加主机")}
@@ -2996,7 +3015,7 @@ function HostsContent() {
 
       {/* 编辑主机对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex h-[min(720px,86vh)] max-h-[86vh] flex-col overflow-hidden sm:max-w-[44rem]">
+        <DialogContent className="h-[min(720px,86svh)] max-h-[86svh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-[44rem]">
           <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>{translateText("编辑主机")}</DialogTitle>
             <DialogDescription className="sr-only">{translateText("修改主机信息")}</DialogDescription>
@@ -3004,7 +3023,7 @@ function HostsContent() {
           <Tabs
             value={hostDialogTab}
             onValueChange={(value) => setHostDialogTab(value as HostDialogTab)}
-            className="min-h-0 flex flex-1 flex-col overflow-hidden"
+            className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden"
           >
             <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-md bg-muted/50 p-1">
               {HOST_DIALOG_TABS.map((item) => {
@@ -3017,7 +3036,7 @@ function HostsContent() {
                 );
               })}
             </TabsList>
-            <div className="dialog-scroll-area mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-4 pl-0.5 pr-7">
+            <div className="dialog-scroll-area min-h-0 touch-pan-y overflow-y-auto overflow-x-hidden overscroll-contain pb-4 pl-0.5 pr-7">
               <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">

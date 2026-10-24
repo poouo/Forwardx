@@ -690,16 +690,18 @@ export async function toggleForwardRuleForActor(
   actor: { id: number; role: string },
   ruleId: number,
   isEnabled: boolean,
-  options: { reasonPrefix?: string } = {},
+  options: { reasonPrefix?: string; restartOnly?: boolean } = {},
 ) {
   return withKeyedTaskLock(`rule:${ruleId}`, async () => {
     let sourcePortReservation: HostPortReservation | null = null;
     try {
       const rule = await db.getForwardRuleById(ruleId);
-      if (!rule) throw new Error("规则不存在");
+      if (!rule || dbBool((rule as any).pendingDelete)) throw new Error("规则不存在或已删除");
       if (actor.role !== "admin" && rule.userId !== actor.id) throw new Error("无权操作此规则");
       assertRuleWritable(actor, rule);
       if ((rule as any).forwardGroupRuleId) throw new Error("转发组成员规则由系统维护，不能直接开关");
+      // Check under the rule lock: a concurrent pause must never be undone by restart.
+      if (options.restartOnly && !dbBool(rule.isEnabled)) return { success: true, rule, skipped: true };
       if ((rule as any).isForwardGroupTemplate) {
         if (actor.role !== "admin") {
           const groupId = Number((rule as any).forwardGroupId || 0);
@@ -743,16 +745,19 @@ export async function toggleForwardRuleForActor(
         }
         await db.syncForwardGroupRules(Number((rule as any).forwardGroupId));
         await db.runForwardGroupFailover(Number((rule as any).forwardGroupId));
+        if (options.restartOnly) {
+          const children = await db.getForwardGroupChildRulesForTemplate(ruleId);
+          await db.markForwardRulesNotRunning(children.filter((child: any) => dbBool(child.isEnabled) && !dbBool(child.pendingDelete)).map((child: any) => Number(child.id)));
+          await refreshPendingTemplateChildren(children, "forward-rule-restarted");
+        }
         return { success: true, rule };
       }
 
-      await requireRuleProtocolEnabled(rule);
+      if (isEnabled) await requireRuleProtocolEnabled(rule);
       let toggleTunnelForRule: any = null;
       const reasonPrefix = String(options.reasonPrefix || "forward-rule").trim() || "forward-rule";
       if ((rule as any).tunnelId) {
         toggleTunnelForRule = await db.getTunnelById((rule as any).tunnelId);
-        await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (toggleTunnelForRule) await pushTunnelEndpointRefresh(toggleTunnelForRule, `${reasonPrefix}-toggled`);
       }
       if (isEnabled) {
         requireMainBackupAllowed({
@@ -796,6 +801,11 @@ export async function toggleForwardRuleForActor(
         await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any);
       } else {
         await db.toggleForwardRule(ruleId, false);
+      }
+      // Only notify shared endpoints after authorization and the state write succeed.
+      if (toggleTunnelForRule) {
+        await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+        await pushTunnelEndpointRefresh(toggleTunnelForRule, `${reasonPrefix}-toggled`);
       }
       pushAgentRefresh(Number(rule.hostId), `${reasonPrefix}-${isEnabled ? "enabled" : "disabled"}`);
       return { success: true, rule };
@@ -2278,5 +2288,11 @@ export const crudRulesRouter = router({
     }),
   toggle: protectedProcedure
     .input(z.object({ id: z.number(), isEnabled: z.boolean() }))
-    .mutation(async ({ input, ctx }) => toggleForwardRuleForActor(ctx.user, input.id, input.isEnabled))
+    .mutation(async ({ input, ctx }) => toggleForwardRuleForActor(ctx.user, input.id, input.isEnabled)),
+  restart: protectedProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => toggleForwardRuleForActor(ctx.user, input.id, true, {
+      restartOnly: true,
+      reasonPrefix: "forward-rule-restart",
+    }))
 });

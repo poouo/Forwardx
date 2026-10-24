@@ -8,7 +8,7 @@ const Tabs = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Root>, Rea
 Tabs.displayName = TabsPrimitive.Root.displayName
 
 const TabsList = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.List>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(({ className, ...props }, ref) => (
-  <TabsPrimitive.List ref={ref} className={cn("pearl-tabs-list inline-flex min-h-10 flex-wrap items-center justify-center gap-1 rounded-md bg-muted p-1 text-muted-foreground", className)} {...props} />
+  <TabsPrimitive.List ref={ref} className={cn("pearl-tabs-list inline-flex min-h-10 shrink-0 flex-wrap items-center justify-center gap-1 rounded-md bg-muted p-1 text-muted-foreground", className)} {...props} />
 ))
 TabsList.displayName = TabsPrimitive.List.displayName
 

@@ -149,7 +149,7 @@ export function RuleGroupMultiSelect({ value, onChange, disabled = false }: { va
   return <div className="space-y-2">
     <div className="flex items-center justify-between gap-2"><Label>{t("规则分组")}</Label><Button type="button" variant="ghost" size="icon" className="size-7" disabled={disabled} title={t("管理分组")} aria-label={t("管理分组")} onClick={() => setManager(true)}><FolderCog className="size-4" /></Button></div>
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild><Button type="button" variant="outline" disabled={disabled || query.isLoading} className="h-auto min-h-9 w-full justify-start whitespace-normal text-left font-normal"><Folders className="mr-2 size-4 shrink-0 text-primary" /><span className="min-w-0">{selected.length ? t("已选 {0} 个分组", [selected.length]) : t("选择分组（可多选）")}</span></Button></PopoverTrigger>
+      <PopoverTrigger asChild><Button type="button" variant="outline" disabled={disabled || query.isLoading} className="h-10 w-full justify-start text-left font-normal"><Folders className="mr-2 size-4 shrink-0 text-primary" /><span className="min-w-0 truncate">{selected.length ? t("已选 {0} 个分组", [selected.length]) : t("选择分组（可多选）")}</span></Button></PopoverTrigger>
       <PopoverContent className="w-[min(22rem,calc(100vw-3rem))] p-2" align="start">
         <Input autoFocus value={search} maxLength={64} onChange={event => setSearch(event.target.value)} placeholder={t("搜索或新增分组")} className="mb-2" />
         <div className="max-h-52 space-y-1 overflow-y-auto">
@@ -180,32 +180,79 @@ export function RuleGroupBar({ value, onChange }: { value: number | null; onChan
   </div>;
 }
 
-export function RuleGroupBulkEditor() {
+export function useRuleGroupBulkEditor({ enabled }: { enabled: boolean }) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [ids, setIds] = useState<number[]>([]);
-  const [groupIds, setGroupIds] = useState<number[]>([]);
-  const [mode, setMode] = useState<"replace" | "add" | "remove">("add");
+  const [groupIds, updateGroupIds] = useState<number[]>([]);
+  const [mode, updateMode] = useState<"replace" | "add" | "remove">("add");
+  const setGroupIds = (next: number[]) => {
+    updateGroupIds(next);
+    setPage(1);
+    setIds([]);
+  };
+  const setMode = (next: typeof mode) => {
+    updateMode(next);
+    setPage(1);
+    setIds([]);
+  };
   const refresh = useRefreshPersonalRuleGroups();
   const confirm = useConfirmDialog();
-  const query = trpc.rules.listPage.useQuery({ scope: "self", page, pageSize: 20, category: "all", search }, { staleTime: 10_000 });
-  const move = trpc.rules.moveToPersonalGroups.useMutation({ onSuccess: async () => { await refresh(); setIds([]); toast.success(t("分组已更新")); }, onError: error => toast.error(error.message) });
+  const query = trpc.rules.listPage.useQuery({
+    scope: "self", page, pageSize: 20, category: "all", search,
+    personalGroupChange: mode === "replace" ? undefined : { mode, groupIds },
+  }, { enabled, staleTime: 10_000, refetchOnWindowFocus: false });
+  const move = trpc.rules.moveToPersonalGroups.useMutation({ onSuccess: async () => { setIds([]); await refresh(); toast.success(t("分组已更新")); }, onError: error => toast.error(error.message) });
+  useEffect(() => {
+    if (enabled) return;
+    setPage(1);
+    setSearch("");
+    setIds([]);
+    updateGroupIds([]);
+    updateMode("add");
+  }, [enabled]);
   const items = (query.data?.items || []) as any[];
+  const canApply = enabled && ids.length > 0 && !move.isPending && (mode === "replace" || groupIds.length > 0);
+  const apply = async () => {
+    if (!canApply) return;
+    if (mode === "replace" && !(await confirm({ title: t("替换分组"), description: t("所选规则原有的分组归属将被替换。"), confirmText: t("继续") }))) return;
+    move.mutate({ ids, groupIds, mode });
+  };
+  return { page, setPage, search, setSearch, ids, setIds, groupIds, setGroupIds, mode, setMode, query, items, isPending: move.isPending, canApply, apply };
+}
+
+type RuleGroupBulkEditorState = ReturnType<typeof useRuleGroupBulkEditor>;
+
+export function RuleGroupBulkEditor({ editor }: { editor: RuleGroupBulkEditorState }) {
+  const { search, setSearch, setPage, ids, setIds, groupIds, setGroupIds, mode, setMode, query, items, isPending } = editor;
   return <div className="space-y-3">
-    <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2"><RuleGroupMultiSelect value={groupIds} onChange={setGroupIds} disabled={move.isPending} /><div className="space-y-2"><Label>{t("操作")}</Label><Select value={mode} onValueChange={value => setMode(value as typeof mode)} disabled={move.isPending}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="add">{t("加入分组")}</SelectItem><SelectItem value="remove">{t("移出分组")}</SelectItem><SelectItem value="replace">{t("替换分组")}</SelectItem></SelectContent></Select></div></div>
-    <div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder={t("搜索规则")} className="pl-9" /></div>
-    <div className="max-h-[35dvh] space-y-1 overflow-y-auto rounded-lg border p-2">
-      {items.map(rule => <label key={rule.id} className="flex cursor-pointer items-center gap-2 rounded p-2 text-sm hover:bg-accent"><Checkbox disabled={move.isPending || (!ids.includes(rule.id) && ids.length >= 500)} checked={ids.includes(rule.id)} onCheckedChange={checked => setIds(current => checked ? [...new Set([...current, rule.id])] : current.filter(id => id !== rule.id))} /><span className="min-w-0 flex-1 truncate">{rule.name}</span><span className="text-xs text-muted-foreground">#{rule.id}</span></label>)}
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_8rem] items-start gap-2">
+      <RuleGroupMultiSelect value={groupIds} onChange={setGroupIds} disabled={isPending} />
+      <div className="min-w-0 space-y-2">
+        <div className="flex h-7 items-center"><Label>{t("操作")}</Label></div>
+        <Select value={mode} onValueChange={value => setMode(value as typeof mode)} disabled={isPending}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="add">{t("加入分组")}</SelectItem><SelectItem value="remove">{t("移出分组")}</SelectItem><SelectItem value="replace">{t("替换分组")}</SelectItem></SelectContent></Select>
+      </div>
+    </div>
+    <div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input value={search} disabled={isPending} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder={t("搜索规则")} className="pl-9" /></div>
+    <div aria-busy={query.isFetching} className="min-h-48 space-y-1 rounded-lg border p-2">
+      {items.map(rule => <label key={rule.id} className="flex cursor-pointer items-center gap-2 rounded p-2 text-sm hover:bg-accent"><Checkbox disabled={isPending || (!ids.includes(rule.id) && ids.length >= 500)} checked={ids.includes(rule.id)} onCheckedChange={checked => setIds(current => checked ? [...new Set([...current, rule.id])] : current.filter(id => id !== rule.id))} /><span className="min-w-0 flex-1 truncate">{rule.name}</span><span className="text-xs text-muted-foreground">#{rule.id}</span></label>)}
       {query.isLoading && <p className="p-2 text-sm text-muted-foreground">{t("加载中...")}</p>}
       {query.isError && <Button variant="ghost" onClick={() => query.refetch()}>{t("重试")}</Button>}
-      {!query.isLoading && !query.isError && !items.length && <p className="p-2 text-sm text-muted-foreground">{t("暂无规则")}</p>}
-    </div>
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={page <= 1 || query.isFetching} onClick={() => setPage(page - 1)}>{t("上一页")}</Button><span className="text-xs tabular-nums">{query.data?.page ?? page} / {query.data?.totalPages ?? 1}</span><Button variant="outline" size="sm" disabled={!query.data || page >= query.data.totalPages || query.isFetching} onClick={() => setPage(page + 1)}>{t("下一页")}</Button></div>
-      <Button disabled={!ids.length || move.isPending || (mode !== "replace" && !groupIds.length)} onClick={async () => {
-        if (mode === "replace" && !(await confirm({ title: t("替换分组"), description: t("所选规则原有的分组归属将被替换。"), confirmText: t("继续") }))) return;
-        move.mutate({ ids, groupIds, mode });
-      }}>{t("应用到 {0} 条规则", [ids.length])}</Button>
+      {!query.isLoading && !query.isError && !items.length && <p className="p-2 text-sm text-muted-foreground">{mode !== "replace" && !groupIds.length ? t("请先选择分组") : t("没有匹配的转发规则")}</p>}
     </div>
   </div>;
+}
+
+export function RuleGroupBulkPagination({ editor }: { editor: RuleGroupBulkEditorState }) {
+  const { page, setPage, query, isPending } = editor;
+  const currentPage = query.data?.page ?? page;
+  return <div className="flex items-center gap-2">
+    <Button type="button" variant="outline" size="sm" disabled={isPending || currentPage <= 1 || query.isFetching} onClick={() => setPage(currentPage - 1)}>{t("上一页")}</Button>
+    <span className="text-xs tabular-nums">{currentPage} / {query.data?.totalPages ?? 1}</span>
+    <Button type="button" variant="outline" size="sm" disabled={isPending || !query.data || currentPage >= query.data.totalPages || query.isFetching} onClick={() => setPage(currentPage + 1)}>{t("下一页")}</Button>
+  </div>;
+}
+
+export function RuleGroupBulkApplyButton({ editor }: { editor: RuleGroupBulkEditorState }) {
+  return <Button type="button" disabled={!editor.canApply} onClick={editor.apply}>{t("应用到 {0} 条规则", [editor.ids.length])}</Button>;
 }

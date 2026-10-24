@@ -5,7 +5,9 @@ import {
   pushAgentSupportBundle,
   registerAgentEventClient,
   unregisterAgentEventClient,
+  supersedeAgentEventClient,
 } from "./agentEvents";
+import { decryptPayload } from "./agentCrypto";
 
 class FakeEventResponse extends EventEmitter {
   writes: string[] = [];
@@ -40,6 +42,18 @@ class FakeEventResponse extends EventEmitter {
 function asResponse(value: FakeEventResponse) {
   return value as any;
 }
+
+test("superseding an Agent sends an authenticated notice and retires only its stream", () => {
+  const response = new FakeEventResponse();
+  registerAgentEventClient(910_010, "takeover-token", asResponse(response));
+  supersedeAgentEventClient(910_010);
+  assert.equal(response.ended, true);
+  const envelope = JSON.parse(response.writes[0].split("data: ")[1]);
+  const decoded = decryptPayload(envelope, "takeover-token", { validateTimestamp: false }) as any;
+  assert.equal(decoded.type, "agent-superseded");
+  assert.equal(decoded.data.preserveForwarding, true);
+  assert.equal(pushAgentSupportBundle(910_010, "after-takeover"), false);
+});
 
 test("Agent SSE queues complete event frames until the response drains", () => {
   const response = new FakeEventResponse();

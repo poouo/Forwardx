@@ -416,6 +416,8 @@ export default function AgentTokenManager({
   const [showNewToken, setShowNewToken] = useState(false);
   const [showScript, setShowScript] = useState(false);
   const [scriptToken, setScriptToken] = useState("");
+  const [reuseInstall, setReuseInstall] = useState<{ command: string; hostName: string; online: boolean } | null>(null);
+  const installTokenIds = useRef(new Map<string, number>());
   const [loadingScriptTokenId, setLoadingScriptTokenId] = useState<number | null>(null);
   const [newToken, setNewToken] = useState("");
   const [description, setDescription] = useState("");
@@ -526,6 +528,7 @@ export default function AgentTokenManager({
       utils.agentTokens.list.invalidate();
       toast.success(translateText("安装 Token 已生成"));
       setNewToken(data.token);
+      installTokenIds.current.set(data.token, data.id);
       setShowNewToken(true);
       setShowCreate(false);
     },
@@ -586,6 +589,7 @@ export default function AgentTokenManager({
     try {
       setLoadingScriptTokenId(tokenId);
       const data = await utils.agentTokens.getInstallToken.fetch({ id: tokenId });
+      installTokenIds.current.set(data.token, tokenId);
       setScriptToken(data.token);
       setShowScript(true);
     } catch (err: any) {
@@ -670,6 +674,20 @@ export default function AgentTokenManager({
   };
 
   const getInstallCommand = (token: string) => getAgentScriptCommand(`install ${token}`);
+  const copyInstallCommand = async (token: string) => {
+    try {
+      // Fetch on every copy: an open dialog may outlive the first installation.
+      const id = installTokenIds.current.get(token);
+      if (!id) throw new Error(translateText("获取安装命令失败"));
+      const data = await utils.agentTokens.getInstallToken.fetch({ id }, { staleTime: 0 });
+      const command = getInstallCommand(data.token);
+      if (data.boundHost) {
+        setReuseInstall({ command, hostName: data.boundHost.name, online: !!data.boundHost.isOnline });
+        return;
+      }
+      await copyToClipboard(command);
+    } catch (error: any) { toast.error(error?.message || translateText("获取安装命令失败")); }
+  };
   const getUninstallCommand = () => getAgentScriptCommand("uninstall");
   const getUpgradeCommand = () => getAgentScriptCommand("upgrade");
   const openEditToken = (tokenItem: any) => {
@@ -917,7 +935,7 @@ export default function AgentTokenManager({
                 variant="outline"
                 size="sm"
                 className="w-full gap-2"
-                onClick={() => copyToClipboard(getInstallCommand(newToken))}
+                onClick={() => copyInstallCommand(newToken)}
               >
                 <Copy className="h-3 w-3" />{translateText("复制安装命令")}</Button>
             </div>
@@ -1017,7 +1035,7 @@ export default function AgentTokenManager({
               label={translateText("安装命令")}
               command={scriptToken ? getInstallCommand(scriptToken) : ""}
               copyDisabled={!scriptToken}
-              onCopy={() => scriptToken && copyToClipboard(getInstallCommand(scriptToken))}
+              onCopy={() => scriptToken && copyInstallCommand(scriptToken)}
             />
             <CommandRow
               label={translateText("卸载命令")}
@@ -1035,6 +1053,24 @@ export default function AgentTokenManager({
               setShowScript(false);
               setScriptToken("");
             }}>{translateText("关闭")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!reuseInstall} onOpenChange={(open) => { if (!open) setReuseInstall(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{translateText("此 Token 已关联 Agent")}</DialogTitle>
+            <DialogDescription>
+              {translateText("已关联主机：{0}（{1}）。", [reuseInstall?.hostName || "", reuseInstall?.online ? translateText("在线") : translateText("离线")])}
+              {translateText("继续安装将由新 Agent 接管该主机及规则。旧 Agent 停止面板同步，已有转发保留运行；如需管理两台主机，请新建 Token。")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReuseInstall(null)}>{translateText("取消")}</Button>
+            <Button onClick={() => {
+              if (reuseInstall) void copyToClipboard(reuseInstall.command);
+              setReuseInstall(null);
+            }}>{translateText("确认并复制")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

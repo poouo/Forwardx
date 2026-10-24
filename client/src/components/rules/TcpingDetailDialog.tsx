@@ -2,7 +2,8 @@ import { t as translateText } from "@/i18n";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { LatencyChartDialogHeader } from "@/components/LatencyChartDialogHeader";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import {
   DEFAULT_LATENCY_TIME_RANGE_HOURS,
@@ -171,23 +172,14 @@ function TcpingDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
-        <DialogHeader>
-          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
-            <div className="min-w-0">
-              <DialogTitle className="truncate text-base sm:text-lg">
-                {isForwardChain ? translateText("转发链路延迟") : translateText("转发链路延迟 ({0})", [methodLabel])} - {ruleName}
-              </DialogTitle>
-              <DialogDescription className="text-xs sm:text-sm">
-                {history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? translateText("Ping 丢包") : translateText("TCP 连接失败")])}
-              </DialogDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
-              <LatencyHistoryTodayButton onClick={history.today} />
-              <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
-            </div>
-          </div>
-        </DialogHeader>
+        <LatencyChartDialogHeader
+          title={<>{isForwardChain ? translateText("转发链路延迟") : translateText("转发链路延迟 ({0})", [methodLabel])} - {ruleName}</>}
+          description={history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : isForwardChain ? translateText("最近 {0} 链路延迟与逐跳探测统计。", [latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 延迟与{1}统计。", [latencyTimeRangeLabel(timeRangeHours), probeMethod === "ping" ? translateText("Ping 丢包") : translateText("TCP 连接失败")])}
+        >
+          <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+          <LatencyHistoryTodayButton onClick={history.today} />
+          <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+        </LatencyChartDialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
           <div className="h-[42svh] min-h-[220px] w-full sm:h-72">
             {showInitialLoading ? (

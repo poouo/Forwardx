@@ -76,6 +76,191 @@ test("forward group sync creates an enabled child listener for every enabled mem
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test("maintenance skips unchanged unavailable children without suppressing config changes or recovery", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-maintenance-"));
+  const databasePath = path.join(directory, "maintenance.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const insert = (table, values) => runtime.executeRaw(
+      'INSERT INTO "' + table + '" (' + Object.keys(values).map(key => '"' + key + '"').join(',')
+        + ') VALUES (' + Object.keys(values).map(() => '?').join(',') + ')', Object.values(values));
+    const rows = () => runtime.queryRaw('SELECT * FROM forward_rules WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0 AND pendingDelete = 0 ORDER BY id');
+    const clear = () => runtime.executeRaw('DELETE FROM rule_updates');
+    const changedHosts = async (groupId = 10) => (await runtime.queryRaw(
+      'SELECT DISTINCT r.hostId FROM rule_updates u JOIN forward_rules r ON r.id = u.ruleId WHERE r.forwardGroupId = ? ORDER BY r.hostId', [groupId]
+    )).map(row => Number(row.hostId));
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      const now = Math.floor(Date.now() / 1000);
+      for (const id of [1, 2, 3, 4]) {
+        await insert('hosts', { id, name: 'host-' + id, ip: '198.51.100.' + id, userId: 1,
+          isOnline: id === 2 ? 0 : 1, lastHeartbeat: id === 4 ? now - 3600 : now,
+          trafficLimit: id === 3 ? 1000 : 0, trafficFailoverEnabled: id === 3 ? 1 : 0,
+          trafficFailoverExcluded: id === 3 ? 1 : 0 });
+      }
+      await insert('forward_groups', { id: 10, name: 'group', groupType: 'host', groupMode: 'failover',
+        forwardType: 'gost', failoverRuntimeInheritanceEnabled: 1, targetIp: '0.0.0.0', userId: 1, isEnabled: 1 });
+      for (const hostId of [1, 2, 3, 4]) {
+        await insert('forward_group_members', { id: 100 + hostId, groupId: 10, memberType: 'host', hostId, priority: hostId, isEnabled: 1 });
+      }
+      const addTemplate = (id) => insert('forward_rules', { id, hostId: 1, name: 'template-' + id,
+        forwardType: 'gost', protocol: 'tcp', forwardGroupId: 10, isForwardGroupTemplate: 1,
+        sourcePort: 16000 + id, targetIp: '203.0.113.80', targetPort: 80, userId: 1, isEnabled: 1, isRunning: 0 });
+      await addTemplate(1000);
+      await addTemplate(2000);
+      const groups = await import(moduleUrl('server/repositories/forwardGroupRepository.ts'));
+      const sync = () => groups.syncForwardGroupRules(10, { preserveRuntime: true });
+      await sync();
+      assert.equal((await rows()).length, 8);
+      await runtime.executeRaw('CREATE TABLE rule_updates (ruleId INTEGER NOT NULL)');
+      await runtime.executeRaw('CREATE TRIGGER audit_rule_update AFTER UPDATE ON forward_rules BEGIN INSERT INTO rule_updates VALUES (NEW.id); END');
+      await sync();
+      await sync();
+      assert.deepEqual(await changedHosts(), [1], 'only online stopped children should be re-dispatched');
+
+      // Metadata is still synchronized, without clearing an unavailable child's diagnostic.
+      await runtime.executeRaw("UPDATE forward_rules SET runtimeDiagnostic = 'keep diagnostic' WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0");
+      await runtime.executeRaw("UPDATE forward_rules SET name = 'renamed', telegramErrorNotifyEnabled = 1 WHERE isForwardGroupTemplate = 1");
+      await clear();
+      await sync();
+      const renamed = await rows();
+      assert.ok(renamed.every(row => row.name === '[Group:group] renamed' && row.telegramErrorNotifyEnabled === 1));
+      assert.ok(renamed.filter(row => row.hostId !== 1).every(row => row.runtimeDiagnostic === 'keep diagnostic'));
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [1], 'metadata must not be rewritten when unchanged');
+
+      await runtime.executeRaw('UPDATE forward_rules SET targetPort = 81 WHERE isForwardGroupTemplate = 1');
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [1, 2, 3, 4], 'configuration changes must reach unavailable hosts too');
+      assert.ok((await rows()).every(row => row.targetPort === 81));
+
+      await runtime.executeRaw('UPDATE hosts SET isOnline = 1, lastHeartbeat = ? WHERE id IN (2, 4)', [now]);
+      await runtime.executeRaw('UPDATE hosts SET trafficFailoverExcluded = 0 WHERE id = 3');
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [1, 2, 3, 4], 'recovery must use a new host snapshot on the very next sync');
+
+      // Running children are preserved, but previously omitted runtime fields must still be reconciled.
+      await runtime.executeRaw('UPDATE forward_rules SET isRunning = 1 WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0');
+      await runtime.executeRaw('UPDATE forward_rules SET blockHttp = 1 WHERE hostId = 2 AND isForwardGroupTemplate = 0');
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [2]);
+      assert.ok((await rows()).filter(row => row.hostId === 2).every(row => row.blockHttp === 0));
+
+      await runtime.executeRaw("UPDATE forward_rules SET isEnabled = 0, isRunning = 0, protocolBlockReason = 'blocked' WHERE hostId = 3 AND isForwardGroupTemplate = 0");
+      await clear();
+      await sync();
+      assert.ok(!(await changedHosts()).includes(3), 'an unchanged blocked child must not be rewritten on an online host');
+      await runtime.executeRaw('UPDATE forward_rules SET isEnabled = 1, protocolBlockReason = NULL WHERE hostId = 3 AND isForwardGroupTemplate = 0');
+
+      const deletedId = (await rows()).find(row => row.hostId === 2).id;
+      await runtime.executeRaw('UPDATE hosts SET isOnline = 0 WHERE id = 2');
+      await runtime.executeRaw('UPDATE forward_rules SET pendingDelete = 1, isEnabled = 0, isRunning = 1 WHERE id = ?', [deletedId]);
+      await sync();
+      assert.equal((await rows()).filter(row => row.hostId === 2).length, 2, 'pending-delete children cannot be preserved as active listeners');
+      assert.equal(Number((await runtime.queryRaw('SELECT pendingDelete FROM forward_rules WHERE id = ?', [deletedId]))[0].pendingDelete), 1);
+      await runtime.executeRaw('UPDATE hosts SET isOnline = 1 WHERE id = 2');
+
+      // Host SELECTs must not grow with template count. Count real SQL, not mocks.
+      let hostSelects = 0;
+      let restorePrepare;
+      await runtime.withSqliteExclusive(sqlite => {
+        const prepare = sqlite.prepare;
+        sqlite.prepare = function(sql, ...args) {
+          if (/\bfrom\s+"?hosts"?\b/i.test(sql)) hostSelects++;
+          return prepare.call(this, sql, ...args);
+        };
+        restorePrepare = () => { sqlite.prepare = prepare; };
+      });
+      const measure = async () => {
+        await runtime.executeRaw('UPDATE forward_rules SET isRunning = 1 WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0');
+        hostSelects = 0;
+        await sync();
+        return hostSelects;
+      };
+      const small = await measure();
+      for (let id = 3000; id < 3020; id++) await addTemplate(id);
+      await sync();
+      const large = await measure();
+      restorePrepare();
+      assert.ok(small > 0, 'SQL instrumentation must see host reads');
+      assert.equal(large, small, 'host SELECT count must be independent of template count');
+
+      // A disabled dependency should converge once, then perform zero rule UPDATEs.
+      await runtime.executeRaw('UPDATE forward_groups SET isEnabled = 0 WHERE id = 10');
+      await runtime.executeRaw('UPDATE forward_rules SET isRunning = 1 WHERE isForwardGroupTemplate = 1');
+      await sync();
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [], 'disabled rules/templates must not be repeatedly rewritten');
+
+      await runtime.executeRaw('DELETE FROM forward_group_members WHERE id = 104');
+      await sync();
+      assert.ok((await runtime.queryRaw('SELECT pendingDelete FROM forward_rules WHERE hostId = 4 AND isForwardGroupTemplate = 0')).every(row => row.pendingDelete === 1),
+        'removed members must still have their listeners marked for deletion');
+      await clear();
+      await sync();
+      assert.deepEqual(await changedHosts(), [], 'pending-delete listeners must not be rewritten every round');
+
+      // The same no-op guarantee applies to chain children and disabled chain members.
+      await runtime.executeRaw('UPDATE hosts SET isOnline = 0 WHERE id IN (2, 3)');
+      await insert('forward_groups', { id: 20, name: 'chain', groupType: 'host', groupMode: 'chain',
+        forwardType: 'gost', targetIp: '0.0.0.0', userId: 1, isEnabled: 1 });
+      for (const hostId of [2, 3]) await insert('forward_group_members', {
+        id: 200 + hostId, groupId: 20, memberType: 'host', hostId, priority: hostId, isEnabled: 1 });
+      await insert('forward_rules', { id: 5000, hostId: 2, name: 'chain template', forwardType: 'gost', protocol: 'tcp',
+        forwardGroupId: 20, isForwardGroupTemplate: 1, sourcePort: 31000, targetIp: '203.0.113.90', targetPort: 443,
+        userId: 1, isEnabled: 1, isRunning: 0 });
+      await groups.syncForwardGroupRules(20, { preserveRuntime: true });
+      await clear();
+      await groups.syncForwardGroupRules(20, { preserveRuntime: true });
+      assert.deepEqual(await changedHosts(20), [], 'unchanged stopped chain children on offline hosts must not be rewritten');
+      await runtime.executeRaw('UPDATE forward_rules SET targetPort = 444 WHERE id = 5000');
+      await clear();
+      await groups.syncForwardGroupRules(20, { preserveRuntime: true });
+      assert.deepEqual(await changedHosts(20), [3], 'the final chain hop must still receive target changes');
+
+      // Tunnel members use the same batched entry-host policy and no-op logic.
+      await insert('tunnels', { id: 30, name: 'tls tunnel', mode: 'tls', entryHostId: 2, exitHostId: 3,
+        listenPort: 35000, userId: 1, isEnabled: 1, isRunning: 1 });
+      await insert('forward_groups', { id: 30, name: 'tunnel group', groupType: 'tunnel', groupMode: 'failover',
+        targetIp: '0.0.0.0', userId: 1, isEnabled: 1 });
+      await insert('forward_group_members', { id: 301, groupId: 30, memberType: 'tunnel', tunnelId: 30, priority: 0, isEnabled: 1 });
+      await insert('forward_rules', { id: 6000, hostId: 2, name: 'tunnel template', forwardType: 'gost', protocol: 'tcp',
+        forwardGroupId: 30, isForwardGroupTemplate: 1, sourcePort: 33000, targetIp: '203.0.113.100', targetPort: 443,
+        userId: 1, isEnabled: 1, isRunning: 0 });
+      await groups.syncForwardGroupRules(30, { preserveRuntime: true });
+      await clear();
+      await groups.syncForwardGroupRules(30, { preserveRuntime: true });
+      assert.deepEqual(await changedHosts(30), [], 'unchanged offline tunnel children must not be rewritten');
+      await runtime.executeRaw('UPDATE tunnels SET isEnabled = 0 WHERE id = 30');
+      await groups.syncForwardGroupRules(30, { preserveRuntime: true });
+      await clear();
+      await groups.syncForwardGroupRules(30, { preserveRuntime: true });
+      assert.deepEqual(await changedHosts(30), [], 'a disabled member tunnel must converge without repeated rule writes');
+    } finally {
+      await runtime.closeDatabase();
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+    encoding: "utf8",
+    timeout: 90_000,
+  });
+  fs.rmSync(directory, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 test("legacy failover groups keep child runtime fields until explicitly opted in", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-runtime-compat-"));
   const databasePath = path.join(directory, "runtime-compat.db");

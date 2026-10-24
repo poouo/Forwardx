@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { LatencyStabilityStats } from "./LatencyStabilityStats";
 import { getLatencyStabilityStats } from "../lib/latencyChart";
 
@@ -31,4 +32,15 @@ test("uniform Ping services keep the explicit Ping loss label", () => {
   assert.match(html, /Ping 丢包率/);
   assert.match(html, /20\.00%/);
   assert.doesNotMatch(html, /请升级 Agent/);
+});
+
+test("latency cards adapt to their width and retain complete values in native apps", () => {
+  const stats = getLatencyStabilityStats([{ latency: 12345.67, probeCount: 570000, probeSuccesses: 570000 }]);
+  const html = renderToStaticMarkup(<LatencyStabilityStats stats={stats} />);
+  assert.match(html, /grid-cols-\[repeat\(auto-fit,minmax\(min\(100%,6\.5rem\),1fr\)\)\]/);
+  assert.match(html, /570000/);
+  assert.match(html, /12345\.67 ms/);
+  assert.doesNotMatch(html, /truncate|text-ellipsis|line-clamp/);
+  const css = readFileSync("client/src/index.css", "utf8");
+  assert.doesNotMatch(css, /html\.capacitor-native \[data-latency-stats="true"\]/);
 });

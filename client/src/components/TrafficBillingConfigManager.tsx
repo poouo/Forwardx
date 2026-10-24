@@ -16,13 +16,12 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OptimisticSwitch, Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { planDescriptionTemplate } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
-import { Coins, Gauge, LayoutGrid, List, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
+import { Coins, Gauge, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
@@ -127,8 +126,6 @@ function MobileInfoRow({
 
 type BillingResourceType = "host" | "tunnel" | "forward_group";
 type BillingResourceCategory = "port" | "tunnel" | "chain" | "group" | "legacy_host";
-type BillingConfigViewMode = "card" | "table";
-const BILLING_CONFIG_VIEW_MODE_STORAGE_KEY = "forwardx.trafficBilling.configs.viewMode";
 const BILLING_RESOURCE_CATEGORY_ITEMS: Array<{ value: Exclude<BillingResourceCategory, "legacy_host">; label: string; description: string }> = [
   { value: "port", label: translateText("端口转发"), description: translateText("链路管理中的端口转发资源") },
   { value: "tunnel", label: translateText("隧道转发"), description: translateText("已创建的隧道资源") },
@@ -136,25 +133,6 @@ const BILLING_RESOURCE_CATEGORY_ITEMS: Array<{ value: Exclude<BillingResourceCat
   { value: "group", label: translateText("转发组"), description: translateText("转发组资源") },
 ];
 const LEGACY_HOST_RESOURCE_CATEGORY_ITEM = { value: "legacy_host" as const, label: translateText("历史主机"), description: translateText("旧版本主机计费资源") };
-
-function getStoredBillingConfigViewMode(): BillingConfigViewMode {
-  if (typeof window === "undefined") return "card";
-  try {
-    const value = window.localStorage.getItem(BILLING_CONFIG_VIEW_MODE_STORAGE_KEY);
-    return value === "table" ? "table" : "card";
-  } catch {
-    return "card";
-  }
-}
-
-function storeBillingConfigViewMode(viewMode: BillingConfigViewMode) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(BILLING_CONFIG_VIEW_MODE_STORAGE_KEY, viewMode);
-  } catch {
-    // View preference is optional.
-  }
-}
 
 type BillingConfigForm = {
   stockLimit: string;
@@ -373,7 +351,6 @@ export default function TrafficBillingConfigManager({
   const utils = trpc.useUtils();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
-  const [configViewMode, setConfigViewMode] = useState<BillingConfigViewMode>(() => getStoredBillingConfigViewMode());
   const lastCreateRequestKey = useRef(createRequestKey);
   const { data: hosts = [] } = trpc.hosts.options.useQuery(undefined, {
     enabled: dialogOpen,
@@ -459,11 +436,6 @@ export default function TrafficBillingConfigManager({
   const openCreate = () => {
     setConfigForm({ ...defaultBillingConfigForm(), description: planDescriptionTemplate("metered") });
     setDialogOpen(true);
-  };
-
-  const handleConfigViewModeChange = (viewMode: BillingConfigViewMode) => {
-    setConfigViewMode(viewMode);
-    storeBillingConfigViewMode(viewMode);
   };
 
   useEffect(() => {
@@ -592,112 +564,43 @@ export default function TrafficBillingConfigManager({
             <CardTitle>{translateText("计费配置")}</CardTitle>
             <CardDescription>{translateText("按 GB 计费，可单独要求授权。")}</CardDescription>
           </div>
-          <div className="flex items-center overflow-hidden rounded-md border border-border/40">
-            <Button
-              variant={configViewMode === "card" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8 rounded-none"
-              title={translateText("卡片视图")}
-              onClick={() => handleConfigViewModeChange("card")}
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={configViewMode === "table" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8 rounded-none"
-              title={translateText("列表视图")}
-              onClick={() => handleConfigViewModeChange("table")}
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
         </CardHeader>
         <CardContent>
           {configsLoading ? (
             <DataSectionLoading label={translateText("正在加载计费配置")} />
           ) : (
-            <SortableReorderContext sortable={configSortable} strategy={configViewMode === "card" ? "rect" : "vertical"}>
-              {configViewMode === "card" ? (
-                <div key="billing-config-card-view" className="standard-card-grid gap-3">
-                  {configOrder.items.map((config: any) => (
-                    <SortableItem key={config.id} id={Number(config.id)} disabled={configSortDisabled}>
-                      {({ itemProps, handleProps }) => (
-                        <div {...itemProps} className="group/sortable min-w-0">
-                          <BillingConfigCard
-                            dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />}
-                            config={config}
-                            onEdit={() => openEdit(config)}
-                            onDelete={() => deleteConfig.mutate({ id: config.id })}
-                          />
-                        </div>
-                      )}
-                    </SortableItem>
-                  ))}
-                  {(data?.configs || []).length === 0 && (
-                    <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无计费配置")}</div>
-                  )}
-                </div>
-              ) : (
-                <div key="billing-config-table-view" className="overflow-x-auto">
-                  <Table>
-                    <TableHeader><TableRow><TableHead>{translateText("套餐名称")}</TableHead><TableHead>{translateText("单价")}</TableHead><TableHead>{translateText("倍率")}</TableHead><TableHead>{translateText("权限")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
-                    <TableBody>
-                      {configOrder.items.map((config: any) => (
-                        <SortableItem key={config.id} id={Number(config.id)} itemKind="row" disabled={configSortDisabled}>
-                          {({ itemProps, handleProps }) => (
-                        <TableRow {...itemProps} className="group/sortable">
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />
-                              {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
-                              <div className="min-w-0">
-                                <div className="break-words">{config.name || config.resourceName}</div>
-                                {config.name && <div className="truncate text-xs text-muted-foreground" title={config.resourceName}>{config.resourceName}</div>}
-                                <div className="mt-1 flex flex-wrap gap-1"><ProductStockBadge product={config} /><MeteredRuleLimitBadge config={{ maxRulesPerUser: config.maxRulesPerUser }} /></div>
-                              </div>
-                              <Badge variant="outline" className="hidden sm:inline-flex">{config.resourceKind || translateText("转发资源")}</Badge>
-                            </div>
-                          </TableCell>
-                          <TableCell>{formatPricePerGb(config)} / GB</TableCell>
-                          <TableCell>{config.multiplierText || formatTrafficMultiplier(config.multiplier || 100)}</TableCell>
-                          <TableCell>
-                            <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
-                              {config.requiresPermission ? translateText("需要授权") : translateText("公开可用")}
-                            </Badge>
-                          </TableCell>
-                          <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? translateText("启用") : translateText("停用")}</Badge></TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-1">
-                              <Button variant="ghost" size="icon" onClick={() => openEdit(config)}><Pencil className="h-4 w-4" /></Button>
-                              <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}><Trash2 className="h-4 w-4" /></Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                          )}
-                        </SortableItem>
-                      ))}
-                      {(data?.configs || []).length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{translateText("暂无计费配置")}</TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
+            <SortableReorderContext sortable={configSortable} strategy="rect">
+              <div className="standard-card-grid gap-3">
+                {configOrder.items.map((config: any) => (
+                  <SortableItem key={config.id} id={Number(config.id)} disabled={configSortDisabled}>
+                    {({ itemProps, handleProps }) => (
+                      <div {...itemProps} className="group/sortable min-w-0">
+                        <BillingConfigCard
+                          dragHandle={<SortableDragHandle dragHandleProps={handleProps} busy={reorderConfigs.isPending} />}
+                          config={config}
+                          onEdit={() => openEdit(config)}
+                          onDelete={() => deleteConfig.mutate({ id: config.id })}
+                        />
+                      </div>
+                    )}
+                  </SortableItem>
+                ))}
+                {(data?.configs || []).length === 0 && (
+                  <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{translateText("暂无计费配置")}</div>
+                )}
+              </div>
             </SortableReorderContext>
           )}
         </CardContent>
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl sm:max-h-[90svh]">
+        <DialogContent className="max-h-[92svh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-2xl sm:max-h-[90svh]">
           <DialogHeader>
             <DialogTitle>{configForm.id ? translateText("编辑计费资源") : translateText("新增计费资源")}</DialogTitle>
             <DialogDescription>{translateText("选择资源并设置每 GB 单价；倍率继承资源配置。")}</DialogDescription>
           </DialogHeader>
-          <div className="grid min-w-0 grid-cols-2 gap-3 [&>*]:min-w-0">
+          <div className="grid min-h-0 min-w-0 touch-pan-y auto-rows-max grid-cols-2 content-start gap-3 overflow-y-auto overscroll-contain pb-2 pr-1 [&>*]:min-w-0">
             <div className="col-span-2 space-y-2">
               <Label htmlFor="billing-config-name">{translateText("套餐名称")}</Label>
               <Input id="billing-config-name" maxLength={255} value={configForm.name} onChange={(e) => setConfigForm((current) => ({ ...current, name: e.target.value }))} placeholder={translateText("留空使用资源名称")} />
@@ -802,17 +705,17 @@ export default function TrafficBillingConfigManager({
             <div className="col-span-2">
               <PlanDescriptionEditor value={configForm.description} onChange={(description) => setConfigForm((current) => ({ ...current, description }))} />
             </div>
-            <div className="col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
-              <div className="min-w-0">
+            <div className="col-span-2 flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="min-w-0 flex-1">
                 <Label className="text-sm">{translateText("启用计费资源")}</Label>
-                <p className="mt-1 text-xs text-muted-foreground">{translateText("停用后该资源不再作为流量计费资源使用。")}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{translateText("停用后该资源不再作为流量计费资源使用。")}</p>
               </div>
               <Switch className="shrink-0" checked={configForm.enabled} onCheckedChange={(enabled) => setConfigForm((current) => ({ ...current, enabled }))} />
             </div>
-            <div className="col-span-2 flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
-              <div className="min-w-0">
+            <div className="col-span-2 flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
+              <div className="min-w-0 flex-1">
                 <Label className="text-sm">{translateText("需要额外计费权限")}</Label>
-                <p className="mt-1 text-xs text-muted-foreground">{translateText("关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。")}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{translateText("关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。")}</p>
               </div>
               <Switch className="shrink-0" checked={configForm.requiresPermission} onCheckedChange={(requiresPermission) => setConfigForm((current) => ({ ...current, requiresPermission }))} />
             </div>

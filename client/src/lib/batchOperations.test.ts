@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chunkBatchItems, isBatchPortConflictError, runBatchOperations } from "./batchOperations";
+import { chunkBatchItems, isBatchPortConflictError, runBatchOperations, runPortOrderedBatch } from "./batchOperations";
 
 test("batch operations keep order, limit concurrency, and retain individual failures", async () => {
   let active = 0;
@@ -35,4 +35,21 @@ test("batch item chunking preserves every item", () => {
   assert.deepEqual(chunkBatchItems([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
   assert.deepEqual(chunkBatchItems([1, 2], 0), [[1], [2]]);
   assert.deepEqual(chunkBatchItems([], 500), []);
+});
+
+test("batch import finishes explicit listeners before random allocation and preserves original result order", async () => {
+  const items = [{ sourcePort: 10000 }, { sourcePort: 0 }, { sourcePort: 10001 }, { sourcePort: 0 }];
+  let settledFixed = 0;
+  const results = await runPortOrderedBatch(items, 2, async (rule, index) => {
+    if (rule.sourcePort > 0) {
+      await new Promise(resolve => setTimeout(resolve, 3));
+      settledFixed++;
+      if (rule.sourcePort === 10001) throw new Error("port conflict");
+    } else assert.equal(settledFixed, 2);
+    return index;
+  });
+  assert.deepEqual(results.map(result => result.item), items);
+  assert.deepEqual(results.map(result => result.status), ["fulfilled", "fulfilled", "rejected", "fulfilled"]);
+  assert.deepEqual(results.filter(result => result.status === "fulfilled").map(result => result.value), [0, 1, 3]);
+  assert.deepEqual(await runPortOrderedBatch([], 6, async () => 1), []);
 });

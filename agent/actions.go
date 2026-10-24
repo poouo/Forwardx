@@ -258,7 +258,7 @@ func desiredStateActions(state *desiredState) []action {
 }
 
 func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
-	if state == nil {
+	if state == nil || agentSuperseded.Load() {
 		return nil
 	}
 	rememberDesiredStateReceived(state)
@@ -1364,6 +1364,9 @@ func actionWorkerLoop(workerID int) {
 				}
 			}
 			defer func() { finishActionJob(job) }()
+			if agentSuperseded.Load() {
+				return
+			}
 			if isOlderAction(job.action, false) {
 				return
 			}
@@ -1399,7 +1402,7 @@ func actionWorkerLoop(workerID int) {
 			if elapsed >= actionSlowHandleThreshold && shouldLogAgentReport("action-handle-slow:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
 				logf("action handle slow worker=%d duration=%s ok=%v pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 			}
-			if !ok && shouldLogAgentReport("action-handle-failed:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
+			if !ok && !agentSuperseded.Load() && shouldLogAgentReport("action-handle-failed:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
 				logf("action handle failed worker=%d duration=%s pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 			}
 			if job.desiredKey != "" && job.desiredSignature != "" {

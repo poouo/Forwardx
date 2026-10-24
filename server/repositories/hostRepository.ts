@@ -551,6 +551,18 @@ export async function getHostById(id: number) {
   return r[0] ? withComputedOnline(r[0]) : undefined;
 }
 
+/** Scoped batch lookup with the same liveness rules as getHostById. */
+export async function getHostsByIds(hostIds: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = normalizeIds(hostIds);
+  const rows: Array<typeof hosts.$inferSelect> = [];
+  for (let index = 0; index < ids.length; index += 400) {
+    rows.push(...await db.select().from(hosts).where(inArray(hosts.id, ids.slice(index, index + 400))));
+  }
+  return rows.map(withComputedOnline);
+}
+
 export async function createHost(host: InsertHost) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -654,6 +666,8 @@ export async function deleteHost(id: number) {
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
   await db.delete(hostProbeServiceStats).where(eq(hostProbeServiceStats.hostId, id));
   await executeRaw(`DELETE FROM ${quoteIdentifier("host_probe_health")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
+  await executeRaw(`DELETE FROM ${quoteIdentifier("resource_alert_service_state")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
+  await executeRaw(`DELETE FROM ${quoteIdentifier("operations_alert_state")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   hostAvailabilityRecorder.forget(id);
   await executeRaw(`DELETE FROM ${quoteIdentifier("host_availability_intervals")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));
@@ -664,6 +678,7 @@ export async function deleteHost(id: number) {
     eq(trafficBillingConfigs.resourceId, id),
   ));
   await db.delete(hosts).where(eq(hosts.id, id));
+  await executeRaw(`DELETE FROM ${quoteIdentifier("agent_installations")} WHERE ${quoteIdentifier("hostId")} = ?`, [id]);
   removePresenceCapableHost(id);
   invalidateAgentAuthTokenCandidates();
   if (before) await recordConfigAuditEvent({ resourceType: "host", resourceId: id, hostId: id, action: "delete", before });

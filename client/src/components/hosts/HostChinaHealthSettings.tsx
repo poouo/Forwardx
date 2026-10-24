@@ -1,6 +1,6 @@
 import { t } from "@/i18n";
 import type { ReactNode } from "react";
-import { Activity, ShieldCheck } from "lucide-react";
+import { Activity, BellRing, ShieldCheck } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -16,7 +16,7 @@ export type ChinaHealthDraft = Omit<HostChinaHealthConfig, "hook"> & {
   successMode: "http" | "json";
   updateAddress: "none" | "entry" | "entry_and_tunnel";
 };
-export type HostProbeServiceMode = "standard" | "china";
+export type HostProbeServiceMode = "standard" | "china" | "resource";
 
 export function applyHostProbeServiceMode<T extends {
   health: ChinaHealthDraft;
@@ -24,6 +24,9 @@ export function applyHostProbeServiceMode<T extends {
   hostIds: number[];
   intervalSeconds: number;
 }>(form: T, mode: HostProbeServiceMode): T {
+  // Resource alerts are configured independently of probe-service settings.
+  // Opening that tab must not silently disable a China health check.
+  if (mode === "resource") return form;
   const enabled = mode === "china";
   return {
     ...form,
@@ -37,12 +40,13 @@ export function HostProbeServiceModeTabs({ mode, onModeChange, children }: {
   onModeChange: (mode: HostProbeServiceMode) => void;
   children: ReactNode;
 }) {
-  return <Tabs value={mode} onValueChange={value => onModeChange(value === "china" ? "china" : "standard")} className="flex min-h-0 flex-auto flex-col gap-3">
-    <TabsList aria-label={t("服务模式")} className="grid h-auto w-full shrink-0 grid-cols-2 gap-1 rounded-md bg-muted/50 p-1">
-      <TabsTrigger value="standard" className="min-w-0 gap-2 px-3 py-1.5 text-sm"><Activity className="h-4 w-4 shrink-0" />{t("常规探测")}</TabsTrigger>
-      <TabsTrigger value="china" className="min-w-0 gap-2 px-3 py-1.5 text-sm"><ShieldCheck className="h-4 w-4 shrink-0" />{t("国内健康检测")}</TabsTrigger>
+  return <Tabs value={mode} onValueChange={value => onModeChange(value === "china" || value === "resource" ? value : "standard")} className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+    <TabsList aria-label={t("服务模式")} className="grid h-auto w-full shrink-0 grid-cols-3 gap-1 rounded-md bg-muted/50 p-1">
+      <TabsTrigger value="standard" className="min-w-0 gap-1.5 px-1.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm"><Activity className="h-4 w-4 shrink-0" />{t("常规探测")}</TabsTrigger>
+      <TabsTrigger value="china" className="min-w-0 gap-1.5 px-1.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm"><ShieldCheck className="h-4 w-4 shrink-0" />{t("国内健康检测")}</TabsTrigger>
+      <TabsTrigger value="resource" className="min-w-0 gap-1.5 px-1.5 py-1.5 text-xs sm:gap-2 sm:px-3 sm:text-sm"><BellRing className="h-4 w-4 shrink-0" />{t("资源告警")}</TabsTrigger>
     </TabsList>
-    <TabsContent value={mode} className="m-0 min-h-0 flex-auto space-y-3 overflow-y-auto pr-1 !animate-none">{children}</TabsContent>
+    <TabsContent value={mode} className="m-0 min-h-0 touch-pan-y space-y-3 overflow-y-auto overscroll-contain pb-1 pr-1 !animate-none">{children}</TabsContent>
   </Tabs>;
 }
 

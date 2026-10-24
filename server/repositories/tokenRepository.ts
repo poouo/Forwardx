@@ -7,7 +7,7 @@ import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 // ==================== Agent Token Queries ====================
 
 export const AGENT_AUTH_TOKEN_CACHE_TTL_MS = 60_000;
-type AgentAuthHostIdentity = { id: number; name: string };
+type AgentAuthHostIdentity = { id: number; name: string; agentInstallationId: string };
 type AgentAuthTokenSnapshot = {
   tokens: string[];
   hostIdentityByToken: Map<string, AgentAuthHostIdentity>;
@@ -52,7 +52,7 @@ async function loadAgentAuthTokenCandidates() {
   const db = await getDb();
   if (!db) return { tokens: [], hostIdentityByToken: new Map<string, AgentAuthHostIdentity>() };
   const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
-  const hostRows = await db.select({ id: hosts.id, name: hosts.name, token: hosts.agentToken }).from(hosts);
+  const hostRows = await db.select({ id: hosts.id, name: hosts.name, token: hosts.agentToken, agentInstallationId: hosts.agentInstallationId }).from(hosts);
   const tokens = Array.from(new Set([
     ...tokenRows.map((row: any) => row.token),
     ...hostRows.map((row: any) => row.token),
@@ -62,7 +62,7 @@ async function loadAgentAuthTokenCandidates() {
     const token = String(row?.token || "").trim();
     const id = Number(row?.id || 0);
     if (!token || !Number.isInteger(id) || id <= 0) continue;
-    hostIdentityByToken.set(token, { id, name: String(row?.name || "") });
+    hostIdentityByToken.set(token, { id, name: String(row?.name || ""), agentInstallationId: String(row?.agentInstallationId || "") });
   }
   return { tokens, hostIdentityByToken };
 }

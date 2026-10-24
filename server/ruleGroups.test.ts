@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { personalRuleGroupIdsSchema, personalRuleGroupSaveSchema } from "../shared/ruleGroups";
+import { personalRuleGroupIdsSchema, personalRuleGroupSaveSchema, personalRuleGroupChangeFilterSchema } from "../shared/ruleGroups";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-rule-groups-"));
 process.env.DATABASE_TYPE = "sqlite";
@@ -217,4 +217,56 @@ test("group editor input rejects conflicting membership changes and oversized sa
   assert.deepEqual(personalRuleGroupSaveSchema.parse({ name: "test", addRuleIds: [1, 1, 2] }).addRuleIds, [1, 2]);
   assert.equal(personalRuleGroupSaveSchema.safeParse({ name: "test", addRuleIds: [1], removeRuleIds: [1] }).success, false);
   assert.equal(personalRuleGroupSaveSchema.safeParse({ name: "test", addRuleIds: Array.from({ length: 300 }, (_, id) => id + 1), removeRuleIds: Array.from({ length: 201 }, (_, id) => id + 500) }).success, false);
+});
+
+test("group eligibility is filtered before pagination, preserves multi-group semantics and stays self-scoped", async () => {
+  const owner = 9000;
+  await runtime.insertAndGetId("users", { id: owner, username: "group-candidate-owner", password: "unused", role: "admin" });
+  const a = (await groups.savePersonalRuleGroup(owner, "candidate-a")).id;
+  const b = (await groups.savePersonalRuleGroup(owner, "candidate-b")).id;
+  const unrelated = (await groups.savePersonalRuleGroup(owner, "candidate-unrelated")).id;
+  const complete: number[] = [];
+  for (let index = 0; index < 25; index++) complete.push(await runtime.insertAndGetId("forward_rules", payload(owner, `complete-${index}`)));
+  await groups.moveRulesToPersonalGroups(owner, complete, [a, b], "add");
+  const partialA = await runtime.insertAndGetId("forward_rules", payload(owner, "candidate partial-a"));
+  const partialB = await runtime.insertAndGetId("forward_rules", payload(owner, "candidate partial-b"));
+  const empty = await runtime.insertAndGetId("forward_rules", payload(owner, "candidate empty"));
+  await groups.moveRulesToPersonalGroups(owner, [partialA], [a, unrelated], "add");
+  await groups.moveRulesToPersonalGroups(owner, [partialB], [b], "add");
+  const caller = router.createCaller(context(owner, "admin"));
+  const input = { scope: "all" as const, page: 1, pageSize: 100, category: "all" as const };
+  const add = await caller.listPage({ ...input, personalGroupChange: { mode: "add", groupIds: [a, b, a] } });
+  assert.equal(add.totalItems, 3);
+  assert.deepEqual(new Set(add.items.map(rule => rule.id)), new Set([partialA, partialB, empty]));
+  const one = await caller.listPage({ ...input, pageSize: 1, personalGroupChange: { mode: "add", groupIds: [a, b] } });
+  const two = await caller.listPage({ ...input, pageSize: 1, page: 2, personalGroupChange: { mode: "add", groupIds: [a, b] } });
+  assert.equal(one.totalPages, 3);
+  assert.equal(one.items.length, 1);
+  assert.equal(two.items.length, 1);
+  assert.notEqual(one.items[0].id, two.items[0].id);
+  const single = await caller.listPage({ ...input, personalGroupChange: { mode: "add", groupIds: [a] } });
+  assert.deepEqual(new Set(single.items.map(rule => rule.id)), new Set([partialB, empty]));
+  const remove = await caller.listPage({ ...input, personalGroupChange: { mode: "remove", groupIds: [a, b] } });
+  assert.equal(remove.totalItems, 27);
+  assert.ok(!remove.items.some(rule => rule.id === empty));
+  for (const mode of ["add", "remove"] as const) {
+    assert.equal((await caller.listPage({ ...input, personalGroupChange: { mode, groupIds: [] } })).totalItems, 0);
+  }
+  const searched = await caller.listPage({ ...input, search: "partial-a", personalGroupChange: { mode: "remove", groupIds: [a, b] } });
+  assert.deepEqual(searched.items.map(rule => rule.id), [partialA]);
+  await assert.rejects(caller.listPage({ ...input, personalGroupChange: { mode: "remove", groupIds: [groupOther] } }), { code: "NOT_FOUND" });
+  await assert.rejects(router.createCaller(context(2)).listPage({ ...input, personalGroupChange: { mode: "add", groupIds: [a] } }), { code: "NOT_FOUND" });
+  // Applying the operation removes candidates and keeps unrelated memberships.
+  await caller.moveToPersonalGroups({ ids: [partialA], groupIds: [a, b], mode: "add" });
+  assert.equal((await caller.listPage({ ...input, personalGroupChange: { mode: "add", groupIds: [a, b] } })).totalItems, 2);
+  await caller.moveToPersonalGroups({ ids: [partialA], groupIds: [a, b], mode: "remove" });
+  assert.deepEqual((await groups.getRulePersonalGroupIds(owner, [partialA])).get(partialA), [unrelated]);
+  assert.equal((await caller.listPage({ ...input, personalGroupChange: { mode: "remove", groupIds: [a, b] } })).totalItems, 26);
+});
+
+test("group eligibility filter validates its bounded input", () => {
+  assert.deepEqual(personalRuleGroupChangeFilterSchema.parse({ mode: "add", groupIds: [1, 2, 1] }), { mode: "add", groupIds: [1, 2] });
+  for (const value of [{ mode: "replace", groupIds: [] }, { mode: "add", groupIds: [0] }, { mode: "remove", groupIds: Array(101).fill(1) }]) {
+    assert.equal(personalRuleGroupChangeFilterSchema.safeParse(value).success, false);
+  }
 });

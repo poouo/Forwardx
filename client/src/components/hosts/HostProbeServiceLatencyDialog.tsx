@@ -14,7 +14,8 @@ import {
   type LatencyTimeRangeHours,
 } from "@/components/LatencyTimeRangeSelect";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { LatencyChartDialogHeader } from "@/components/LatencyChartDialogHeader";
 import { trpc } from "@/lib/trpc";
 import { applyLatencyPeakCut, getLatencyStabilityStats, getLatencyYAxisTicks, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { pollingInterval } from "@/lib/polling";
@@ -315,22 +316,17 @@ export default function HostProbeServiceLatencyDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-5xl sm:p-6">
-        <DialogHeader>
-          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
-            <div className="min-w-0">
-              <DialogTitle>{translateText("服务延迟图表")}</DialogTitle>
-              <DialogDescription>{history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : host?.name ? translateText("{0} 最近 {1} 服务探测延迟", [host.name, latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 服务探测延迟", [latencyTimeRangeLabel(timeRangeHours)])}</DialogDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end">
-              <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
-              <LatencyHistoryTodayButton onClick={history.today} />
-              <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
-            </div>
-          </div>
-        </DialogHeader>
+        <LatencyChartDialogHeader
+          title={translateText("服务延迟图表")}
+          description={history.selectedDay ? translateText("{0} 延迟与探测统计。", [history.label]) : host?.name ? translateText("{0} 最近 {1} 服务探测延迟", [host.name, latencyTimeRangeLabel(timeRangeHours)]) : translateText("最近 {0} 服务探测延迟", [latencyTimeRangeLabel(timeRangeHours)])}
+        >
+          <LatencyTimeRangeSelect value={timeRangeHours} daySelected={!!history.selectedDay} onChange={(hours) => { setTimeRangeHours(hours); history.setSelectedDay(null); }} />
+          <LatencyHistoryTodayButton onClick={history.today} />
+          <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0" />
+        </LatencyChartDialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
         {hostServices.length > 0 && (
-          <div className="flex items-start justify-between gap-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
             <div className="flex min-w-0 flex-1 flex-wrap gap-2">
               {hostServices.map((service, index) => {
                 const serviceId = Number(service.id);
@@ -349,7 +345,7 @@ export default function HostProbeServiceLatencyDialog({
                     aria-pressed={active}
                     title={service.name}
                   >
-                    <span className="h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: colors[index % colors.length] }} />
                     <span className="truncate">{service.name}</span>
                   </button>
                 );

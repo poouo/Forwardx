@@ -140,7 +140,7 @@ const (
 	fxpUDPIdleTimeout    = 5 * time.Minute
 	fxpProtocolSampleMax = 512
 	fxpMasterContext     = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion    = "2.2.121"
+	fxpRuntimeVersion    = "2.2.122"
 	fxpFallbackRetry     = 5 * time.Second
 	fxpFallbackDial      = 3 * time.Second
 	fxpShutdownDrain     = 5 * time.Second
@@ -2958,10 +2958,11 @@ func reportProtocolBlock(cfg config, proto string) {
 		return
 	}
 	payload := map[string]any{
-		"ruleId":     cfg.RuleID,
-		"tunnelId":   cfg.TunnelID,
-		"sourcePort": cfg.ListenPort,
-		"protocol":   proto,
+		"installationId": cfg.InstallationID,
+		"ruleId":         cfg.RuleID,
+		"tunnelId":       cfg.TunnelID,
+		"sourcePort":     cfg.ListenPort,
+		"protocol":       proto,
 	}
 	env, err := encryptEnvelope(payload, cfg.Token)
 	if err != nil {

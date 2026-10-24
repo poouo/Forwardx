@@ -70,6 +70,31 @@ test("clearing an AI API key removes provider storage and disables AI", () => {
       assert.equal(await db.getSetting("deepseekApiKeySiliconflow"), null);
       assert.equal(await db.getSetting("deepseekAiEnabled"), "false");
 
+      const withoutKey = await caller.listAiModels({ provider: "siliconflow" });
+      assert.equal(withoutKey.configured, false);
+      assert.deepEqual(withoutKey.models, []);
+      await db.setSettings({ deepseekApiKeyDeepseek: "model-list-secret" });
+      const originalFetch = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = async (url, options) => {
+        calls++;
+        assert.equal(String(url), "https://api.deepseek.com/models");
+        assert.equal(options.headers.Authorization, "Bearer model-list-secret");
+        assert.ok(options.signal);
+        return new Response(JSON.stringify({ data: [{ id: "deepseek-reasoner" }, { id: "deepseek-chat" }] }), { status: 200 });
+      };
+      try {
+        const listed = await caller.listAiModels({ provider: "deepseek", chatOnly: true });
+        assert.equal(listed.error, "");
+        assert.deepEqual(listed.models.map(model => model.id), ["deepseek-chat", "deepseek-reasoner"]);
+        assert.ok(!JSON.stringify(listed).includes("model-list-secret"));
+        globalThis.fetch = async () => new Response("unauthorized", { status: 401 });
+        const failed = await caller.listAiModels({ provider: "deepseek" });
+        assert.deepEqual(failed.models, []);
+        assert.match(failed.error, /401/);
+        assert.equal(calls, 1);
+      } finally { globalThis.fetch = originalFetch; }
+
       await db.setSettings({
         deepseekProvider: "deepseek",
         deepseekApiKeyDeepseek: "current-deepseek-secret",

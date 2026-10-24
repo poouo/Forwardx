@@ -6,6 +6,7 @@ import { Button } from "./button"
 import { Separator } from "./separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip"
 import { useIsMobile } from "@/hooks/useMobile"
+import { bindSidebarSwipe } from "@/lib/sidebarSwipe"
 
 const SIDEBAR_COOKIE_NAME = "sidebar:state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -90,6 +91,7 @@ const SidebarProvider = React.forwardRef<HTMLDivElement, React.ComponentProps<"d
       <TooltipProvider delayDuration={0}>
         <div
           ref={ref}
+          data-sidebar-wrapper=""
           className={cn("group/sidebar-wrapper flex min-h-svh w-full", className)}
           {...props}
         >
@@ -107,6 +109,11 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & {
   collapsible?: "offcanvas" | "icon" | "none"
 }>(({ side = "left", variant = "sidebar", collapsible = "offcanvas", className, children, ...props }, ref) => {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+
+  React.useEffect(() => {
+    if (!isMobile || collapsible === "none") return
+    return bindSidebarSwipe(document, { side, getOpen: () => openMobile, onOpenChange: setOpenMobile })
+  }, [isMobile, collapsible, side, openMobile, setOpenMobile])
 
   if (collapsible === "none") {
     return (
