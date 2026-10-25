@@ -698,7 +698,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DATABASE: ${POSTGRES_DATABASE:-}
       POSTGRES_SSL: ${POSTGRES_SSL:-false}
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
+      JWT_SECRET: ${JWT_SECRET:-}
     volumes:
       - forwardx-data:/data
     logging:

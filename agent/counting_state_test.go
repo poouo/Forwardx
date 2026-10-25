@@ -9,6 +9,10 @@ import (
 
 func isolateCountingStateTest(t *testing.T, bootID string) {
 	t.Helper()
+	previousCapabilityCheck := kernelTrafficUnavailable
+	// Queue/layout unit tests are independent of the runner's capabilities.
+	kernelTrafficUnavailable = func() bool { return false }
+	t.Cleanup(func() { kernelTrafficUnavailable = previousCapabilityCheck })
 	previousStateDir := trafficStateDir
 	previousBootID := agentBootID
 	previousSignatures := countingChainSignatures

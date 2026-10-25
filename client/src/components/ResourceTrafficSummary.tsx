@@ -17,13 +17,15 @@ function formatBytes(value: number) {
   return `${size.toFixed(unit === 0 || size >= 100 ? 0 : 2)} ${units[unit]}`;
 }
 
-export function ResourceTrafficSummary({ summary, compact = false, showRuleCount = true, table = false }: {
+export function ResourceTrafficSummary({ summary, compact = false, showRuleCount = true, table = false, resettable = false }: {
   summary?: ResourceTrafficTotals;
   compact?: boolean;
   showRuleCount?: boolean;
   table?: boolean;
+  resettable?: boolean;
 }) {
-  const title = t("汇总当前关联规则的累计实际流量，入向加出向，不按倍率折算；重置规则流量后同步更新。");
+  const title = t("汇总当前关联规则的累计实际流量，入向加出向，不按倍率折算；重置规则流量后同步更新。")
+    + (resettable ? t("展示流量可单独重置，不影响规则用量、用户额度或计费。") : "");
   if (table) return <div className="min-w-0 space-y-1 text-xs tabular-nums" title={`${title}\n${showRuleCount ? `${t("引用规则")} ${summary?.ruleCount ?? "—"} · ` : ""}${t("累计流量")} ${summary ? formatBytes(summary.totalBytes) : "—"}\n${t("入向")} ${summary ? formatBytes(summary.bytesIn) : "—"} · ${t("出向")} ${summary ? formatBytes(summary.bytesOut) : "—"}`}>
     <div className="flex min-w-0 items-baseline gap-3 whitespace-nowrap">
       {showRuleCount && <span className="shrink-0 text-muted-foreground">{t("引用规则")} {summary?.ruleCount ?? "—"}</span>}
@@ -35,7 +37,7 @@ export function ResourceTrafficSummary({ summary, compact = false, showRuleCount
     </div>
   </div>;
   return (
-    <div className={compact ? "min-w-0 space-y-1" : "min-w-0 space-y-2 rounded-md border border-border/40 bg-background/35 p-2.5"} title={`${t("当日流量按北京时间 00:00 起统计。")}${title}`}>
+    <div className={compact ? "min-w-0 space-y-1" : "min-w-0 space-y-2 rounded-md border border-border/40 bg-background/35 p-2.5"} title={`${t(resettable ? "当日流量按北京时间 00:00 起统计；当日重置后从重置时起算。" : "当日流量按北京时间 00:00 起统计。")}${title}`}>
       {showRuleCount && <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs" title={t("引用规则按逻辑规则去重，包含停用规则，不含待删除规则；普通用户仅统计自己的规则。")}>
         <span className="text-muted-foreground">{t("引用规则")}</span>
         <span className="font-medium tabular-nums">{summary ? summary.ruleCount : "—"}</span>

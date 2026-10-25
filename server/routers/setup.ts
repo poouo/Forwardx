@@ -35,9 +35,27 @@ import { isDevPanelMode } from "../devPanel";
 import { PANEL_MIGRATION_SCOPES } from "../../shared/panelMigration";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { describeDatabaseError } from "../databaseHealthState";
+import { createQueryCache } from "../queryCache";
 
 let setupSchemaReadyKey = "";
 const SETUP_WRITE_LOCK_KEY = "panel-setup-write";
+const setupSummaryCache = createQueryCache({ maxEntries: 1, now: () => Date.now() });
+let setupSummaryDatabase: unknown;
+
+function invalidateSetupSummary() {
+  setupSummaryCache.clear();
+  setupSummaryDatabase = undefined;
+}
+
+function getSetupStatusDataSummary(database: unknown) {
+  if (database !== setupSummaryDatabase) {
+    invalidateSetupSummary();
+    setupSummaryDatabase = database;
+  }
+  // The public setup page polls every 3s. Share one load and retain its exact
+  // counts briefly instead of repeatedly scanning all historical tables.
+  return setupSummaryCache.get("existing-data", { ttlMs: 60_000, staleMs: 0 }, getExistingDataSummary);
+}
 
 export function friendlyDatabaseError(error: unknown) {
   const reason = describeDatabaseError(error);
@@ -179,7 +197,7 @@ async function setupStatus() {
     const migrationActive = hasActivePanelMigration();
     const settings = await getAllSettings();
     const setupDataChoice = settings.setupDataChoice || null;
-    const existingData = hasAdmin || localSetupComplete ? null : await getExistingDataSummary();
+    const existingData = hasAdmin || localSetupComplete ? null : await getSetupStatusDataSummary(db);
     const hasExistingData = existingData?.hasExistingData ?? false;
     return {
       databaseConfigured: true,
@@ -256,7 +274,12 @@ async function withSetupWriteLock<T>(
 ) {
   return withKeyedTaskLock(SETUP_WRITE_LOCK_KEY, async () => {
     await ensureSetupWriteAllowed(ctx, options);
-    return work();
+    invalidateSetupSummary();
+    try {
+      return await work();
+    } finally {
+      invalidateSetupSummary();
+    }
   });
 }
 

@@ -491,7 +491,7 @@ func TestActionIngressCoalescesPendingUpdatesWithoutBlocking(t *testing.T) {
 	}
 
 	started := time.Now()
-	for i := 0; i < actionQueueCapacity+2000; i++ {
+	for i := 0; i < actionIngressCapacity; i++ {
 		a := base
 		a.RuleID = 1000 + i
 		a.SourcePort = 20000 + i
@@ -501,7 +501,7 @@ func TestActionIngressCoalescesPendingUpdatesWithoutBlocking(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("non-blocking ingress push took %s", elapsed)
 	}
-	if got, want := buffer.len(), actionQueueCapacity+2000; got != want {
+	if got, want := buffer.len(), actionIngressCapacity; got != want {
 		t.Fatalf("ingress depth=%d want=%d", got, want)
 	}
 }
@@ -762,20 +762,26 @@ func TestAgentStress3000RuleHeartbeat(t *testing.T) {
 	started := time.Now()
 	// Hold only the GOST runtime gate so workers cannot consume guard actions.
 	// This forces the bounded worker channel to fill and verifies heartbeat/SSE
-	// producers hand the overflow to the coalescing ingress without blocking.
-	sharedGostRuntimeSyncGate.Lock()
+	// bursts within the combined budget fit without blocking. Larger configured
+	// runs need live consumers because ingress now intentionally backpressures.
+	blockWorkers := ruleCount <= actionQueueCapacity+actionIngressCapacity
+	if blockWorkers {
+		sharedGostRuntimeSyncGate.Lock()
+	}
 	heartbeatStarted := time.Now()
 	heartbeatResult, err := heartbeat(Config{PanelURL: panel.URL, Token: token, Interval: 30})
 	heartbeatElapsed := time.Since(heartbeatStarted)
 	blockedBacklog := len(actionQueue) + actionIngress.len()
-	sharedGostRuntimeSyncGate.Unlock()
+	if blockWorkers {
+		sharedGostRuntimeSyncGate.Unlock()
+	}
 	if err != nil {
 		t.Fatalf("heartbeat failed: %v", err)
 	}
 	if heartbeatResult.NextInterval != 30 {
 		t.Fatalf("nextInterval = %d, want 30", heartbeatResult.NextInterval)
 	}
-	if ruleCount > actionQueueCapacity && blockedBacklog < actionQueueCapacity {
+	if blockWorkers && ruleCount > actionQueueCapacity && blockedBacklog < actionQueueCapacity {
 		t.Fatalf("worker queue did not saturate during blocked-worker test: backlog=%d capacity=%d", blockedBacklog, actionQueueCapacity)
 	}
 	maxPending, err := waitForStressActionsDrained(30 * time.Second)

@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { countryCodeToEmoji, type LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Loader2 } from "lucide-react";
 
 export type LinkTestDetail = {
   success: boolean;
@@ -716,8 +717,8 @@ export function LinkTestProbeView({
   className?: string;
 }) {
   const effectivePlannedSegments = useMemo(() => {
-    if (!ignorePlannedResultsWhenDetailsPresent || (parsed.details || []).length === 0) return plannedSegments;
-    const backedResultIndex = currentTotalBacksPlannedResult(parsed, plannedSegments || []);
+    if (!ignorePlannedResultsWhenDetailsPresent || (!isTesting && (parsed.details || []).length === 0)) return plannedSegments;
+    const backedResultIndex = isTesting ? -1 : currentTotalBacksPlannedResult(parsed, plannedSegments || []);
     return plannedSegments?.map((segment, index) => index === backedResultIndex
       ? segment
       : {
@@ -727,7 +728,7 @@ export function LinkTestProbeView({
         message: parsed.tunnelProbeTimedOut ? translateText("探测超时") : null,
         pending: false,
       });
-  }, [ignorePlannedResultsWhenDetailsPresent, parsed, plannedSegments]);
+  }, [ignorePlannedResultsWhenDetailsPresent, isTesting, parsed, plannedSegments]);
   const rawSegments = useMemo(
     () => buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments: effectivePlannedSegments }),
     [effectivePlannedSegments, fallbackLatencyMs, isSuccess, isTesting, nodeMeta, parsed, sourceLabel, targetLabel],
@@ -811,7 +812,13 @@ export function LinkTestProbeView({
       testing,
       idle,
       ok,
-      label: translateText(label),
+      label: testing ? (
+        <span className="inline-flex items-center gap-1">
+          <Loader2 aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin motion-reduce:animate-none" />
+          {translateText(label)}
+        </span>
+      ) : translateText(label),
+      labelText: translateText(label),
       lineClass: testing ? "bg-primary/70" : idle ? "bg-border" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
       textClass: testing ? "text-primary" : idle ? "text-muted-foreground" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
       badgeClass: testing
@@ -966,7 +973,7 @@ export function LinkTestProbeView({
   };
 
   const renderDesktopConnector = (segment: ProbeSegment, key: string, widthClass = "min-w-[88px] flex-1", showLabel = true) => {
-    const { testing, label, lineClass, badgeClass } = getSegmentState(segment);
+    const { testing, label, labelText, lineClass, badgeClass } = getSegmentState(segment);
     return (
       <div key={key} className={cn("relative mt-[45px] h-px bg-border", widthClass)}>
         <div
@@ -982,7 +989,7 @@ export function LinkTestProbeView({
               "absolute left-1/2 top-[-2rem] max-w-[8rem] -translate-x-1/2 truncate rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
               badgeClass,
             )}
-            title={label || undefined}
+            title={labelText || undefined}
           >
             {label || "\u00a0"}
           </span>

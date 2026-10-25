@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -106,22 +107,22 @@ var sharedGostRuntimeSyncGate sync.RWMutex
 var sharedNginxRuntimeSyncGate sync.RWMutex
 
 type actionIngressItem struct {
-	job    actionJob
-	key    string
-	active bool
+	job  actionJob
+	key  string
+	node *list.Element
 }
 
-// actionIngressBuffer keeps heartbeat and SSE producers non-blocking when the
-// worker channel is full. Repeated pending work for the same runtime identity is
-// replaced in place, so rapid edits retain the latest action without spawning
-// one goroutine per overflow item.
+const actionIngressCapacity = actionQueueCapacity
+
+// Keep normal heartbeat/SSE bursts off the worker channel. Once this bounded
+// buffer also fills, apply backpressure to the existing producer rather than
+// dropping actions or spawning an overflow goroutine. Presence reporting runs
+// independently. Coalescing removes old nodes, not just their active flags.
 type actionIngressBuffer struct {
-	mu       sync.Mutex
-	items    []*actionIngressItem
-	head     int
-	byKey    map[string]*actionIngressItem
-	sequence uint64
-	active   int
+	mu    sync.Mutex
+	space *sync.Cond
+	items list.List
+	byKey map[string]*actionIngressItem
 }
 
 var actionIngress = actionIngressBuffer{byKey: map[string]*actionIngressItem{}}
@@ -135,84 +136,69 @@ func (b *actionIngressBuffer) push(job actionJob) (int, *actionJob) {
 	if b.byKey == nil {
 		b.byKey = map[string]*actionIngressItem{}
 	}
+	if b.space == nil {
+		b.space = sync.NewCond(&b.mu)
+	}
+	for b.items.Len() >= actionIngressCapacity && (key == "" || b.byKey[key] == nil) {
+		b.space.Wait()
+	}
 	var replaced *actionJob
 	if key != "" {
-		if current := b.byKey[key]; current != nil && current.active {
-			current.active = false
-			b.active--
+		if current := b.byKey[key]; current != nil {
+			// A producer may have waited for capacity while a newer action for
+			// this key arrived. Do not replace that newer pending generation.
+			if job.action.IssuedAt > 0 && current.job.action.IssuedAt > job.action.IssuedAt {
+				return b.items.Len(), &job
+			}
+			b.items.Remove(current.node)
 			oldJob := current.job
 			replaced = &oldJob
 		}
-	} else {
-		b.sequence++
 	}
-	item := &actionIngressItem{job: job, key: key, active: true}
-	b.items = append(b.items, item)
-	b.active++
+	item := &actionIngressItem{job: job, key: key}
+	item.node = b.items.PushBack(item)
 	if key != "" {
 		b.byKey[key] = item
 	}
-	return b.active, replaced
+	return b.items.Len(), replaced
 }
 
 func (b *actionIngressBuffer) pop() (actionJob, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.head < len(b.items) {
-		item := b.items[b.head]
-		b.items[b.head] = nil
-		b.head++
-		if item == nil || !item.active {
-			continue
-		}
-		item.active = false
-		b.active--
-		if item.key != "" && b.byKey[item.key] == item {
-			delete(b.byKey, item.key)
-		}
-		b.compactLocked()
-		return item.job, true
+	front := b.items.Front()
+	if front == nil {
+		return actionJob{}, false
 	}
-	b.compactLocked()
-	return actionJob{}, false
+	item := b.items.Remove(front).(*actionIngressItem)
+	if item.key != "" {
+		delete(b.byKey, item.key)
+	}
+	if b.space != nil {
+		b.space.Signal()
+	}
+	return item.job, true
 }
 
 func (b *actionIngressBuffer) len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.active
+	return b.items.Len()
 }
 
 func (b *actionIngressBuffer) reset() []actionJob {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	pending := make([]actionJob, 0, b.active)
-	for index := b.head; index < len(b.items); index++ {
-		if item := b.items[index]; item != nil && item.active {
-			pending = append(pending, item.job)
-		}
+	pending := make([]actionJob, 0, b.items.Len())
+	for node := b.items.Front(); node != nil; node = node.Next() {
+		pending = append(pending, node.Value.(*actionIngressItem).job)
 	}
-	b.items = nil
-	b.head = 0
+	b.items.Init()
 	b.byKey = map[string]*actionIngressItem{}
-	b.active = 0
+	if b.space != nil {
+		b.space.Broadcast()
+	}
 	return pending
-}
-
-func (b *actionIngressBuffer) compactLocked() {
-	if b.head == 0 {
-		return
-	}
-	if b.head >= len(b.items) {
-		b.items = nil
-		b.head = 0
-		return
-	}
-	if b.head >= 1024 && b.head*2 >= len(b.items) {
-		remaining := append([]*actionIngressItem(nil), b.items[b.head:]...)
-		b.items = remaining
-		b.head = 0
-	}
 }
 
 type actionSerialLock struct {
@@ -1109,6 +1095,9 @@ func enqueueActionJob(job actionJob) {
 	if pending >= actionQueueBacklogLogThreshold && shouldLogAgentReport("action-queue-backlog", agentReportLogInterval) {
 		logf("action queue backlog pendingActions=%d queued=%d ingress=%d capacity=%d next=%s", pending, len(actionQueue), actionIngress.len(), actionQueueCapacity, actionLogSummary(job.action))
 	}
+	if actionIngress.len() >= actionIngressCapacity && shouldLogAgentReport("action-ingress-capacity", agentReportLogInterval) {
+		logf("action ingress at capacity ingress=%d capacity=%d workerQueue=%d; independent new actions wait for space, pending keys still coalesce", actionIngress.len(), actionIngressCapacity, len(actionQueue))
+	}
 	depth, replaced := actionIngress.push(job)
 	if replaced != nil {
 		finishActionJob(*replaced)
@@ -1122,7 +1111,7 @@ func enqueueActionJob(job actionJob) {
 	default:
 	}
 	if depth >= actionQueueCapacity && shouldLogAgentReport("action-ingress-backlog", agentReportLogInterval) {
-		logf("action ingress backlog pendingActions=%d ingress=%d workerQueue=%d; producers remain non-blocking", atomic.LoadInt64(&actionPendingCount), depth, len(actionQueue))
+		logf("action ingress backlog pendingActions=%d ingress=%d capacity=%d workerQueue=%d; ingress is bounded with producer backpressure", atomic.LoadInt64(&actionPendingCount), depth, actionIngressCapacity, len(actionQueue))
 	}
 }
 

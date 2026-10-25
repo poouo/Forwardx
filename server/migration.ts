@@ -736,6 +736,7 @@ const IMPORT_TABLE_ORDER = [
   "host_traffic_counters",
   "user_traffic_counters",
   "forward_rule_traffic_counters",
+  "resource_traffic_baselines",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "traffic_stats",
@@ -789,6 +790,7 @@ const IMPORT_TABLE_ORDER = [
 ] as const;
 
 const BEST_EFFORT_MIGRATION_TABLES = new Set<MigrationTableName>([
+  "resource_traffic_baselines",
   "host_metrics",
   "host_availability_intervals",
   "host_probe_service_stats",
@@ -1263,6 +1265,12 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       row.userId = mapRequiredId(maps, "users", source.userId);
       return { row, existingWhere: { ruleId: row.ruleId, hostId: row.hostId } };
+
+    case "resource_traffic_baselines":
+      row.groupId = mapRequiredId(maps, "forward_groups", source.groupId);
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { groupId: row.groupId, ruleId: row.ruleId, hostId: row.hostId } };
 
     case "traffic_stats":
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);

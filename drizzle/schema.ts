@@ -716,6 +716,19 @@ export const forwardRuleTrafficCounters = table("forward_rule_traffic_counters",
 export type ForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferSelect;
 export type InsertForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferInsert;
 
+export const resourceTrafficBaselines = table("resource_traffic_baselines", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  hostId: int("hostId").notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  dailyIn: bigint("dailyIn", { mode: "number" }).notNull().default(0),
+  dailyOut: bigint("dailyOut", { mode: "number" }).notNull().default(0),
+  resetDay: epoch("resetDay").notNull(),
+  resetAt: epoch("resetAt").notNull(),
+});
+
 export const trafficStats = table("traffic_stats", {
   id: serial("id"),
   ruleId: int("ruleId").notNull(),

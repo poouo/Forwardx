@@ -29,8 +29,24 @@ test("host layout normalizes order, protects required columns and clamps per-col
 
 test("all host detail columns can be controlled independently", () => {
   const columns = hostTableColumns({ ...defaultHostTableLayout(), hidden: [] });
-  for (const id of ["status", "region", "address", "version", "load", "uptime", "expiry", "cpu", "memory", "disk", "total", "network", "system"]) {
+  for (const id of ["status", "region", "address", "version", "load", "uptime", "expiry", "cpu", "memory", "disk", "total", "network", "system", "tcpConnections", "udpConnections"]) {
     assert.ok(columns.some(column => column.id === id && !column.required), id);
+  }
+});
+
+test("connection columns are visible by default and added without resetting saved host layouts", () => {
+  const oldLayout = {
+    order: HOST_TABLE_COLUMNS.filter(column => !["tcpConnections", "udpConnections"].includes(column.id)).map(column => column.id),
+    hidden: ["cpu"], widths: { name: 240 },
+  };
+  const normalized = normalizeHostTableLayout(oldLayout);
+  assert.deepEqual(normalized.hidden, ["cpu"]);
+  assert.equal(normalized.widths.name, 240);
+  assert.deepEqual(normalized.order.slice(0, oldLayout.order.length), oldLayout.order);
+  for (const id of ["tcpConnections", "udpConnections"]) {
+    assert.ok(hostTableColumns(defaultHostTableLayout()).some(column => column.id === id));
+    assert.ok(hostTableColumns(normalized).some(column => column.id === id));
+    assert.ok(!hostTableColumns({ ...normalized, hidden: [...normalized.hidden, id as "tcpConnections" | "udpConnections"] }).some(column => column.id === id));
   }
 });
 

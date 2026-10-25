@@ -140,7 +140,7 @@ import {
   Play,
   Pause,
 } from "lucide-react";
-import type { GlobeMethods } from "react-globe.gl";
+import { GlobeWorkspace, globeTooltip, useGlobeScene } from "@/components/GlobeWorkspace";
 import {
   FORWARD_TYPES,
   FORWARD_TYPE_LABELS,
@@ -1446,58 +1446,35 @@ function ruleGlobeTargetOffset(anchor: RuleGlobePoint, rule: any, targetText: st
 }
 
 function renderRuleGlobePointTooltip(point: RuleGlobePoint) {
-  const rows = [
-    { label: translateText("类型"), value: point.kind === "target" ? translateText("目标端口") : translateText("转发节点") },
-    { label: translateText("地址"), value: point.addressText || "-" },
-    { label: translateText("地区"), value: point.regionText || translateText("未定位") },
-    ...(point.targetText ? [{ label: translateText("目标"), value: point.targetText }] : []),
-    ...(point.note ? [{ label: translateText("说明"), value: point.note }] : []),
-  ];
-  return `
-    <div style="min-width:250px;max-width:360px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
-        <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;">${escapeTooltipHtml(point.name)}</div>
-        <span style="width:9px;height:9px;border-radius:999px;background:${point.color};box-shadow:0 0 16px ${hexToRgba(point.color, .75)};"></span>
-      </div>
-      ${rows.map((row) => `
-        <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
-          <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${escapeTooltipHtml(row.value)}</span>
-        </div>
-      `).join("")}
-    </div>
-  `;
+  return globeTooltip({
+    title: point.name,
+    color: point.color,
+    rows: [
+      { label: translateText("类型"), value: point.kind === "target" ? translateText("目标端口") : translateText("转发节点") },
+      { label: translateText("地址"), value: point.addressText || "-" },
+      { label: translateText("地区"), value: point.regionText || translateText("未定位") },
+      ...(point.targetText ? [{ label: translateText("目标"), value: point.targetText }] : []),
+      ...(point.note ? [{ label: translateText("说明"), value: point.note }] : []),
+    ],
+  });
 }
 
 function renderRuleGlobePathTooltip(path: RuleGlobePath) {
-  const rows = [
-    { label: translateText("规则"), value: path.rule?.name || `规则 #${path.rule?.id}` },
-    { label: translateText("入口"), value: `:${path.rule?.sourcePort || "-"}` },
-    { label: translateText("目标"), value: path.targetText },
-    { label: translateText("路径"), value: path.routeText },
-    { label: translateText("末跳"), value: path.finalHopText },
-    { label: translateText("入向"), value: formatBytes(path.bytesIn) },
-    { label: translateText("出向"), value: formatBytes(path.bytesOut) },
-    { label: translateText("连接"), value: String(path.connections || 0) },
-  ];
-  return `
-    <div style="min-width:290px;max-width:390px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
-        <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;">${escapeTooltipHtml(path.rule?.name || `规则 #${path.rule?.id}`)}</div>
-        <div style="display:flex;align-items:center;gap:6px;color:#cbd5e1;font-size:12px;">
-          <span style="width:8px;height:8px;border-radius:999px;background:${path.color};box-shadow:0 0 14px ${hexToRgba(path.color, .8)};"></span>
-          ${escapeTooltipHtml(formatBytes(path.totalBytes))}
-        </div>
-      </div>
-      ${rows.map((row) => `
-        <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
-          <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${escapeTooltipHtml(row.value)}</span>
-        </div>
-      `).join("")}
-      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">${escapeTooltipHtml(translateText("点击编辑规则"))}</div>
-    </div>
-  `;
+  return globeTooltip({
+    title: path.rule?.name || translateText("规则 #{0}", [path.rule?.id]),
+    color: path.color,
+    status: formatBytes(path.totalBytes),
+    rows: [
+      { label: translateText("入口"), value: `:${path.rule?.sourcePort || "-"}` },
+      { label: translateText("目标"), value: path.targetText },
+      { label: translateText("路径"), value: path.routeText },
+      { label: translateText("末跳"), value: path.finalHopText },
+      { label: translateText("入向"), value: formatBytes(path.bytesIn) },
+      { label: translateText("出向"), value: formatBytes(path.bytesOut) },
+      { label: translateText("连接"), value: String(path.connections || 0) },
+    ],
+    action: translateText("点击编辑规则"),
+  });
 }
 
 function ruleGlobeRouteHostIds(rule: any, tunnelById: Map<number, any>, forwardGroupById: Map<number, any>) {
@@ -1762,12 +1739,11 @@ function RuleTrafficGlobe({
   targetGeoLookupReady: boolean;
   onEditRule: (rule: any) => void;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const globeRef = useRef<GlobeMethods | undefined>(undefined);
-  const [globeReady, setGlobeReady] = useState(false);
-  const [size, setSize] = useState({ width: 1400, height: 780 });
   const [hoveredPath, setHoveredPath] = useState<RuleGlobePath | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<RuleGlobePoint | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<number | null>(null);
+  const scene = useGlobeScene(Boolean(hoveredPath || hoveredPoint));
+  const { globeRef, size, palette } = scene;
   const [countries, setCountries] = useState<RuleGlobeCountryFeature[]>([]);
   const globeData = useMemo(
     () => buildRuleGlobeData(rules, hosts, tunnels, forwardGroups, trafficByRule, targetGeoByAddress, targetGeoLookupReady),
@@ -1783,7 +1759,6 @@ function RuleTrafficGlobe({
   }, [globeData.points]);
 
   useEffect(() => {
-    if (!globeReady) return;
     let cancelled = false;
     fetch(RULE_GLOBE_COUNTRIES_URL)
       .then((response) => (response.ok ? response.json() : null))
@@ -1797,63 +1772,40 @@ function RuleTrafficGlobe({
     return () => {
       cancelled = true;
     };
-  }, [globeReady]);
-
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const updateSize = () => {
-      const rect = element.getBoundingClientRect();
-      const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
-      const width = Math.max(900, Math.round(rect.width));
-      setSize({
-        width,
-        height: Math.max(720, Math.min(980, Math.round(Math.max(viewportHeight - 240, width * 0.52)))),
-      });
-    };
-    updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(element);
-    window.addEventListener("resize", updateSize);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateSize);
-    };
   }, []);
 
-  useEffect(() => {
-    if (!globeReady || !globeRef.current) return;
-    const globe = globeRef.current;
-    const controls = globe.controls();
-    controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.32;
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.enablePan = false;
-    controls.rotateSpeed = 0.58;
-    controls.zoomSpeed = 0.85;
-    controls.minDistance = 105;
-    controls.maxDistance = 500;
-    globe.pointOfView({ lat: 18, lng: 108, altitude: 1.28 }, 0);
-  }, [globeReady]);
-
-  useEffect(() => {
-    const controls = globeRef.current?.controls();
-    if (!controls) return;
-    controls.autoRotate = !(hoveredPath || hoveredPoint);
-  }, [hoveredPath, hoveredPoint]);
+  const selectedRoute = globeData.summaries.find((item) => Number(item.rule.id) === selectedRuleId);
+  const activeRuleId = hoveredPath?.rule?.id ?? selectedRoute?.rule.id;
+  const totalTraffic = globeData.summaries.reduce((sum, item) => sum + item.totalBytes, 0);
 
   return (
     <>
-      <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#030712] shadow-sm md:block">
-        <div
-          ref={containerRef}
-          className="relative min-h-[720px] w-full overflow-hidden"
-          style={{ height: size.height }}
-        >
+      <GlobeWorkspace scene={scene} title={translateText("流量转发图")} subtitle={translateText("全球链路 · 流量与节点分布")}
+        stats={[{ label: translateText("已定位"), value: `${globeData.summaries.length} / ${rules.length}` }, { label: trafficRangeLabel, value: formatBytes(totalTraffic) }, { label: translateText("待定位"), value: globeData.skipped, tone: globeData.skipped ? "warning" : undefined }]}
+        empty={globeData.summaries.length === 0 ? translateText("暂无可定位转发路径") : undefined}
+        legend={<><span className="flex items-center gap-1.5"><span className="h-1.5 w-4 rounded-full bg-primary" />{translateText("流量路径")}</span><span>{translateText("点击路径可编辑规则")}</span></>}
+        sidebar={<>
+          <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-3"><h4 className="text-xs font-semibold">{translateText("流量排行")}</h4><span className="text-[11px] text-muted-foreground">{trafficRangeLabel}</span></div>
+          {selectedRoute && <div className="m-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+            <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-xs font-semibold">{selectedRoute.rule.name}</span><button type="button" aria-label={translateText("取消选择")} className="text-muted-foreground hover:text-foreground" onClick={() => setSelectedRuleId(null)}>×</button></div>
+            <p className="mt-2 break-words font-mono text-[11px] text-muted-foreground">{selectedRoute.routeText}</p>
+            <div className="mt-3 flex justify-between gap-2 text-xs tabular-nums"><span>↓ {formatBytes(selectedRoute.bytesIn)}</span><span>↑ {formatBytes(selectedRoute.bytesOut)}</span></div>
+            <Button variant="outline" size="sm" className="mt-3 h-7 w-full text-xs" onClick={() => onEditRule(selectedRoute.rule)}>{translateText("编辑规则")}</Button>
+          </div>}
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+            {globeData.summaries.slice(0, 50).map((item, index) => <button type="button" key={item.rule.id} className="globe-list-row" data-active={selectedRoute?.rule.id === item.rule.id} aria-pressed={selectedRoute?.rule.id === item.rule.id} onClick={() => { setSelectedRuleId(Number(item.rule.id)); if (item.routePoints[0]) scene.focus(item.routePoints[0]); }}>
+              <div className="flex min-w-0 items-center gap-2"><span className="w-4 shrink-0 text-[10px] tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{item.rule.name || translateText("规则 #{0}", [item.rule.id])}</span><span className="shrink-0 text-[11px] tabular-nums">{formatBytes(item.totalBytes)}</span></div>
+              <div className="ml-6 mt-1 truncate font-mono text-[10px] text-muted-foreground">{item.targetText}</div>
+              <div className="ml-6 mt-2 h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full" style={{ width: `${totalTraffic ? Math.max(2, item.totalBytes / totalTraffic * 100) : 0}%`, backgroundColor: item.color }} /></div>
+            </button>)}
+            {globeData.summaries.length === 0 && <p className="px-2 py-8 text-center text-xs text-muted-foreground">{translateText("暂无可定位流量路径")}</p>}
+          </div>
+          <div className="border-t border-border/50 px-4 py-3 text-[11px] text-muted-foreground">{translateText("点击排行定位链路")}{globeData.summaries.length > 50 ? ` · ${translateText("显示前 {0} 项", [50])}` : ""}</div>
+        </>}
+      >
           <Suspense
             fallback={
-              <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载流量转发图")}</div>
             }
           >
@@ -1861,19 +1813,19 @@ function RuleTrafficGlobe({
               ref={globeRef}
               width={size.width}
               height={size.height}
-              backgroundColor="rgba(3,7,18,1)"
+              backgroundColor="rgba(0,0,0,0)"
               globeImageUrl={RULE_GLOBE_EARTH_IMAGE_URL}
               showAtmosphere
-              atmosphereColor="#64748b"
-              atmosphereAltitude={0.22}
+              atmosphereColor={palette.primary}
+              atmosphereAltitude={0.14}
               showGraticules={false}
               globeCurvatureResolution={6}
               polygonsData={countries}
               polygonGeoJsonGeometry="geometry"
               polygonAltitude={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? 0.014 : 0.004}
-              polygonCapColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(20,184,166,.34)" : "rgba(15,23,42,.05)"}
-              polygonSideColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(20,184,166,.22)" : "rgba(2,6,23,.14)"}
-              polygonStrokeColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(94,234,212,.88)" : "rgba(148,163,184,.22)"}
+              polygonCapColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? palette.cap : "rgba(15,23,42,.03)"}
+              polygonSideColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? palette.side : "rgba(2,6,23,.1)"}
+              polygonStrokeColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? palette.stroke : palette.mutedStroke}
               polygonCapCurvatureResolution={4}
               polygonsTransitionDuration={0}
               pointsData={globeData.points}
@@ -1897,18 +1849,19 @@ function RuleTrafficGlobe({
               pathResolution={12}
               pathColor={(path: object) => {
                 const item = path as RuleGlobePath;
+                if (activeRuleId != null && activeRuleId !== item.rule?.id) return hexToRgba(item.color, 0.12);
                 if (item.variant === "track") return item.trackColor;
                 return hoveredPath?.rule?.id === item.rule?.id ? item.color : hexToRgba(item.color, 0.88);
               }}
               pathStroke={(path: object) => {
                 const item = path as RuleGlobePath;
-                const hovered = hoveredPath?.rule?.id === item.rule?.id;
+                const hovered = activeRuleId === item.rule?.id;
                 return item.variant === "track" ? Math.max(1.1, item.stroke - 0.45) : item.stroke + (hovered ? 0.75 : 0);
               }}
               pathDashLength={(path: object) => (path as RuleGlobePath).variant === "flow" ? 0.16 : 1}
               pathDashGap={(path: object) => (path as RuleGlobePath).variant === "flow" ? 0.085 : 0}
               pathDashInitialGap={(path: object) => (path as RuleGlobePath).dashInitialGap}
-              pathDashAnimateTime={(path: object) => (path as RuleGlobePath).variant === "flow" ? (path as RuleGlobePath).dashAnimateTime : 0}
+              pathDashAnimateTime={(path: object) => scene.motionEnabled && (path as RuleGlobePath).variant === "flow" ? (path as RuleGlobePath).dashAnimateTime : 0}
               pathTransitionDuration={0}
               pathLabel={(path) => renderRuleGlobePathTooltip(path as RuleGlobePath)}
               onPathHover={(path) => setHoveredPath(path as RuleGlobePath | null)}
@@ -1918,47 +1871,11 @@ function RuleTrafficGlobe({
               }}
               showPointerCursor={(objectType) => objectType === "path" || objectType === "point"}
               enablePointerInteraction
-              onGlobeReady={() => setGlobeReady(true)}
+              onGlobeReady={() => scene.setReady(true)}
             />
           </Suspense>
 
-          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-            <div className="font-medium">{translateText("流量转发图")}</div>
-            <div className="mt-1 text-white/70">{translateText("规则 ")}{rules.length}{translateText(" 条 · 已定位 ")}{globeData.summaries.length}{translateText(" 条")}</div>
-            {globeData.skipped > 0 && (
-              <div className="mt-1 text-amber-200/85">{translateText("待定位 ")}{globeData.skipped}{translateText(" 条")}</div>
-            )}
-          </div>
-
-          <div className="pointer-events-none absolute right-4 top-4 flex max-h-[calc(100%-2rem)] w-[min(360px,calc(100%-2rem))] flex-col gap-2 overflow-hidden rounded-md border border-white/10 bg-black/35 p-3 text-xs text-white shadow-lg backdrop-blur-md">
-            <div className="flex items-center justify-between gap-3">
-              <span className="font-medium">{trafficRangeLabel}{translateText(" 流量走向")}</span>
-              <span className="text-white/60">{formatBytes(globeData.summaries.reduce((sum, item) => sum + item.totalBytes, 0))}</span>
-            </div>
-            <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
-              {globeData.summaries.slice(0, 12).map((item) => (
-                <div key={item.rule.id} className="grid grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color, boxShadow: `0 0 12px ${hexToRgba(item.color, .75)}` }} />
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{item.rule.name || translateText("规则 #{0}", [item.rule.id])}</div>
-                    <div className="truncate text-white/55">{item.targetText}</div>
-                  </div>
-                  <div className="text-right tabular-nums text-white/75">{formatBytes(item.totalBytes)}</div>
-                </div>
-              ))}
-              {globeData.summaries.length === 0 && (
-                <div className="py-2 text-white/60">{translateText("暂无可定位流量路径")}</div>
-              )}
-            </div>
-          </div>
-
-          {globeData.summaries.length === 0 && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
-              <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">{translateText("暂无可定位转发路径")}</div>
-            </div>
-          )}
-        </div>
-      </div>
+      </GlobeWorkspace>
       <Card className="border-border/40 bg-card/60 md:hidden">
         <CardContent className="p-6 text-center text-sm text-muted-foreground">{translateText("3D 流量转发图仅在 PC 端显示。")}</CardContent>
       </Card>
@@ -8586,7 +8503,9 @@ function SelfTestDialog({
   const isTesting = startMutation.isPending || optimisticTesting || isServerTesting;
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
-  const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
+  const awaitingNewTest = optimisticTesting && (!activeTestId || latestTestId < activeTestId);
+  const displayedMessage = awaitingNewTest ? null : latest?.message;
+  const parsedMessage = useMemo(() => parseLinkTestMessage(displayedMessage), [displayedMessage]);
   const testSource = forwardGroupSelfTestSource(latest);
   const testSegments: LinkTestPlannedSegment[] | undefined = testSource ? [{
     from: testSource.label,
@@ -8625,7 +8544,7 @@ function SelfTestDialog({
 
         <LinkTestProbeView
           parsed={parsedMessage}
-          fallbackLatencyMs={typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
+          fallbackLatencyMs={!awaitingNewTest && typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
           isSuccess={isSuccess}
           isTesting={isTesting}
           sourceLabel={testSource?.label || sourceLabel}

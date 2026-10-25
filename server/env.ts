@@ -1,10 +1,8 @@
-import crypto from "crypto";
-import fs from "fs";
 import path from "path";
+import { resolveCookieSecret } from "./cookieSecret";
 
 function readOrCreateCookieSecret() {
   const envSecret = String(process.env.JWT_SECRET || "").trim();
-  if (envSecret) return envSecret;
 
   const configuredPath = String(process.env.FORWARDX_JWT_SECRET_PATH || "").trim();
   const defaultDataDir = process.platform === "win32" ? path.resolve(process.cwd(), "data") : "/data";
@@ -15,22 +13,7 @@ function readOrCreateCookieSecret() {
     path.resolve(process.cwd(), "data", "jwt.secret"),
   ].filter(Boolean);
 
-  for (const filePath of candidates) {
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8").trim() : "";
-      if (existing.length >= 32) return existing;
-      const generated = crypto.randomBytes(32).toString("hex");
-      fs.writeFileSync(filePath, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
-      console.warn(`[Security] JWT_SECRET is not set; generated persistent cookie secret at ${filePath}`);
-      return generated;
-    } catch {
-      // Try the next candidate path.
-    }
-  }
-
-  console.warn("[Security] JWT_SECRET is not set and no writable secret path was found; using an in-memory cookie secret.");
-  return crypto.randomBytes(32).toString("hex");
+  return resolveCookieSecret(envSecret, candidates);
 }
 
 function readIntEnv(names: string[], fallback: number, min: number, max: number) {

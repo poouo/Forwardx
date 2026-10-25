@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { planGostTunnelHopRelay, planGostTunnelRuleProtocol } from "./gostTunnelProtocol";
+
+test("GOST business listeners enable cumulative native traffic stats without replacing other metadata", () => {
+  const source = readFileSync(new URL("./agentHeartbeatRoute.ts", import.meta.url), "utf8");
+  const entries = source.slice(source.indexOf("const gostServiceConfig ="), source.indexOf("const tunnelGostChains ="));
+  assert.match(entries, /name: `fwx-\$\{r.id\}-\$\{proto\}`/);
+  assert.match(entries, /service\.metadata = \{ \.\.\.\(service\.metadata \|\| \{\}\), enableStats: true, "observer\.resetTraffic": false \}/);
+  assert.ok(entries.indexOf("enableStats: true") > entries.indexOf("dialTimeout:"));
+  const exits = source.slice(source.indexOf("name: `fwx-tunnel-exit-"), source.indexOf("const ruleTrafficPort ="));
+  assert.doesNotMatch(exits, /enableStats: true/);
+});
 
 test("derives tunnel-level authentication for intermediate GOST relays", () => {
   const first = planGostTunnelHopRelay({ tunnelId: 7, secretSeed: "tunnel-secret" });

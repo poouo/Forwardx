@@ -34,6 +34,7 @@ import { mergeAgentReportedAddress } from "../agentAddressState";
 import { getMonitorSettings, saveMonitorSettings, getResourceAlertPolicy, saveResourceAlertPolicy, getResourceAlertServices, saveResourceAlertService, toggleResourceAlertService, deleteResourceAlertService } from "../operationsMonitor";
 import { operationsMonitorSchema, resourceAlertPolicySchema, resourceAlertServiceSchema } from "../../shared/operationsMonitor";
 import { normalizeHostProbeMethod, urlProbeOptionsSchema } from "../../shared/urlProbe";
+import { getAgentConnectionStats } from "../agentConnectionStats";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -424,7 +425,7 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
 
 function compactHostForList(host: any) {
   const { agentToken, ...rest } = host || {};
-  return rest;
+  return { ...rest, connectionStats: getAgentConnectionStats(Number(host?.id)) };
 }
 
 function compactHostStatus(host: any) {
@@ -432,6 +433,7 @@ function compactHostStatus(host: any) {
     id: Number(host?.id || 0),
     isOnline: !!host?.isOnline,
     lastHeartbeat: host?.lastHeartbeat || null,
+    connectionStats: getAgentConnectionStats(Number(host?.id)),
     agentVersion: host?.agentVersion || null,
     agentUpgradeRequested: !!host?.agentUpgradeRequested,
     agentUpgradeTargetVersion: host?.agentUpgradeTargetVersion || null,

@@ -49,6 +49,50 @@ function runSetupFlow(body: string) {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 }
 
+test("setup status shares table counts, expires them, and invalidates on reconnect or setup writes", () => {
+  runSetupFlow(String.raw`
+    const sqlite = runtime.getSqlite();
+    const originalPrepare = sqlite.prepare;
+    const originalNow = Date.now;
+    let now = originalNow();
+    let fullCounts = 0;
+    sqlite.prepare = function(sql, ...args) {
+      if (/^SELECT COUNT\(\*\) AS "count" FROM "[^"]+"$/i.test(sql)) fullCounts++;
+      return originalPrepare.call(this, sql, ...args);
+    };
+    Date.now = () => now;
+    try {
+      const first = await Promise.all(Array.from({ length: 8 }, () => caller.status()));
+      const tables = schema.MIGRATION_TABLES.length;
+      assert.equal(fullCounts, tables, "concurrent setup polls must share one table-count pass");
+      assert.deepEqual(first[0].existingData, first[7].existingData);
+      for (let index = 0; index < 5; index++) await caller.status();
+      assert.equal(fullCounts, tables, "3-second polls must reuse recent counts");
+      now += 60_001;
+      await caller.status();
+      assert.equal(fullCounts, tables * 2, "expired counts must refresh");
+
+      await caller.testDatabase({ type: "sqlite", sqlite: { path: process.env.SQLITE_PATH } });
+      await caller.status();
+      assert.equal(fullCounts, tables * 3, "setup operations must invalidate the summary");
+    } finally {
+      Date.now = originalNow;
+      sqlite.prepare = originalPrepare;
+    }
+    await runtime.reconnectDatabase();
+    const reconnected = runtime.getSqlite();
+    const prepareAfterReconnect = reconnected.prepare;
+    reconnected.prepare = function(sql, ...args) {
+      if (/^SELECT COUNT\(\*\) AS "count" FROM "[^"]+"$/i.test(sql)) fullCounts++;
+      return prepareAfterReconnect.call(this, sql, ...args);
+    };
+    try {
+      await caller.status();
+      assert.equal(fullCounts, schema.MIGRATION_TABLES.length * 4, "new database handles must not reuse old summaries");
+    } finally { reconnected.prepare = prepareAfterReconnect; }
+  `);
+});
+
 test("setup localizes unsupported MySQL versions and host authorization through driver wrappers", () => {
   runSetupFlow(String.raw`
     for (const version of ["5.7.44", "5.7.44-log", "8.0.12-ubuntu"]) {

@@ -26,6 +26,20 @@ func gostTestConfig(t *testing.T, raw string) map[string]any {
 	return config
 }
 
+func TestGostNativeStatsMetadataCasingKeepsAdditionsIncremental(t *testing.T) {
+	live := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","metadata":{"enablestats":true,"observer.resettraffic":false,"dialtimeout":"3s"}}]}`)
+	desired := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","metadata":{"enableStats":true,"observer.resetTraffic":false,"dialTimeout":"3s"}},{"name":"fwx-2-tcp"}]}`)
+	plan, reason, err := planGostAdditions(live, desired)
+	if err != nil || reason != "" || len(plan) != 1 || plan[0].name != "fwx-2-tcp" {
+		t.Fatalf("metadata casing restarted listeners: plan=%+v reason=%s err=%v", plan, reason, err)
+	}
+	// Case normalization must not hide a real change to stats/reset semantics.
+	changed := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","metadata":{"enableStats":true,"observer.resetTraffic":true,"dialTimeout":"3s"}},{"name":"fwx-2-tcp"}]}`)
+	if _, reason, _ := planGostAdditions(live, changed); reason == "" {
+		t.Fatal("a genuine metadata edit was misclassified as additive")
+	}
+}
+
 func TestGostAdditionPlanPreservesExistingChainsAndListeners(t *testing.T) {
 	live := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","addr":":11001","handler":{"type":"tcp","metadata":{}},"status":{"state":"ready","stats":{"inputBytes":1000}}},{"name":"fwx-2-tcp","addr":":11002"}],"chains":null,"limiters":[],"log":null}`)
 	desired := gostTestConfig(t, `{"services":[{"name":"fwx-2-tcp","addr":":11002"},{"name":"fwx-1-tcp","addr":":11001","handler":{"type":"tcp"}},{"name":"fwx-3-tcp","addr":":11003","handler":{"chain":"new-chain"},"limiter":"new-limit"}],"chains":[{"name":"new-chain","hops":[]}],"limiters":[{"name":"new-limit","limits":["$ 1MB 1MB"]}]}`)
@@ -201,7 +215,7 @@ func TestGostRealRuntimeAddAndPortConflictPreserveEstablishedConnections(t *test
 		return addr
 	}
 	service := func(name, addr string) map[string]any {
-		return map[string]any{"name": name, "addr": addr, "handler": map[string]any{"type": "tcp"}, "listener": map[string]any{"type": "tcp"}, "forwarder": map[string]any{"nodes": []any{map[string]any{"name": name + "-target", "addr": echo.Addr().String(), "connector": map[string]any{"type": "tcp"}, "dialer": map[string]any{"type": "tcp"}}}}}
+		return map[string]any{"name": name, "addr": addr, "metadata": map[string]any{"enableStats": true, "observer.resetTraffic": false}, "handler": map[string]any{"type": "tcp"}, "listener": map[string]any{"type": "tcp"}, "forwarder": map[string]any{"nodes": []any{map[string]any{"name": name + "-target", "addr": echo.Addr().String(), "connector": map[string]any{"type": "tcp"}, "dialer": map[string]any{"type": "tcp"}}}}}
 	}
 	udpEcho, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -225,11 +239,13 @@ func TestGostRealRuntimeAddAndPortConflictPreserveEstablishedConnections(t *test
 	udpAddr := udpPort.LocalAddr().String()
 	udpPort.Close()
 	udpService := map[string]any{"name": "fwx-udp", "addr": udpAddr, "handler": map[string]any{"type": "udp"}, "listener": map[string]any{"type": "udp"}, "forwarder": map[string]any{"nodes": []any{map[string]any{"name": "udp-target", "addr": udpEcho.LocalAddr().String(), "connector": map[string]any{"type": "udp"}, "dialer": map[string]any{"type": "udp"}}}}}
+	udpService["name"] = "fwx-42-udp"
+	udpService["metadata"] = map[string]any{"enableStats": true, "observer.resetTraffic": false}
 	addr1, addr2 := freeAddress(), freeAddress()
 	probeAddr := freeAddress()
 	probe := service("fwx-tunnel-probe-77", probeAddr)
 	probe["forwarder"] = map[string]any{"nodes": []any{map[string]any{"name": "probe-target", "addr": "127.0.0.1:9", "connector": map[string]any{"type": "tcp"}, "dialer": map[string]any{"type": "tcp"}}}}
-	config := map[string]any{"services": []any{service("fwx-1", addr1), service("fwx-2", addr2), udpService, probe}, "api": map[string]any{"addr": "unix://" + socket}}
+	config := map[string]any{"services": []any{service("fwx-41-tcp", addr1), service("fwx-2", addr2), udpService, probe}, "api": map[string]any{"addr": "unix://" + socket}}
 	path := filepath.Join(dir, "gost.json")
 	raw, _ := json.Marshal(config)
 	if err := os.WriteFile(path, raw, 0600); err != nil {
@@ -312,6 +328,30 @@ func TestGostRealRuntimeAddAndPortConflictPreserveEstablishedConnections(t *test
 		}
 	}
 	checkUDP()
+	// Verify actual upstream listener counters, including UDP, while the TCP
+	// connection remains open. Reading twice must not reset cumulative bytes.
+	_, tcpPort, _ := net.SplitHostPort(addr1)
+	_, udpPortText, _ := net.SplitHostPort(udpAddr)
+	trafficStates := []localRuleState{
+		{RuleID: 41, Port: tcpPort, Protocol: "tcp", ForwardType: "gost"},
+		{RuleID: 42, Port: udpPortText, Protocol: "udp", ForwardType: "gost"},
+	}
+	for i := 0; i < 2; i++ {
+		trafficData, err := api.request(ctx, "GET", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		samples, err := parseGostTrafficSnapshot(trafficData, trafficStates, "test-runtime")
+		if err != nil || len(samples) != 2 {
+			t.Fatalf("native traffic unavailable: %v %+v", err, samples)
+		}
+		if samples[tcpPort].counters.In != 15 || samples[tcpPort].counters.Out != 15 || samples[tcpPort].counters.Connections != 1 {
+			t.Fatalf("unexpected TCP counters: %+v", samples[tcpPort])
+		}
+		if samples[udpPortText].counters.In != 9 || samples[udpPortText].counters.Out != 9 {
+			t.Fatalf("unexpected UDP counters: %+v", samples[udpPortText])
+		}
+	}
 	var live map[string]any
 	if err := json.Unmarshal(liveData, &live); err != nil {
 		t.Fatal(err)

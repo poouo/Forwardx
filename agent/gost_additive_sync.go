@@ -108,7 +108,23 @@ func normalizedGostValue(value any) any {
 			// and must not be treated like omitted Go struct defaults.
 			if key == "metadata" {
 				if metadata, ok := item.(map[string]any); ok && len(metadata) > 0 {
-					out[key] = metadata
+					// GOST's metadata.NewMetadata is case-insensitive and Viper
+					// lowercases file keys on load. Do not restart all listeners
+					// merely because enableStats/dialTimeout changed key casing.
+					normalized := make(map[string]any, len(metadata))
+					collision := false
+					for name, value := range metadata {
+						lower := strings.ToLower(name)
+						if previous, exists := normalized[lower]; exists && !reflect.DeepEqual(previous, value) {
+							collision = true
+						}
+						normalized[lower] = value
+					}
+					if collision {
+						out[key] = metadata // Ambiguous config must not appear equal.
+					} else {
+						out[key] = normalized
+					}
 				} else if item != nil && !ok {
 					out[key] = item
 				}

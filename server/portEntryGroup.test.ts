@@ -129,9 +129,17 @@ test("direct port resources fan out to an entry group and preserve unrelated lis
         await metrics.resetRuleTrafficStats([100]);
         assert.equal(await traffic(),0);
         assert.equal((await resourceTraffic()).get(portId).totalBytes,300,"logical reset also updates resource totals");
+        await groupAdmin.resetTraffic({id:portId});
+        assert.equal((await resourceTraffic()).get(portId).totalBytes,0,"display reset includes every entry without clearing logical rule usage");
+        assert.equal((await resourceTraffic()).get(entryId).totalBytes,300,"entry-group totals are independent of the port resource reset");
+        const activeOtherChildren = await children(9000);
+        for (const rule of activeOtherChildren) await metrics.insertTrafficStatsBatch([{stat:{ruleId:Number(rule.id),hostId:Number(rule.hostId),bytesIn:1,bytesOut:2,connections:1,recordedAt:new Date()},userId:2}]);
+        assert.equal((await resourceTraffic()).get(portId).totalBytes,activeOtherChildren.length*3,"new entry traffic starts accumulating immediately");
+        assert.equal((await metrics.getTrafficCounterSummaryByRule({ruleIds:[9000],userId:2})).reduce((sum,row)=>sum+row.bytesIn+row.bytesOut,0),300+activeOtherChildren.length*3);
         await assert.rejects(service.createForwardGroupFromInput(portInput,2),/无权/);
         await assert.rejects(service.createForwardGroupFromInput({...portInput,entryGroupId:null,members:[member(1),member(2)]},1),/1 台/);
         await groups.deleteForwardGroup(portId);
+        assert.equal((await runtime.queryRaw('SELECT id FROM resource_traffic_baselines WHERE groupId=?',[portId])).length,0,"resource deletion cleans its display offsets");
         await runtime.executeRaw('UPDATE "forward_rules" SET "isRunning"=0 WHERE "pendingDelete"=1');
         await ruleRepository.purgeSettledPendingForwardRuleDeletes();
         assert.equal((await runtime.queryRaw('SELECT "id" FROM "forward_rules" WHERE "forwardGroupRuleId"=100')).length,0,"archived links are released with the logical rule");

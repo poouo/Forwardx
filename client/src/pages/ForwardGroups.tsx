@@ -4,6 +4,7 @@ import { HintSwitch } from "@/components/ui/hint-switch";
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { ResourceTrafficSummary } from "@/components/ResourceTrafficSummary";
+import { ResourceTrafficResetButton, ResourceTrafficResetDialog } from "@/components/ResourceTrafficReset";
 import { PortEntryRuntimeSummary } from "@/components/PortEntryRuntimeSummary";
 import { ForwardGroupMembers } from "@/components/ForwardGroupMembers";
 import { LatencyRating } from "@/components/LatencyRating";
@@ -817,6 +818,7 @@ export function ForwardGroupsContent({
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
+  const [resetTrafficGroup, setResetTrafficGroup] = useState<any | null>(null);
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
@@ -1186,6 +1188,18 @@ export function ForwardGroupsContent({
     },
     onError: (e) => toast.error(e.message || translateText("同步失败")),
   });
+
+  const resetTrafficMutation = trpc.forwardGroups.resetTraffic.useMutation({
+    onSuccess: async () => {
+      setResetTrafficGroup(null);
+      toast.success(translateText("统计流量已重置"));
+      await utils.forwardGroups.listPage.invalidate();
+    },
+    onError: (error) => toast.error(error.message || translateText("重置统计流量失败")),
+  });
+  const resourceTrafficResetAction = (group: any) => normalizeGroupMode(group.groupMode) === "port"
+    ? <ResourceTrafficResetButton disabled={resetTrafficMutation.isPending} onClick={() => setResetTrafficGroup(group)} />
+    : null;
 
   const runFailoverMutation = trpc.forwardGroups.runFailover.useMutation({
     onSuccess: () => {
@@ -1890,11 +1904,12 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <ResourceTrafficSummary summary={group.trafficSummary} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
+                  <ResourceTrafficSummary summary={group.trafficSummary} resettable={normalizeGroupMode(group.groupMode) === "port"} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
+                    {resourceTrafficResetAction(group)}
+                    <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("同步规则")} aria-label={translateText("同步规则")} disabled={syncMutation.isPending} onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)}>
@@ -1969,11 +1984,12 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <ResourceTrafficSummary summary={group.trafficSummary} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
+                  <ResourceTrafficSummary summary={group.trafficSummary} resettable={normalizeGroupMode(group.groupMode) === "port"} showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} />
 
                   <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
+                    {resourceTrafficResetAction(group)}
+                    <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("同步规则")} aria-label={translateText("同步规则")} disabled={syncMutation.isPending} onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)}>
@@ -2053,11 +2069,12 @@ export function ForwardGroupsContent({
                         <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? translateText("转发规则中直接选择") : normalizeGroupMode(group.groupMode) === "chain" ? translateText("规则使用时监听入口端口") : normalizeGroupMode(group.groupMode) === "exit" ? translateText("隧道出口组") : group.lastDdnsValue || translateText("未切换")}</div>
                       </TableCell>
                       <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? translateText("固定入口") : translateText("固定出口")) : group.trafficSummary?.ruleCount ?? "—"}</TableCell>
-                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} compact table showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} /></TableCell>
+                      <TableCell className="py-3"><ResourceTrafficSummary summary={group.trafficSummary} resettable={normalizeGroupMode(group.groupMode) === "port"} compact table showRuleCount={normalizeGroupMode(group.groupMode) === "chain" || isCollectionMode(normalizeGroupMode(group.groupMode))} /></TableCell>
                       <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
+                          {resourceTrafficResetAction(group)}
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("同步规则")} aria-label={translateText("同步规则")} disabled={syncMutation.isPending} onClick={() => syncMutation.mutate({ id: group.id })}>
                             <RefreshCw className="h-3.5 w-3.5" />
                           </Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)}>
@@ -2699,6 +2716,12 @@ export function ForwardGroupsContent({
           onOpenChange={(open) => !open && setTestGroup(null)}
         />
       )}
+      <ResourceTrafficResetDialog
+        name={resetTrafficGroup ? String(resetTrafficGroup.name || "") : null}
+        pending={resetTrafficMutation.isPending}
+        onClose={() => setResetTrafficGroup(null)}
+        onConfirm={() => { if (resetTrafficGroup && !resetTrafficMutation.isPending) resetTrafficMutation.mutate({ id: Number(resetTrafficGroup.id) }); }}
+      />
       <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>

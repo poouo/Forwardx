@@ -1274,6 +1274,7 @@ async function finalizeForwardRuleDeleteInTransaction(id: number) {
   if (retained.length) return;
   await db.delete(ruleGroupMembers).where(eq(ruleGroupMembers.ruleId, id));
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
+  await executeRaw(`DELETE FROM ${quoteIdentifier("resource_traffic_baselines")} WHERE ${quoteIdentifier("ruleId")} = ?`, [id]);
   await db.update(forwardGroupMembers).set({
     ruleId: null,
     updatedAt: nowDate(),

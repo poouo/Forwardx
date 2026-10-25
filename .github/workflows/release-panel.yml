@@ -73,6 +73,11 @@ jobs:
           pnpm test:performance
           pnpm test:rule-batch
           pnpm test:ai-models
+          pnpm test:globe-ui
+          pnpm test:list-settings
+          pnpm test:resource-traffic
+          pnpm test:security-boundaries
+          pnpm test:selftest-dispatch
           pnpm test:server
 
       - name: Run Agent tests and vet

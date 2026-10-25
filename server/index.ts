@@ -29,6 +29,7 @@ import { registerLocaleHintRoute } from "./localeHint";
 import { serveClient } from "./clientStatic";
 import { mcpHttpRouter } from "./mcpRoutes";
 import { billingExportRouter } from "./billingExportRoutes";
+import { createBoundedBodyParser } from "./requestBodyParser";
 
 installPanelLogger();
 
@@ -142,8 +143,7 @@ async function startServer() {
   // Bound MCP JSON before the larger plugin upload parser; authentication is token-only.
   app.use(mcpHttpRouter);
   // Plugin archives are accepted as base64 JSON and can expand beyond the 5 MB binary limit.
-  app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ limit: "1mb", extended: true }));
+  app.use(createBoundedBodyParser());
   app.use(cookieParser());
   app.use(billingExportRouter);
   registerGoogleAuthRoutes(app);
