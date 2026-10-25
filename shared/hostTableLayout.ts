@@ -15,6 +15,8 @@ export const HOST_TABLE_COLUMNS = [
   { id: "disk", label: "磁盘", width: 110, min: 96, max: 400 },
   { id: "total", label: "累计流量", width: 128, min: 112, max: 500 },
   { id: "network", label: "实时网络", width: 128, min: 112, max: 500 },
+  { id: "tcpConnections", label: "TCP 连接", width: 136, min: 112, max: 300 },
+  { id: "udpConnections", label: "UDP 连接", width: 136, min: 112, max: 300 },
   { id: "system", label: "系统累计", width: 128, min: 112, max: 500 },
   { id: "actions", label: "操作", width: 120, min: 120, max: 400, required: true },
 ] as const;

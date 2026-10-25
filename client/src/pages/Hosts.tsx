@@ -16,6 +16,7 @@ import DateTimePickerInput, {
 } from "@/components/DatePickerInput";
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
 import HostLoad from "@/components/hosts/HostLoad";
+import HostConnectionCount from "@/components/hosts/HostConnectionCount";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
 import HostStatusNotificationSetting from "@/components/hosts/HostStatusNotificationSetting";
 import HostReminderSettings from "@/components/hosts/HostReminderSettings";
@@ -113,14 +114,13 @@ import {
   ActivitySquare,
   FolderKanban,
 } from "lucide-react";
-import type { GlobeMethods } from "react-globe.gl";
+import { GlobeWorkspace, globeTooltip, useGlobeScene } from "@/components/GlobeWorkspace";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { toast } from "@/lib/localizedToast";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
 const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
-const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const HOST_GLOBE_CLUSTER_DISTANCE_DEGREES = 2.4;
 const HOST_GLOBE_LABEL_PULL_DEGREES = 8.2;
@@ -305,32 +305,11 @@ function createHostGlobeLabelElement(
   onHoverChange: (point: HostGlobePoint | null) => void
 ) {
   const element = document.createElement("div");
+  element.className = "globe-host-label";
   element.innerHTML = `
     <span style="width:7px;height:7px;flex:0 0 auto;border-radius:999px;background:${point.color};box-shadow:0 0 10px ${point.glowColor};"></span>
     <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.label)}</span>
   `;
-  element.style.cssText = [
-    "display:inline-flex",
-    "align-items:center",
-    "gap:6px",
-    "max-width:150px",
-    "padding:3px 8px",
-    "border:1px solid rgba(255,255,255,.18)",
-    "border-radius:999px",
-    "background:rgba(2,6,23,.58)",
-    "box-shadow:0 8px 22px rgba(0,0,0,.28),0 0 0 1px rgba(15,23,42,.3)",
-    "backdrop-filter:blur(8px)",
-    "color:#f8fafc",
-    "font:600 13px Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
-    "line-height:1.15",
-    "letter-spacing:0",
-    "white-space:nowrap",
-    "text-shadow:0 1px 4px rgba(0,0,0,.6)",
-    "transform:translate(-50%,-50%)",
-    "pointer-events:auto",
-    "user-select:none",
-    "cursor:pointer",
-  ].join(";");
   element.title = `${point.host.name || point.label} · ${point.regionText || translateText("地区获取中")}`;
   element.addEventListener("pointerenter", () => onHoverChange(point));
   element.addEventListener("pointerleave", () => onHoverChange(null));
@@ -365,32 +344,18 @@ function escapeTooltipHtml(value: unknown) {
 }
 
 function renderHostGlobeTooltip(point: HostGlobePoint) {
-  const rows = [
-    { label: translateText("地址"), value: point.addressText },
-    { label: translateText("地区"), value: point.regionText || translateText("地区获取中") },
-    { label: translateText("系统"), value: point.host.osInfo || translateText("系统信息未上报") },
-    { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : translateText("未上报") },
-  ];
-  const regionValue = point.flagUrl
-    ? `<span style="display:inline-flex;min-width:0;align-items:center;gap:7px;"><img src="${escapeTooltipHtml(point.flagUrl)}" alt="${escapeTooltipHtml(point.countryCode)}" referrerpolicy="no-referrer" style="width:20px;height:15px;flex:0 0 auto;border-radius:2px;object-fit:cover;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline';" /><span style="display:none;flex:0 0 auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;font-size:11px;color:#cbd5e1;">${escapeTooltipHtml(point.countryCode)}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.regionText || translateText("地区获取中"))}</span></span>`
-    : escapeTooltipHtml(point.regionText || translateText("地区获取中"));
-  return `
-    <div style="min-width:260px;max-width:320px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.92);box-shadow:0 18px 44px rgba(0,0,0,.4);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
-        <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;">${escapeTooltipHtml(point.host.name || "-")}</div>
-        <div style="display:flex;align-items:center;gap:6px;color:#cbd5e1;font-size:12px;">
-          <span style="width:8px;height:8px;border-radius:999px;background:${point.color};box-shadow:0 0 14px ${point.glowColor};"></span>
-          ${escapeTooltipHtml(point.statusText)}
-        </div>
-      </div>
-      ${rows.map((row) => `
-        <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
-          <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === translateText("地址") || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === translateText("地区") ? regionValue : escapeTooltipHtml(row.value)}</span>
-        </div>
-      `).join("")}
-    </div>
-  `;
+  return globeTooltip({
+    title: point.host.name || "-",
+    color: point.color,
+    status: point.statusText,
+    rows: [
+      { label: translateText("地址"), value: point.addressText },
+      { label: translateText("地区"), value: point.regionText || translateText("地区获取中") },
+      { label: translateText("系统"), value: point.host.osInfo || translateText("系统信息未上报") },
+      { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : translateText("未上报") },
+    ],
+    action: translateText("点击编辑主机"),
+  });
 }
 
 function HostWorldMap({
@@ -404,11 +369,11 @@ function HostWorldMap({
   totalHosts?: number;
   isLoadingMore?: boolean;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const globeRef = useRef<GlobeMethods | undefined>(undefined);
-  const [globeReady, setGlobeReady] = useState(false);
-  const [size, setSize] = useState({ width: 1400, height: 780 });
   const [hoveredPoint, setHoveredPoint] = useState<HostGlobePoint | null>(null);
+  const [selectedHostId, setSelectedHostId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const scene = useGlobeScene(Boolean(hoveredPoint));
+  const { globeRef, size, palette } = scene;
   const [countries, setCountries] = useState<GlobeCountryFeature[]>([]);
 
   const points = useMemo(() => {
@@ -438,7 +403,14 @@ function HostWorldMap({
 
   const missingCount = Math.max(0, hosts.length - points.length);
   const onlinePoints = useMemo(() => points.filter((point) => point.host.isOnline), [points]);
-  const leaderPaths = useMemo(() => createHostGlobeLeaderPaths(points), [points]);
+  const selectedPoint = points.find((point) => Number(point.host.id) === selectedHostId);
+  const visiblePoints = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return points.filter((point) => !query || `${point.host.name} ${point.addressText} ${point.regionText}`.toLowerCase().includes(query))
+      .sort((a, b) => Number(b.host.isOnline) - Number(a.host.isOnline) || String(a.host.name).localeCompare(String(b.host.name)));
+  }, [points, search]);
+  const labelPoints = useMemo(() => selectedPoint ? [selectedPoint] : points.slice(0, 48), [points, selectedPoint]);
+  const leaderPaths = useMemo(() => createHostGlobeLeaderPaths(labelPoints), [labelPoints]);
   const hostCountryCodes = useMemo(() => {
     const codes = new Set<string>();
     hosts.forEach((host) => {
@@ -464,60 +436,26 @@ function HostWorldMap({
     };
   }, []);
 
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const updateSize = () => {
-      const rect = element.getBoundingClientRect();
-      const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
-      const width = Math.max(900, Math.round(rect.width));
-      setSize({
-        width,
-        height: Math.max(720, Math.min(980, Math.round(Math.max(viewportHeight - 230, width * 0.52)))),
-      });
-    };
-    updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(element);
-    window.addEventListener("resize", updateSize);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateSize);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!globeReady || !globeRef.current) return;
-    const globe = globeRef.current;
-    const controls = globe.controls();
-    controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.42;
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.enablePan = false;
-    controls.rotateSpeed = 0.58;
-    controls.zoomSpeed = 0.85;
-    controls.minDistance = 105;
-    controls.maxDistance = 500;
-    globe.pointOfView({ lat: 5, lng: 108, altitude: 1.18 }, 0);
-  }, [globeReady]);
-
-  useEffect(() => {
-    const controls = globeRef.current?.controls();
-    if (!controls) return;
-    controls.autoRotate = !hoveredPoint;
-  }, [hoveredPoint]);
-
   return (
-    <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#030712] shadow-sm md:block">
-      <div
-        ref={containerRef}
-        className="relative min-h-[720px] w-full overflow-hidden"
-        style={{ height: size.height }}
-      >
+    <GlobeWorkspace scene={scene} title={translateText("全球主机地图")} subtitle={translateText("节点分布 · 在线状态一览")}
+      stats={[{ label: translateText("在线"), value: hosts.filter((host) => host.isOnline).length, tone: "success" }, { label: translateText("已定位"), value: `${points.length} / ${Math.max(totalHosts, hosts.length)}` }, { label: translateText("待定位"), value: missingCount, tone: missingCount ? "warning" : undefined }]}
+      empty={points.length === 0 ? translateText("暂无可定位主机") : undefined}
+      legend={<><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" />{translateText("在线")}</span><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-400" />{translateText("离线")}</span></>}
+      sidebar={<>
+        <div className="space-y-3 border-b border-border/50 px-4 py-3"><div className="flex justify-between gap-2 text-xs"><h4 className="font-semibold">{translateText("节点列表")}</h4><span className="text-muted-foreground">{points.length}</span></div><Input className="h-8 text-xs" aria-label={translateText("搜索节点")} placeholder={translateText("搜索名称、IP 或地区")} value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+        {selectedPoint && <div className="m-3 rounded-xl border border-primary/20 bg-primary/5 p-3"><div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-xs font-semibold">{selectedPoint.host.name}</span><button type="button" aria-label={translateText("取消选择")} className="text-muted-foreground hover:text-foreground" onClick={() => setSelectedHostId(null)}>×</button></div><p className="mt-2 text-[11px] text-muted-foreground">{selectedPoint.regionText || translateText("未定位")}</p><p className="mt-1 break-all font-mono text-[11px]">{selectedPoint.addressText}</p><Button variant="outline" size="sm" className="mt-3 h-7 w-full text-xs" onClick={() => onEdit(selectedPoint.host)}>{translateText("编辑主机")}</Button></div>}
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+          {visiblePoints.slice(0, 60).map((point) => <button type="button" key={point.host.id} className="globe-list-row" data-active={selectedPoint?.host.id === point.host.id} aria-pressed={selectedPoint?.host.id === point.host.id} onClick={() => { setSelectedHostId(Number(point.host.id)); scene.focus(point); }}>
+            <div className="flex min-w-0 items-center gap-2"><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: point.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{point.host.name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{point.statusText}</span></div><div className="ml-4 mt-1 truncate text-[10px] text-muted-foreground">{point.regionText || point.addressText}</div>
+          </button>)}
+          {visiblePoints.length === 0 && <p className="py-8 text-center text-xs text-muted-foreground">{translateText("暂无匹配节点")}</p>}
+        </div>
+        <div className="border-t border-border/50 px-4 py-3 text-[11px] text-muted-foreground">{isLoadingMore ? translateText("正在补充节点") : translateText("点击节点定位，点击标记编辑")}{visiblePoints.length > 60 ? ` · ${translateText("显示前 {0} 项", [60])}` : ""}</div>
+      </>}
+    >
         <Suspense
           fallback={
-            <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />{translateText("正在加载地球视图")}</div>
           }
         >
@@ -525,21 +463,20 @@ function HostWorldMap({
             ref={globeRef}
             width={size.width}
             height={size.height}
-            backgroundColor="rgba(3,7,18,1)"
-            backgroundImageUrl={GLOBE_BACKGROUND_IMAGE_URL}
+            backgroundColor="rgba(0,0,0,0)"
             globeImageUrl={GLOBE_EARTH_IMAGE_URL}
             bumpImageUrl={GLOBE_BUMP_IMAGE_URL}
             showAtmosphere
-            atmosphereColor="#64748b"
-            atmosphereAltitude={0.22}
+            atmosphereColor={palette.primary}
+            atmosphereAltitude={0.14}
             showGraticules={false}
             globeCurvatureResolution={4}
             polygonsData={countries}
             polygonGeoJsonGeometry="geometry"
             polygonAltitude={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? 0.014 : 0.004}
-            polygonCapColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.38)" : "rgba(15,23,42,.05)"}
-            polygonSideColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.24)" : "rgba(2,6,23,.14)"}
-            polygonStrokeColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(94,234,212,.88)" : "rgba(148,163,184,.22)"}
+            polygonCapColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? palette.cap : "rgba(15,23,42,.03)"}
+            polygonSideColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? palette.side : "rgba(2,6,23,.1)"}
+            polygonStrokeColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? palette.stroke : palette.mutedStroke}
             polygonCapCurvatureResolution={4}
             polygonsTransitionDuration={0}
             pathsData={leaderPaths}
@@ -555,11 +492,11 @@ function HostWorldMap({
             pointLat="lat"
             pointLng="lng"
             pointAltitude={(point) => ((point as HostGlobePoint).host.isOnline ? 0.045 : 0.032)}
-            pointRadius={0.34}
+            pointRadius={(point) => (point as HostGlobePoint).host.id === selectedPoint?.host.id ? 0.58 : 0.3}
             pointResolution={28}
             pointColor={(point) => (point as HostGlobePoint).color}
             pointsTransitionDuration={0}
-            ringsData={onlinePoints}
+            ringsData={scene.motionEnabled ? (selectedPoint ? [selectedPoint] : onlinePoints.slice(0, 80)) : []}
             ringLat="lat"
             ringLng="lng"
             ringAltitude={0.048}
@@ -567,7 +504,7 @@ function HostWorldMap({
             ringMaxRadius={2.5}
             ringPropagationSpeed={0.72}
             ringRepeatPeriod={2600}
-            htmlElementsData={points}
+            htmlElementsData={labelPoints}
             htmlLat="displayLat"
             htmlLng="displayLng"
             htmlAltitude={0.12}
@@ -578,21 +515,10 @@ function HostWorldMap({
             onPointClick={(point) => onEdit((point as HostGlobePoint).host)}
             showPointerCursor={(objectType) => objectType === "point"}
             enablePointerInteraction
-            onGlobeReady={() => setGlobeReady(true)}
+            onGlobeReady={() => scene.setReady(true)}
           />
         </Suspense>
-        <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-          <div className="font-medium">{translateText("全球主机地图")}</div>
-          <div className="mt-1 text-white/70">{translateText("已加载 ")}{hosts.length} / {Math.max(totalHosts, hosts.length)}{translateText(" 台 · 已定位 ")}{points.length}{translateText(" 台 · 待定位 ")}{missingCount}{translateText(" 台")}{isLoadingMore ? translateText(" · 正在补充") : ""}
-          </div>
-        </div>
-        {points.length === 0 && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
-            <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">{translateText("暂无可定位主机")}</div>
-          </div>
-        )}
-      </div>
-    </div>
+    </GlobeWorkspace>
   );
 }
 
@@ -2272,6 +2198,8 @@ function HostsContent() {
         </div>;
       }
       case "load": return <HostLoad metric={metric} showLabel={false} className="overflow-hidden" />;
+      case "tcpConnections": return <HostConnectionCount snapshot={host.connectionStats} protocol="tcp" isOnline={!!host.isOnline} />;
+      case "udpConnections": return <HostConnectionCount snapshot={host.connectionStats} protocol="udp" isOnline={!!host.isOnline} />;
       case "uptime": {
         const text = metric?.uptime == null ? "--" : formatUptime(metric.uptime);
         return <span className="block truncate text-xs tabular-nums text-muted-foreground" title={formatHostUptimeTitle(metric?.uptime, text)}>{text}</span>;

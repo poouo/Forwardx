@@ -10,6 +10,7 @@ import { notificationSettings } from "./notificationSettings";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recoverManualTunnelProbeBatches, settleManualTunnelProbeBatch } from "./tunnelManualProbe";
 import { recoverManualForwardChainBatches, settleManualForwardChainBatch } from "./forwardChainManualProbe";
+import { recoverRuleTunnelProbeBatches, settleRuleTunnelProbeBatch } from "./ruleTunnelManualProbe";
 import { recordHopTestResult } from "./hopTestState";
 import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
 import { checkpointHostAvailability, cleanOldHostAvailability } from "./repositories/hostAvailabilityRepository";
@@ -196,6 +197,11 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], d
     const meta = parseSelfTestMeta(test.requestMessage ?? test.message);
     if (!meta) continue;
     if (test.batchId && settledBatchIds.has(test.batchId)) continue;
+    if (test.batchId?.startsWith("rt-")) {
+      settledBatchIds.add(test.batchId);
+      await settleRuleTunnelProbeBatch(test.batchId);
+      continue;
+    }
     if (test.batchId?.startsWith("tp-")) {
       settledBatchIds.add(test.batchId);
       await settleManualTunnelProbeBatch(test.batchId);
@@ -312,7 +318,7 @@ async function runSelfTestTimeoutSweep() {
       await settleTimedOutTunnelTests(timedOutTests, SELF_TEST_TIMEOUT_SECONDS);
       for (const test of timedOutTests) {
         const meta = parseSelfTestMeta(test.requestMessage ?? test.message);
-        if (test.batchId?.startsWith("tp-") || test.batchId?.startsWith("fc-")) continue;
+        if (test.batchId?.startsWith("tp-") || test.batchId?.startsWith("fc-") || test.batchId?.startsWith("rt-")) continue;
         if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
         if (!meta || meta.kind === "forward-via-tunnel") {
           await db.insertTcpingStat({
@@ -337,6 +343,7 @@ async function runSelfTestTimeoutSweep() {
     }
     await recoverManualTunnelProbeBatches();
     await recoverManualForwardChainBatches();
+    await recoverRuleTunnelProbeBatches();
   } catch (error) {
     console.error("[Scheduler] Self-test timeout sweep error:", error);
   }
@@ -346,6 +353,7 @@ async function recoverPendingSelfTestSweep() {
   try {
     await recoverManualTunnelProbeBatches();
     await recoverManualForwardChainBatches();
+    await recoverRuleTunnelProbeBatches();
     if (await db.hasActiveForwardTests()) selfTestSweepActivity.markActive();
   } catch (error) {
     console.error("[Scheduler] Self-test recovery check error:", error);

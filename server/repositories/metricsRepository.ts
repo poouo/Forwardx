@@ -1127,6 +1127,8 @@ export async function resetRuleTrafficStats(ruleIds: number[]) {
       `DELETE FROM ${q("forward_rule_traffic_counters")} WHERE ${q("ruleId")} IN (${placeholders})`,
       batch,
     );
+    // Resource display offsets must not hide new traffic after a rule reset.
+    await executeRaw(`DELETE FROM ${q("resource_traffic_baselines")} WHERE ${q("ruleId")} IN (${placeholders})`, batch);
     const tcpingResult = await executeRaw(
       `DELETE FROM ${q("tcping_stats")} WHERE ${q("ruleId")} IN (${placeholders})`,
       batch,
@@ -1975,7 +1977,34 @@ export async function getTunnelTrafficSummaries(tunnelIds: number[], userId?: nu
   return getResourceTrafficSummaries("tunnel", tunnelIds, userId);
 }
 
-async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds: number[], userId?: number) {
+type ResourceTrafficBaseline = {
+  groupId: number; ruleId: number; hostId: number;
+  bytesIn: number; bytesOut: number; dailyIn: number; dailyOut: number; resetDay: number;
+};
+
+/** Reset only this resource's presentation, never quota/billing/history or Agent counters. */
+export async function resetPortForwardResourceTraffic(groupId: number) {
+  return withDatabaseTransaction(async () => {
+    const q = quoteIdentifier;
+    const groups = await queryRaw<{ groupMode: string }>(`SELECT ${q("groupMode")} FROM ${q("forward_groups")} WHERE ${q("id")} = ?`, [groupId]);
+    if (!groups[0]) throw new Error("转发资源不存在");
+    if (groups[0].groupMode !== "port") throw new Error("仅端口转发资源支持重置统计流量");
+    const snapshot = new Map<string, ResourceTrafficBaseline>();
+    await getResourceTrafficSummaries("group", [groupId], undefined, snapshot);
+    await executeRaw(`DELETE FROM ${q("resource_traffic_baselines")} WHERE ${q("groupId")} = ?`, [groupId]);
+    const resetAt = epochSeconds(nowDate());
+    const columns = ["groupId", "ruleId", "hostId", "bytesIn", "bytesOut", "dailyIn", "dailyOut", "resetDay", "resetAt"] as const;
+    const rows = Array.from(snapshot.values());
+    for (let offset = 0; offset < rows.length; offset += 100) {
+      const batch = rows.slice(offset, offset + 100);
+      await executeRaw(`INSERT INTO ${q("resource_traffic_baselines")} (${columns.map(q).join(",")}) VALUES ${batch.map(() => `(${columns.map(() => "?").join(",")})`).join(",")}`,
+        batch.flatMap((row) => columns.map((column) => column === "resetAt" ? resetAt : row[column])));
+    }
+    return { success: true, ruleCount: new Set(rows.map((row) => row.ruleId)).size };
+  });
+}
+
+async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds: number[], userId?: number, snapshot?: Map<string, ResourceTrafficBaseline>) {
   const ids = Array.from(new Set(resourceIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)));
   const totals = new Map(ids.map((id) => [id, {
     bytesIn: 0, bytesOut: 0, totalBytes: 0, ruleCount: 0,
@@ -1985,6 +2014,11 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
   if (!db || ids.length === 0) return totals;
   const q = quoteIdentifier;
   const placeholders = ids.map(() => "?").join(",");
+  const baselineRows = kind === "group" && !snapshot
+    ? await queryRaw<ResourceTrafficBaseline>(`SELECT * FROM ${q("resource_traffic_baselines")} WHERE ${q("groupId")} IN (${placeholders})`, ids)
+    : [];
+  const baselineKey = (groupId: number, ruleId: number, hostId: number) => `${groupId}:${ruleId}:${hostId}`;
+  const baselines = new Map(baselineRows.map((row) => [baselineKey(Number(row.groupId), Number(row.ruleId), Number(row.hostId)), row]));
   // Include direct references and live managed tunnel children. The latter
   // attribute only their own counters to a tunnel, never the entire template's
   // traffic across other tunnel members. Ownership always comes from the parent.
@@ -2062,6 +2096,16 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
   // Bound the size of SQL IN lists for large resources. Guard the empty case:
   // the existing counter API intentionally treats [] as an unfiltered request.
   const since = billingStartOfCalendarDay(nowDate());
+  const resetDay = epochSeconds(since);
+  const capture = (groupId: number, ruleId: number, hostId: number) => {
+    const key = baselineKey(groupId, ruleId, hostId);
+    let row = snapshot?.get(key);
+    if (snapshot && !row) {
+      row = { groupId, ruleId, hostId, bytesIn: 0, bytesOut: 0, dailyIn: 0, dailyOut: 0, resetDay };
+      snapshot.set(key, row);
+    }
+    return row;
+  };
   for (const managedChildren of [false, true]) {
     const ruleIds = Array.from(resourcesByRule)
       .filter(([id, link]) => (id !== link.logicalRuleId) === managedChildren && link.resourceIds.length > 0)
@@ -2074,9 +2118,14 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
       for (const row of rows) {
         for (const id of resourcesByRule.get(row.ruleId)?.resourceIds || []) {
           const total = totals.get(id)!;
-          total.bytesIn += row.bytesIn;
-          total.bytesOut += row.bytesOut;
-          total.totalBytes += row.bytesIn + row.bytesOut;
+          const captured = capture(id, row.ruleId, row.hostId);
+          if (captured) { captured.bytesIn += row.bytesIn; captured.bytesOut += row.bytesOut; }
+          const baseline = baselines.get(baselineKey(id, row.ruleId, row.hostId));
+          const bytesIn = Math.max(0, row.bytesIn - Number(baseline?.bytesIn || 0));
+          const bytesOut = Math.max(0, row.bytesOut - Number(baseline?.bytesOut || 0));
+          total.bytesIn += bytesIn;
+          total.bytesOut += bytesOut;
+          total.totalBytes += bytesIn + bytesOut;
         }
       }
       // Tunnel children keep their own traffic attribution; normalizing them
@@ -2087,9 +2136,15 @@ async function getResourceTrafficSummaries(kind: "group" | "tunnel", resourceIds
       for (const row of dailyRows) {
         for (const id of resourcesByRule.get(row.ruleId)?.resourceIds || []) {
           const daily = totals.get(id)!.daily;
-          daily.bytesIn += row.bytesIn;
-          daily.bytesOut += row.bytesOut;
-          daily.totalBytes += row.bytesIn + row.bytesOut;
+          const captured = capture(id, row.ruleId, row.hostId);
+          if (captured) { captured.dailyIn += row.bytesIn; captured.dailyOut += row.bytesOut; }
+          const baseline = baselines.get(baselineKey(id, row.ruleId, row.hostId));
+          const sameDay = Number(baseline?.resetDay) === resetDay;
+          const bytesIn = Math.max(0, row.bytesIn - (sameDay ? Number(baseline?.dailyIn || 0) : 0));
+          const bytesOut = Math.max(0, row.bytesOut - (sameDay ? Number(baseline?.dailyOut || 0) : 0));
+          daily.bytesIn += bytesIn;
+          daily.bytesOut += bytesOut;
+          daily.totalBytes += bytesIn + bytesOut;
         }
       }
     }

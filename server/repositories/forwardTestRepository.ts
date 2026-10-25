@@ -4,6 +4,7 @@ import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows }
 import { quoteIdentifier } from "../dbCompat";
 import { selfTestSweepActivity, SELF_TEST_MAX_LIFETIME_SECONDS, selfTestTimeoutSeconds } from "../selfTestTiming";
 import { deleteExpiredHistoryRows } from "./historyRetention";
+import { buildRuleTunnelProbeResult } from "../ruleTunnelProbeResult";
 
 // ==================== Forward Tests ====================
 
@@ -152,6 +153,17 @@ export async function getLatestForwardTest(ruleId: number, options: { includeAct
   const updatedCol = quoteIdentifier("updatedAt");
   const createdCol = quoteIdentifier("createdAt");
   const messageCol = quoteIdentifier("message");
+  // A rule tunnel batch is one logical test, not whichever segment last
+  // changed status. Publish every received segment while the others wait.
+  const [newest] = await queryRaw<any>(
+    `SELECT ${quoteIdentifier("batchId")} FROM ${table} WHERE ${ruleCol} = ? ORDER BY ${createdCol} DESC, ${idCol} DESC LIMIT 1`, [ruleId],
+  );
+  if (String(newest?.batchId || "").startsWith("rt-")) {
+    const batchRows = await queryRaw<any>(
+      `SELECT * FROM ${table} WHERE ${quoteIdentifier("batchId")} = ? ORDER BY ${idCol}`, [newest.batchId],
+    );
+    return buildRuleTunnelProbeResult(batchRows);
+  }
   if (options.includeActive !== false) {
     const pendingRows = await queryRaw<any>(
       `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC, ${idCol} DESC LIMIT 1`,

@@ -38,6 +38,7 @@ import { recordIpSwitchAgentCapability, hasQueuedIpSwitchAgentTasks, takeIpSwitc
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
 import { updateAgentToolInventory } from "./agentToolInventory";
+import { recordAgentConnectionStats } from "./agentConnectionStats";
 import { getAgentHostFromRequest, getAgentPresenceHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { pruneMapEntries, setBoundedMapValue } from "./boundedCache";
@@ -1449,6 +1450,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     logHostName = String((host as any).name || "").trim();
     updateAgentPluginInventory(logHostId, req.body?.pluginVersions, req.body?.pluginSyncSignatures);
     updateAgentToolInventory(logHostId, req.body?.forwardTools, req.body?.forwardToolsCheckedAt);
+    recordAgentConnectionStats(logHostId, req.body?.connectionStats);
     recordIpSwitchAgentCapability(logHostId, req.body?.ipSwitchSupported);
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
@@ -3651,6 +3653,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (fastFailover) {
             service.metadata = { ...(service.metadata || {}), dialTimeout: "3s" };
           }
+          // Private local API counters provide a NET_ADMIN-free fallback. Only
+          // business entry listeners are counted, never tunnel hops or exits.
+          service.metadata = { ...(service.metadata || {}), enableStats: true, "observer.resetTraffic": false };
           if (!tunnel) {
             service.forwarder = {
               nodes: [{

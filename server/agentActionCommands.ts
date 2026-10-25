@@ -6,7 +6,13 @@ type IptablesBinary = "iptables" | "ip6tables";
 const iptablesBinaries: IptablesBinary[] = ["iptables", "ip6tables"];
 
 function cleanAddress(value: unknown) {
-  return String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
+  const address = String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
+  // This is also a shell-generation boundary: not every caller is a rule
+  // creation route (host/forward-group reconciliation includes stored data).
+  if (address && (address.length > 253 || !/^[A-Za-z0-9_:][A-Za-z0-9_.:-]*$/.test(address))) {
+    throw new Error("Invalid forwarding target address");
+  }
+  return address;
 }
 
 function isIpv6Address(value: unknown) {
@@ -259,7 +265,7 @@ function buildNftForwardTargetCleanupCmds(rule: any): string[] {
   const cmds: string[] = [];
   for (const proto of protos) {
     const deleteBy = (direction: "daddr" | "saddr", portField: "dport" | "sport") => {
-      const awk = `awk -v family='${family}' -v addr='${targetIp}' -v proto='${proto}' -v port='${targetPort}' 'index($0, " comment ") == 0 && index($0, family " ${direction} " addr) && index($0, proto " ${portField} " port) {print $NF}'`;
+      const awk = `awk -v family='${family}' -v addr=${shellQuote(targetIp)} -v proto='${proto}' -v port='${targetPort}' 'index($0, " comment ") == 0 && index($0, family " ${direction} " addr) && index($0, proto " ${portField} " port) {print $NF}'`;
       return `if nft list chain inet ${nftTable} forward >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} forward 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} forward handle "$h" 2>/dev/null; true; done; fi; true`;
     };
     cmds.push(deleteBy("daddr", "dport"));
@@ -275,7 +281,7 @@ function buildNftPostroutingTargetCleanupCmds(rule: any): string[] {
   const protos = forwardRuleProtocols(rule.protocol);
   const family = nftAddressFamily(targetIp);
   return protos.map((proto) => {
-    const awk = `awk -v family='${family}' -v addr='${targetIp}' -v proto='${proto}' -v port='${targetPort}' 'index($0, family " daddr " addr) && index($0, proto " dport " port) && index($0, " masquerade") {print $NF}'`;
+    const awk = `awk -v family='${family}' -v addr=${shellQuote(targetIp)} -v proto='${proto}' -v port='${targetPort}' 'index($0, family " daddr " addr) && index($0, proto " dport " port) && index($0, " masquerade") {print $NF}'`;
     return `if nft list chain inet ${nftTable} postrouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} postrouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} postrouting handle "$h" 2>/dev/null; true; done; fi; true`;
   });
 }

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildCountingChainCmds,
   buildCountingCleanupCmds,
+  buildIptablesForwardCmds,
   buildIptablesTransitionCleanupCmds,
   buildKernelForwardTransitionCleanupCmds,
   buildManagedPortCleanupCmds,
@@ -13,6 +14,20 @@ import {
   gostRuntimeApiConfig,
   syncGostServiceIfConfigChangedCmd,
 } from "./agentActionCommands";
+
+test("shell command builders reject unsafe targets even outside rule-schema paths", () => {
+  for (const targetIp of ["1.2.3.4'; id #", "$(id)", "`id`", "a;reboot", "a\nb", "a b", "-x", "a\\b", 'a"b']) {
+    const rule = { id: 42, sourcePort: 22022, targetIp, targetPort: 443, protocol: "tcp" };
+    for (const build of [buildNftCleanupCmds, buildNftForwardCmds, buildIptablesForwardCmds, buildKernelForwardTransitionCleanupCmds]) {
+      assert.throws(() => build(rule), /Invalid forwarding target address/);
+    }
+  }
+  for (const targetIp of ["203.0.113.10", "2001:db8::1", "::1", "[2001:db8::1]", "target.example", "some_host.example"]) {
+    const rule = { id: 42, sourcePort: 22022, targetIp, targetPort: 443, protocol: "both" };
+    assert.ok(buildNftCleanupCmds(rule).length);
+    assert.ok(buildIptablesForwardCmds(rule).length);
+  }
+});
 
 test("GOST incremental sync uses root-only Unix APIs with legacy restart fallback", () => {
   for (const [service, path] of [

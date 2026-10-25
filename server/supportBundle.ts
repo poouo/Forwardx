@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { formatPanelLogsForExport } from "./_core/panelLogger";
 import { listRecentConfigAuditEvents } from "./configAudit";
+import { getAgentConnectionStats } from "./agentConnectionStats";
 
 type SupportHostResult = {
   hostId: number;
@@ -73,6 +74,7 @@ export function createSupportBundleTask(hosts: any[]) {
       isOnline: host.isOnline,
       lastHeartbeat: host.lastHeartbeat,
       agentVersion: host.agentVersion,
+      connectionStats: getAgentConnectionStats(Number(host.id)),
       agentBootId: host.agentBootId,
       agentProcessId: host.agentProcessId,
       agentProcessStartedAt: host.agentProcessStartedAt,

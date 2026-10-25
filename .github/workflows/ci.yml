@@ -82,6 +82,10 @@ jobs:
           pnpm check:versions
           pnpm test:release-notes
           pnpm test:ui
+          pnpm test:globe-ui
+          pnpm test:list-settings
+          pnpm test:resource-traffic
+          pnpm test:security-boundaries
           pnpm test:login-ui
           pnpm test:startup
           pnpm test:support

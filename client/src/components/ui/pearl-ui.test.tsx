@@ -563,7 +563,7 @@ test("standalone card hover is opt-in, pointer-only, reduced-motion safe and dis
   const sortable = renderToStaticMarkup(<Card interactive disableEnterAnimation />);
   assert.match(sortable, /pearl-card-interactive/);
   assert.doesNotMatch(sortable, /pearl-hover-card/);
-  assert.match(css, /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.pearl-hover-card:hover/);
+  assert.match(css, /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.pearl-card-interactive:hover[^}]*\}\s*\.pearl-hover-card:hover/);
   const hover = css.match(/\.pearl-hover-card:hover \{([^}]+)\}/)?.[1];
   assert.ok(hover);
   assert.match(hover, /transform: translateY\(-2px\)/);
@@ -597,6 +597,18 @@ test("card shadows ease in and out slowly without delaying layout changes or sor
   assert.doesNotMatch(card, /pearl-hover-card duration-200/);
   assert.match(readFileSync("client/src/pages/HostMonitor.tsx", "utf8"), /hoverable=\{!!onSelect\}/);
   assert.match(readFileSync("client/src/pages/Plugins.tsx", "utf8"), /className="pearl-hover-card group flex min-h-\[17rem\]/);
+});
+
+test("hover cards restore a visible theme glow and deeper bottom shadow in both themes", () => {
+  const shadows = [...css.matchAll(/--pearl-card-hover-shadow:\s*([^;]+);/g)].map((match) => match[1]);
+  assert.equal(shadows.length, 2);
+  for (const shadow of shadows) {
+    assert.match(shadow, /0 6px 20px -4px var\(--theme-glow\)/);
+    assert.match(shadow, /0 20px 40px -12px/);
+    assert.match(shadow, /inset 0 1px 0 var\(--pearl-highlight\)/);
+  }
+  assert.match(shadows[0], /rgb\(28 44 38 \/ 24%\)/);
+  assert.match(shadows[1], /rgb\(0 0 0 \/ 52%\)/);
 });
 
 test("Content switches render real content immediately without initial fade or layout scaling", () => {

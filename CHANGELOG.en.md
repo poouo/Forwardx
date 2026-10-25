@@ -2,6 +2,16 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [2.3.291] - 2026-10-26
+
+- Report host TCP/UDP socket counts from Agents and display them in the host list.
+- Improve restricted-LXC traffic accounting with native GOST and existing Guard fallbacks; update both panel and Agent.
+- Reset displayed port-resource traffic without affecting usage or billing; retain manual sync.
+- Show self-test results as they arrive while pending parts continue, improving multi-entry diagnostics.
+- Redesign host and rule globes and strengthen consistent card hover effects.
+- Reduce resource usage in logging, setup queries, Agent queues and service checks; harden commands and sign-in security.
+- Panel `2.3.291`; Android / iOS `2.4.9`; Agent `2.2.204`; ForwardX FXP runtime `2.2.122` (unchanged).
+
 ## [2.3.290] - 2026-10-24
 
 - Use categorized dropdowns and single-column bulk workflows; add enable, pause, restart, delete, personal-group filters and failed-item retries. Restarts preserve paused states and statistics.

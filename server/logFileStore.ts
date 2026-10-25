@@ -16,6 +16,10 @@ const DEFAULT_PAGE_LIMIT = 200;
 const MAX_PAGE_LIMIT = 500;
 const pendingAppends = new Map<string, string[]>();
 const pendingAppendBytes = new Map<string, number>();
+// Include writes already captured by the serialized file-operation queue in
+// the budget. Slow I/O must not turn that queue into an unbounded log buffer.
+const queuedAppendBytes = new Map<string, number>();
+const queuedAppendEntries = new Map<string, number>();
 const pendingAppendDrops = new Map<string, number>();
 const pendingAppendDropLoggedAt = new Map<string, number>();
 const appendFlushScheduled = new Set<string>();
@@ -81,31 +85,44 @@ function queuePendingAppend(filePath: string) {
   pendingAppends.delete(filePath);
   pendingAppendBytes.delete(filePath);
   const content = chunks.join("");
+  const bytes = Buffer.byteLength(content, "utf8");
+  const entries = chunks.length;
+  queuedAppendBytes.set(filePath, (queuedAppendBytes.get(filePath) || 0) + bytes);
+  queuedAppendEntries.set(filePath, (queuedAppendEntries.get(filePath) || 0) + entries);
   return queueFileOperation(filePath, async () => {
-    ensureLogDir();
     try {
-      await fs.promises.appendFile(filePath, content, "utf8");
-    } catch (error) {
-      // The log directory can be removed by an external rotation or cleanup
-      // after it was cached as present. Recreate it and retry asynchronously
-      // before falling back to a blocking write on the error path.
+      ensureLogDir();
       try {
-        const dir = path.dirname(filePath);
-        ensuredLogDirs.delete(dir);
-        await fs.promises.mkdir(dir, { recursive: true });
-        ensuredLogDirs.add(dir);
         await fs.promises.appendFile(filePath, content, "utf8");
-        return;
-      } catch {
-        // Fall through to the synchronous last-resort write below.
+      } catch (error) {
+        // The log directory can be removed by an external rotation or cleanup
+        // after it was cached as present. Recreate it and retry asynchronously
+        // before falling back to a blocking write on the error path.
+        try {
+          const dir = path.dirname(filePath);
+          ensuredLogDirs.delete(dir);
+          await fs.promises.mkdir(dir, { recursive: true });
+          ensuredLogDirs.add(dir);
+          await fs.promises.appendFile(filePath, content, "utf8");
+          return;
+        } catch {
+          // Fall through to the synchronous last-resort write below.
+        }
+        // Preserve logs on transient async-I/O failures. This fallback only runs
+        // on an error path, so normal console output never blocks the event loop.
+        try {
+          fs.appendFileSync(filePath, content, "utf8");
+        } catch (fallbackError) {
+          reportLogFileError("append", filePath, fallbackError || error);
+        }
       }
-      // Preserve logs on transient async-I/O failures. This fallback only runs
-      // on an error path, so normal console output never blocks the event loop.
-      try {
-        fs.appendFileSync(filePath, content, "utf8");
-      } catch (fallbackError) {
-        reportLogFileError("append", filePath, fallbackError || error);
-      }
+    } finally {
+      const remainingBytes = (queuedAppendBytes.get(filePath) || 0) - bytes;
+      const remainingEntries = (queuedAppendEntries.get(filePath) || 0) - entries;
+      if (remainingBytes > 0) queuedAppendBytes.set(filePath, remainingBytes);
+      else queuedAppendBytes.delete(filePath);
+      if (remainingEntries > 0) queuedAppendEntries.set(filePath, remainingEntries);
+      else queuedAppendEntries.delete(filePath);
     }
   });
 }
@@ -151,10 +168,12 @@ export function appendJsonLog(filePath: string, entry: FileLogEntry) {
   }
   const chunks = pendingAppends.get(filePath) || [];
   let queuedBytes = pendingAppendBytes.get(filePath) || 0;
+  const writingBytes = queuedAppendBytes.get(filePath) || 0;
+  const writingEntries = queuedAppendEntries.get(filePath) || 0;
   let dropped = 0;
   while (
-    chunks.length >= MAX_PENDING_APPEND_ENTRIES
-    || queuedBytes + serializedBytes > MAX_PENDING_APPEND_BYTES
+    chunks.length + writingEntries >= MAX_PENDING_APPEND_ENTRIES
+    || queuedBytes + writingBytes + serializedBytes > MAX_PENDING_APPEND_BYTES
   ) {
     const removed = chunks.shift();
     if (removed === undefined) break;
@@ -162,6 +181,16 @@ export function appendJsonLog(filePath: string, entry: FileLogEntry) {
     dropped += 1;
   }
   if (dropped > 0) recordPendingAppendDrop(filePath, dropped);
+  if (writingEntries + chunks.length >= MAX_PENDING_APPEND_ENTRIES
+    || writingBytes + queuedBytes + serializedBytes > MAX_PENDING_APPEND_BYTES) {
+    if (chunks.length > 0) pendingAppendBytes.set(filePath, queuedBytes);
+    else {
+      pendingAppends.delete(filePath);
+      pendingAppendBytes.delete(filePath);
+    }
+    recordPendingAppendDrop(filePath);
+    return;
+  }
   chunks.push(serialized);
   queuedBytes += serializedBytes;
   pendingAppends.set(filePath, chunks);
@@ -305,6 +334,8 @@ export async function flushJsonLogWrites(filePath?: string) {
 export function clearJsonLogStateForTests() {
   pendingAppends.clear();
   pendingAppendBytes.clear();
+  queuedAppendBytes.clear();
+  queuedAppendEntries.clear();
   pendingAppendDrops.clear();
   pendingAppendDropLoggedAt.clear();
   appendFlushScheduled.clear();

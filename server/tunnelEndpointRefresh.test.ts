@@ -28,6 +28,9 @@ test("probe-only refresh and the real rule self-test preserve tunnel readiness",
         'INSERT INTO "' + table + '" (' + columns.map((name) => '"' + name + '"').join(',') +
         ') VALUES (' + values.map(() => '?').join(',') + ')', values,
       );
+      for (const hostId of [1, 2, 3, 4, 5, 6]) {
+        await insert("hosts", ["id", "name", "ip", "userId"], [hostId, "host-" + hostId, "192.0.2." + hostId, 1]);
+      }
       await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "listenPort", "userId", "mode", "isRunning", "entryGroupId"],
         [1, "test tunnel", 1, 3, 17003, 1, "forwardx", 1, 10]);
       for (const hostId of [1, 2, 3]) {
@@ -89,6 +92,11 @@ test("probe-only refresh and the real rule self-test preserve tunnel readiness",
         assert.equal(state.getTunnelRuntimeGeneration(1), generation);
         const row = (await runtime.queryRaw('SELECT "message" FROM "forward_tests" WHERE "id" = ?', [result.id]))[0];
         assert.equal(JSON.parse(row.message).kind, "forward-via-tunnel");
+        const batchId = JSON.parse(row.message).batchId;
+        assert.ok(batchId.startsWith("rt-"));
+        const batch = await runtime.queryRaw('SELECT "hostId", "requestMessage" FROM "forward_tests" WHERE "batchId" = ? ORDER BY "id"', [batchId]);
+        assert.deepEqual(batch.map(row => row.hostId), [4, 2, 3], "probe the enabled entry, shared relay and target exit independently");
+        assert.equal(batch.some(row => JSON.parse(row.requestMessage).refreshPushed), false, "do not reapply runtime or reset automatic probe state");
       }
 
       // Probe mode preserves actual failures/unknown states; it does not invent readiness.

@@ -48,3 +48,22 @@ func TestOpenRCAndSysVScriptsDisableCoreDumps(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedServiceBuildersRejectUnsafeNames(t *testing.T) {
+	for _, name := range []string{"", "x;id", "$(id)", "`id`", "x\nreboot", "../x", "x/y", "-x", ".", "..", "x'"} {
+		if got := sanitizeServiceName(name); got != "" {
+			t.Errorf("unsafe service name %q accepted as %q", name, got)
+		}
+		if got := managedServiceCleanupShell(name); got != ":" {
+			t.Errorf("unsafe service name %q produced cleanup %q", name, got)
+		}
+		if openRCServiceScript(name, "/bin/true") != "" || sysVServiceScript(name, "/bin/true") != "" {
+			t.Errorf("unsafe service name %q produced init script", name)
+		}
+	}
+	for _, name := range []string{"forwardx-runtime", "forwardx-realm-tcp-1000", "forwardx-test@1", "forwardx_test.v1"} {
+		if sanitizeServiceName(name) != name || managedServiceCleanupShell(name) == ":" {
+			t.Errorf("valid service name %q rejected", name)
+		}
+	}
+}

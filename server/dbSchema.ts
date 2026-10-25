@@ -46,6 +46,7 @@ export const MIGRATION_TABLES = [
   "host_traffic_counters",
   "user_traffic_counters",
   "forward_rule_traffic_counters",
+  "resource_traffic_baselines",
   "traffic_stats",
   "traffic_stat_buckets",
   "operations_traffic_daily",
@@ -151,6 +152,12 @@ async function backfillPostgresqlLastAutoTrafficReset(pool: pg.Pool) {
 }
 
 const tables: TableDef[] = [
+  { name: "resource_traffic_baselines", columns: [
+    c("id", "id"), c("groupId", "int", { notNull: true }), c("ruleId", "int", { notNull: true }), c("hostId", "int", { notNull: true }),
+    c("bytesIn", "bigint", { notNull: true, default: 0 }), c("bytesOut", "bigint", { notNull: true, default: 0 }),
+    c("dailyIn", "bigint", { notNull: true, default: 0 }), c("dailyOut", "bigint", { notNull: true, default: 0 }),
+    c("resetDay", "epoch", { notNull: true }), c("resetAt", "epoch", { notNull: true }),
+  ], unique: [["groupId", "ruleId", "hostId"]], indexes: [["ruleId"]] },
   // Provider credentials and action state must be reconfigured after core merge migrations.
   { name: "host_probe_health", columns: [c("id", "id"), c("serviceId", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("config", "text", { notNull: true }), c("hookCiphertext", "longtext"), c("state", "text"), c("updatedAt", "epoch", { notNull: true })], unique: [["serviceId"]], indexes: [["hostId"]] },
   { name: "host_ip_switch_attempts", columns: [c("id", "id"), c("hostId", "int", { notNull: true }), c("serviceId", "int", { notNull: true }), c("incidentId", "varchar", { length: 64, notNull: true }), c("status", "varchar", { length: 40, notNull: true }), c("createdAt", "epoch", { notNull: true }), c("finishedAt", "epoch"), c("newIp", "varchar", { length: 64 }), c("acknowledged", "bool", { notNull: true, default: false })], unique: [["incidentId"]], indexes: [["hostId", "createdAt"], ["serviceId", "createdAt"]] },

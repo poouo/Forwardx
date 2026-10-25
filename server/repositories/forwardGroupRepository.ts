@@ -3855,6 +3855,7 @@ export async function deleteForwardGroup(id: number) {
   await db.delete(forwardGroupEvents).where(eq(forwardGroupEvents.groupId, id));
   await db.delete(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, id));
   await db.delete(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.forwardGroupId, id));
+  await executeRaw(`DELETE FROM ${quoteIdentifier("resource_traffic_baselines")} WHERE ${quoteIdentifier("groupId")} = ?`, [id]);
   await db.delete(forwardGroups).where(eq(forwardGroups.id, id));
 }
 

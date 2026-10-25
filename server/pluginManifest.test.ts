@@ -460,7 +460,7 @@ test("official BBR and Live2D catalog logos match original SVG assets and plugin
     assert.equal(entry.version, manifest.version);
     assert.match(manifest.logo || "", /^data:image\/svg\+xml;base64,/);
     assert.equal(entry.logo, manifest.logo);
-    assert.equal(Buffer.from(manifest.logo!.split(",")[1], "base64").toString(), fs.readFileSync(`plugins/${id}/logo.svg`, "utf8"));
+    assert.equal(Buffer.from(manifest.logo!.split(",")[1], "base64").toString().replace(/\r\n/g, "\n"), fs.readFileSync(`plugins/${id}/logo.svg`, "utf8").replace(/\r\n/g, "\n"));
     assert.equal(entry.bundledPath, `plugins/${id}`);
     assert.ok(fs.existsSync(path.join(entry.bundledPath, "README.md")));
   }

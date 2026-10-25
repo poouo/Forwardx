@@ -44,7 +44,7 @@
   --pearl-highlight: rgb(255 255 255 / 88%);
   --pearl-shadow: 0 2px 3px rgb(28 44 38 / 3%), 0 12px 28px -16px rgb(28 44 38 / 15%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(20 34 28 / 8%), 0 30px 80px -24px rgb(20 34 28 / 24%), inset 0 1px 0 var(--pearl-highlight);
-  --pearl-card-hover-shadow: 0 4px 16px -8px var(--theme-glow), 0 16px 36px -16px rgb(28 44 38 / 20%), inset 0 1px 0 var(--pearl-highlight);
+  --pearl-card-hover-shadow: 0 6px 20px -4px var(--theme-glow), 0 20px 40px -12px rgb(28 44 38 / 24%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-card-shadow-duration: 480ms;
   --pearl-card-shadow-ease: cubic-bezier(.4, 0, .2, 1);
   --pearl-card-feedback-transition:
@@ -95,7 +95,7 @@
   --pearl-highlight: rgb(255 255 255 / 7%);
   --pearl-shadow: 0 2px 3px rgb(0 0 0 / 10%), 0 12px 28px -16px rgb(0 0 0 / 32%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-overlay-shadow: 0 8px 20px rgb(0 0 0 / 20%), 0 30px 80px -24px rgb(0 0 0 / 60%), inset 0 1px 0 var(--pearl-highlight);
-  --pearl-card-hover-shadow: 0 4px 16px -8px var(--theme-glow), 0 16px 36px -16px rgb(0 0 0 / 44%), inset 0 1px 0 var(--pearl-highlight);
+  --pearl-card-hover-shadow: 0 6px 20px -4px var(--theme-glow), 0 20px 40px -12px rgb(0 0 0 / 52%), inset 0 1px 0 var(--pearl-highlight);
   --theme-glow: rgb(118 167 255 / 22%);
 }
 
@@ -408,10 +408,6 @@
   @media (hover: hover) and (pointer: fine) {
     .pearl-button:hover:not(:disabled) { transform: translateY(-1px); }
     .pearl-button:active:not(:disabled) { transform: scale(.965); }
-    .pearl-card-interactive:hover {
-      border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
-      box-shadow: var(--pearl-card-hover-shadow);
-    }
   }
   .pearl-icon-badge {
     display: inline-flex;
@@ -455,6 +451,10 @@
 
 /* Unlayered so the hover feedback also works on cards with border/shadow utilities. */
 @media (hover: hover) and (pointer: fine) {
+  .pearl-card-interactive:hover {
+    border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+    box-shadow: var(--pearl-card-hover-shadow);
+  }
   .pearl-hover-card:hover {
     transform: translateY(-2px);
     border-color: color-mix(in srgb, var(--primary) 30%, var(--border));

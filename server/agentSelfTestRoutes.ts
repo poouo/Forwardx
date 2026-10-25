@@ -28,6 +28,7 @@ import {
 import { FORWARD_TUNNEL_LATENCY_WAIT_MS } from "./selfTestTiming";
 import { settleManualTunnelProbeBatch } from "./tunnelManualProbe";
 import { settleManualForwardChainBatch } from "./forwardChainManualProbe";
+import { settleRuleTunnelProbeBatch } from "./ruleTunnelManualProbe";
 
 async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
@@ -176,7 +177,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       return;
     }
     const durableBatchId = String((t as any).batchId || "");
-    if (durableBatchId.startsWith("tp-") || durableBatchId.startsWith("fc-")) {
+    if (durableBatchId.startsWith("tp-") || durableBatchId.startsWith("fc-") || durableBatchId.startsWith("rt-")) {
       // Commit the individual report before locking the batch. Otherwise two
       // reporters can each hold one row and deadlock while finalizing all rows.
       const accepted = await db.completeForwardTestIfActive(testId, {
@@ -184,6 +185,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         forwardOk: success, latencyMs: success ? cleanLatency : null, message: cleanMessage,
       });
       if (durableBatchId.startsWith("tp-")) await settleManualTunnelProbeBatch(durableBatchId);
+      else if (durableBatchId.startsWith("rt-")) await settleRuleTunnelProbeBatch(durableBatchId);
       else await settleManualForwardChainBatch(durableBatchId);
       res.json({ success: true, ignored: !accepted });
       return;

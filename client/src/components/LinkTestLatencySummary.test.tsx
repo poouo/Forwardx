@@ -34,6 +34,37 @@ test("completed segments remain visible while another segment is pending", () =>
   assert.match(html, /探测中/);
 });
 
+for (const firstEntry of [1, 2]) test(`multi-entry rule displays entry ${firstEntry} immediately while the other keeps spinning`, () => {
+  const details = [1, 2].map(id => ({ fromHostId: id, toHostId: 3, hopIndex: 0, hopCount: 1,
+    success: id === firstEntry, latencyMs: id === firstEntry ? 37 : null, pending: id !== firstEntry }));
+  const planned = [1, 2].map(id => ({ from: `entry-${id}`, to: "exit", fromHostId: id, toHostId: 3, hopIndex: 0, hopCount: 1 }));
+  const render = (isTesting: boolean) => renderToStaticMarkup(<LinkTestProbeView
+    parsed={parseLinkTestMessage(JSON.stringify({ kind: "forward-via-tunnel", details }))}
+    isSuccess={!isTesting} isTesting={isTesting} plannedSegments={planned} ignorePlannedResultsWhenDetailsPresent
+  />);
+  const partial = render(true);
+  assert.match(partial, /37 ms/);
+  assert.match(partial, /animate-spin/);
+  assert.doesNotMatch(partial, /未收到结果/);
+  details[2 - firstEntry].success = true;
+  details[2 - firstEntry].pending = false;
+  details[2 - firstEntry].latencyMs = 48;
+  const completed = render(false);
+  assert.match(completed, /37 ms/);
+  assert.match(completed, /48 ms/);
+  assert.doesNotMatch(completed, /animate-spin/);
+});
+
+test("a new rule test spins instead of reusing the previous planned tunnel latency", () => {
+  const html = renderToStaticMarkup(<LinkTestProbeView parsed={parseLinkTestMessage(null)}
+    isSuccess={false} isTesting ignorePlannedResultsWhenDetailsPresent plannedSegments={[
+      { from: "entry", to: "exit", success: true, latencyMs: 777, pending: false },
+      { from: "exit", to: "target" },
+    ]} />);
+  assert.match(html, /animate-spin/);
+  assert.doesNotMatch(html, /777 ms/);
+});
+
 test("an unopened link test waits instead of claiming that a probe is running", () => {
   const html = renderToStaticMarkup(
     <LinkTestProbeView

@@ -3,7 +3,8 @@ import { z } from "zod";
 import * as db from "../db";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
-import { pushTunnelEndpointRefresh } from "./helpers";
+import { planManualTunnelProbes } from "../tunnelManualProbe";
+import { queueRuleTunnelProbeBatch } from "../ruleTunnelManualProbe";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { randomUUID } from "node:crypto";
 import { linkProbeMethodForRule } from "@shared/latencyProbe";
@@ -134,27 +135,26 @@ export const selfTestRulesRouter = router({
       if (runtimeRule.tunnelId) {
         const tunnel = await db.getTunnelById(runtimeRule.tunnelId);
         if (!tunnel) throw new Error("隧道不存在");
-        hostId = tunnel.exitHostId;
         const targetIp = runtimeRule.targetIp;
         if (!targetIp) throw new Error("目标地址不可用，请检查规则目标地址");
-        const tunnelLatencyBaseline = await db.getLatestTunnelLatency(Number(tunnel.id));
-        const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel", {
-          urgent: true,
-          refreshMode: "probe",
-          forceTcping: true,
-        });
-        message = JSON.stringify({
-          kind: "forward-via-tunnel",
-          tunnelId: tunnel.id,
-          entryHostId: tunnel.entryHostId,
-          exitHostId: tunnel.exitHostId,
-          targetIp,
-          targetPort: runtimeRule.targetPort,
-          method: linkProbeMethodForRule(runtimeRule),
-          tunnelLatencyBaselineId: Number((tunnelLatencyBaseline as any)?.id || 0),
-          refreshPushed: pushed,
-        });
-        appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${targetIp}:${rule.targetPort}`);
+        const [hops, exits, entryGroup] = await Promise.all([
+          db.getTunnelHops(Number(tunnel.id)), db.getTunnelExitNodes(Number(tunnel.id)),
+          tunnel.entryGroupId ? db.getForwardGroupById(Number(tunnel.entryGroupId)) : null,
+        ]);
+        const enabled = (value: unknown) => value === true || Number(value) === 1;
+        const entryHostIds = [...new Set<number>(enabled(entryGroup?.isEnabled) && entryGroup?.groupMode === "entry"
+          ? (entryGroup.members || []).filter((member: any) => member.memberType === "host"
+            && (member.isEnabled == null || enabled(member.isEnabled))).map((member: any) => Number(member.hostId)).filter((id: number) => id > 0)
+          : [])];
+        if (!entryHostIds.length) entryHostIds.push(Number(tunnel.entryHostId));
+        const hostIds = [...new Set([...entryHostIds, Number(tunnel.exitHostId),
+          ...hops.map((hop: any) => Number(hop.hostId)), ...exits.map((exit: any) => Number(exit.hostId))])];
+        const hostRows = await Promise.all(hostIds.map(id => db.getHostById(id)));
+        const hosts = new Map(hostIds.map((id, index) => [id, hostRows[index]]));
+        const probes = planManualTunnelProbes({ tunnel, hops, exits, entryHostIds, hosts });
+        const queued = await queueRuleTunnelProbeBatch({ ...runtimeRule, id: rule.id, userId: rule.userId }, tunnel, probes, hosts);
+        for (const id of queued.hostIds) pushAgentRefresh(id, "forward-selftest-via-tunnel", { urgent: true });
+        return { id: queued.id, queued: queued.queued };
       }
       const id = await db.createForwardTest({
         ruleId: rule.id,

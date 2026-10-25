@@ -54,7 +54,6 @@ var (
 	tcpingRuleCursor         int
 	tcpingTunnelCursor       int
 	tcpingForwardGroupCursor int
-	tcpingServiceCursor      int
 	tcpingCollectRunning     int32
 	systemPingSlots          = make(chan struct{}, systemPingConcurrency)
 	networkTargetDNSMu       sync.Mutex
@@ -138,7 +137,7 @@ const (
 
 func validTrafficConnectionSource(source string) bool {
 	switch source {
-	case "", trafficConnectionSourceConntrack, trafficConnectionSourceProcessNFT, trafficConnectionSourceProcessIptables:
+	case "", trafficConnectionSourceConntrack, trafficConnectionSourceProcessNFT, trafficConnectionSourceProcessIptables, trafficSourceGostNative, trafficSourceGuardNative:
 		return true
 	default:
 		return false
@@ -339,6 +338,11 @@ func connectionTotalForTrafficState(state localRuleState, counters trafficCounte
 }
 
 func prepareConnectionCounterBaseline(state localRuleState, previous trafficPrevState, total uint64, source string) (uint64, string, uint64) {
+	if previous.ruleID == state.RuleID && isNativeTrafficSource(previous.connSource) && previous.connSource != source {
+		// A newly repaired kernel counter may overlap the last native window.
+		// Its fresh marker must not replay connections already reported natively.
+		return total, source, total
+	}
 	previousTotal := previous.conns
 	freshCounterEpoch := isPersistentProcessConnectionSource(source) && freshProcessConnectionCounter(state.Port, state.RuleID)
 	if freshCounterEpoch {
@@ -470,6 +474,8 @@ type trafficPrevState struct {
 	out        uint64
 	conns      uint64
 	connSource string
+	byteSource string
+	byteEpoch  string
 }
 
 type trafficBaselineUpdate struct {
@@ -484,6 +490,8 @@ type persistedTrafficBaseline struct {
 	Out        uint64 `json:"out"`
 	Conns      uint64 `json:"conns"`
 	ConnSource string `json:"connSource,omitempty"`
+	ByteSource string `json:"byteSource,omitempty"`
+	ByteEpoch  string `json:"byteEpoch,omitempty"`
 }
 
 type pendingTrafficReport struct {
@@ -867,6 +875,9 @@ func validatePendingTrafficReport(report pendingTrafficReport) error {
 		if !validTrafficConnectionSource(baseline.ConnSource) {
 			return fmt.Errorf("traffic report baseline connection source is invalid")
 		}
+		if !validTrafficByteIdentity(baseline.ByteSource, baseline.ByteEpoch) {
+			return fmt.Errorf("traffic report baseline byte source is invalid")
+		}
 		if baseline.RuleID <= 0 || ruleCounts[baseline.RuleID] <= 0 {
 			return fmt.Errorf("traffic report baseline rule does not match payload")
 		}
@@ -887,6 +898,7 @@ func persistedTrafficBaselines(updates []trafficBaselineUpdate) []persistedTraff
 			Port: update.port, RuleID: update.state.ruleID,
 			In: update.state.in, Out: update.state.out, Conns: update.state.conns,
 			ConnSource: update.state.connSource,
+			ByteSource: update.state.byteSource, ByteEpoch: update.state.byteEpoch,
 		})
 	}
 	return baselines
@@ -903,6 +915,7 @@ func pendingTrafficBaselineUpdates(baselines []persistedTrafficBaseline) []traff
 			state: trafficPrevState{
 				ruleID: baseline.RuleID, in: baseline.In, out: baseline.Out, conns: baseline.Conns,
 				connSource: normalizeTrafficConnectionSource(baseline.ConnSource),
+				byteSource: baseline.ByteSource, byteEpoch: baseline.ByteEpoch,
 			},
 		})
 	}
@@ -1169,6 +1182,7 @@ func collectTraffic(cfg Config) time.Duration {
 		return trafficCollectBackoffInterval(nextInterval, time.Since(started))
 	}
 	if len(states) > 0 {
+		kernelUnavailable := kernelTrafficUnavailable()
 		requirements := trafficSnapshotRequirementsForStates(states)
 		iptablesCounters := map[string]trafficCounters{}
 		nftCounters := map[int]trafficCounters{}
@@ -1179,40 +1193,75 @@ func collectTraffic(cfg Config) time.Duration {
 			nftMarkers:        map[int]bool{},
 			nftProcessMarkers: map[string]bool{},
 		}
-		if requirements.nativeNFT {
+		if requirements.nativeNFT && !kernelUnavailable {
 			nftCounters, diagnostics.nftMarkers = nftablesCounterSnapshotWithDiagnostics()
 		}
-		if requirements.processNFT {
+		if requirements.processNFT && !kernelUnavailable {
 			nftProcessCounters, diagnostics.nftProcessMarkers = nftProcessCounterSnapshotWithDiagnostics()
 		}
-		if requirements.iptables || processTrafficNeedsIptablesFallback(states, diagnostics.nftProcessMarkers) {
+		if !kernelUnavailable && (requirements.iptables || processTrafficNeedsIptablesFallback(states, diagnostics.nftProcessMarkers)) {
 			var iptablesDiagnostics trafficDiagnosticsSnapshot
 			iptablesCounters, iptablesDiagnostics = iptablesCounterSnapshotWithDiagnostics()
 			diagnostics.iptablesMarkers = iptablesDiagnostics.iptablesMarkers
 			diagnostics.ip6tablesMarkers = iptablesDiagnostics.ip6tablesMarkers
 		}
-		connCounts, connTotals := conntrackConnectionsSnapshot(conntrackFallbackTrafficStates(states, diagnostics))
+		fallbackStates := make([]localRuleState, 0, len(states))
+		for _, state := range states {
+			if kernelUnavailable || !countingLayoutPresentForTrafficState(state, diagnostics) {
+				fallbackStates = append(fallbackStates, state)
+			}
+		}
+		nativeSamples := gostNativeTrafficSnapshot(fallbackStates)
+		if nativeSamples == nil {
+			nativeSamples = map[string]nativeTrafficSample{}
+		}
+		for port, sample := range guardNativeTrafficSnapshot(fallbackStates) {
+			nativeSamples[port] = sample
+		}
+		kernelStates := make([]localRuleState, 0, len(states))
+		for _, state := range states {
+			if _, native := nativeSamples[state.Port]; !native {
+				kernelStates = append(kernelStates, state)
+			}
+		}
+		connCounts, connTotals := map[string]uint64{}, map[string]uint64{}
+		if !kernelUnavailable {
+			connCounts, connTotals = conntrackConnectionsSnapshot(conntrackFallbackTrafficStates(kernelStates, diagnostics))
+		}
 		// Capture the fallback snapshot before queuing a missing connection rule.
 		// The new persistent counter starts after this point, so the migration
 		// cannot report the same connection from both sources.
-		missingCountingLayouts := repairMissingCountingLayouts(states, diagnostics)
+		missingCountingLayouts := repairMissingCountingLayouts(kernelStates, diagnostics)
+		if len(fallbackStates) > 0 && shouldLogAgentReport("traffic-counter-compatibility", 5*time.Minute) {
+			logf("traffic compatibility nativeRules=%d unavailable=%d; native=listener-payload-bytes; unavailable rules require NET_ADMIN/kernel tools or a native-statistics engine (GOST/ForwardX)", len(nativeSamples), len(fallbackStates)-len(nativeSamples))
+		}
 		for _, state := range states {
-			if missingCountingLayouts[state.Port] {
+			nativeSample, native := nativeSamples[state.Port]
+			if missingCountingLayouts[state.Port] || (kernelUnavailable && !native) {
 				continue
 			}
 			counters := countersForRuleTrafficState(state, iptablesCounters, nftCounters, nftProcessCounters, diagnostics.nftProcessMarkers)
+			byteSource, byteEpoch := kernelTrafficByteSource(state, diagnostics), ""
+			if native {
+				counters, byteSource, byteEpoch = nativeSample.counters, nativeSample.source, nativeSample.epoch
+			}
 			curConns := connCounts[state.Port]
 			previous := readPrevState(state.Port)
-			prevIn, prevOut, prevConns := previous.in, previous.out, previous.conns
+			prevConns := previous.conns
 			initialBaseline := previous.ruleID <= 0 || previous.ruleID != state.RuleID
-			if initialBaseline {
-				prevIn, prevOut = counters.In, counters.Out
-			}
+			din, dout, newByteBaseline := trafficByteDeltas(previous, state.RuleID, counters, byteSource, byteEpoch)
 			connectionTotal, connectionSource := connectionCounterForTrafficState(state, counters, connTotals[state.Port], diagnostics)
-			connectionTotal, connectionSource, prevConns = prepareConnectionCounterBaseline(
-				state, previous, connectionTotal, connectionSource,
-			)
-			din, dout, dconns := delta(counters.In, prevIn), delta(counters.Out, prevOut), delta(connectionTotal, prevConns)
+			if native {
+				connectionTotal, connectionSource = counters.Connections, nativeSample.source
+				if newByteBaseline || previous.connSource != connectionSource || connectionTotal < prevConns {
+					prevConns = connectionTotal
+				}
+			} else {
+				connectionTotal, connectionSource, prevConns = prepareConnectionCounterBaseline(
+					state, previous, connectionTotal, connectionSource,
+				)
+			}
+			dconns := delta(connectionTotal, prevConns)
 			countFreshInitialConnections := shouldCountFreshInitialConnections(initialBaseline, state, connectionSource)
 			if initialBaseline && !countFreshInitialConnections {
 				dconns = 0
@@ -1220,6 +1269,7 @@ func collectTraffic(cfg Config) time.Duration {
 			nextBaseline := trafficPrevState{
 				ruleID: state.RuleID, in: counters.In, out: counters.Out,
 				conns: connectionTotal, connSource: connectionSource,
+				byteSource: byteSource, byteEpoch: byteEpoch,
 			}
 			if din > 0 || dout > 0 || dconns > 0 {
 				stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
@@ -1229,7 +1279,9 @@ func collectTraffic(cfg Config) time.Duration {
 					logf("traffic baseline write failed port=%s rule=%d: %v", state.Port, state.RuleID, err)
 				}
 			}
-			logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
+			if !native {
+				logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters, diagnostics)
+			}
 		}
 	}
 	now := time.Now()
@@ -1358,11 +1410,13 @@ func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) ti
 	return next
 }
 
-func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool, startActionEpoch uint64, startedWithActionsPending bool) {
+func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool, startActionEpoch uint64, startedWithActionsPending bool, servicesOnly bool) {
 	ruleTasks := []tcpingTask{}
-	for _, state := range readLocalRuleStates() {
-		if task, ok := buildRuleLatencyProbeTask(state); ok {
-			ruleTasks = append(ruleTasks, task)
+	if !servicesOnly {
+		for _, state := range readLocalRuleStates() {
+			if task, ok := buildRuleLatencyProbeTask(state); ok {
+				ruleTasks = append(ruleTasks, task)
+			}
 		}
 	}
 	for _, probe := range ruleProbes {
@@ -1375,7 +1429,7 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 
 	serviceTasks := []tcpingTask{}
 	for _, probe := range serviceProbes {
-		if probe.ServiceID <= 0 || probe.TargetIP == "" {
+		if !validServiceProbe(probe) {
 			continue
 		}
 		method := strings.ToLower(strings.TrimSpace(probe.Method))
@@ -1457,6 +1511,7 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 		ruleLimit = len(ordinaryRuleTasks)
 		serviceLimit = len(serviceTasks)
 	}
+	selectedServices := agentServiceProbeSchedule.selectTasks(serviceTasks, serviceProbes, serviceLimit, force, time.Now())
 	tunnelProbeLimit := len(tunnelTasks)
 	tcpingCursorMu.Lock()
 	selected := []tcpingTask{}
@@ -1464,7 +1519,7 @@ func collectTCPing(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelPro
 	selected = append(selected, rotateTCPingTasks(ordinaryRuleTasks, &tcpingRuleCursor, ruleLimit)...)
 	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, tunnelProbeLimit)...)
 	selected = append(selected, rotateTCPingTasks(forwardGroupTasks, &tcpingForwardGroupCursor, probeLimit)...)
-	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, serviceLimit)...)
+	selected = append(selected, selectedServices...)
 	tcpingCursorMu.Unlock()
 	if len(selected) == 0 {
 		return
@@ -1617,6 +1672,15 @@ func buildExplicitRuleLatencyProbeTask(probe ruleLatencyProbe) (tcpingTask, bool
 }
 
 func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
+	return scheduleTCPingCollectionMode(cfg, ruleProbes, probes, groupProbes, serviceProbes, force, false)
+}
+
+func scheduleTCPingCollectionMode(cfg Config, ruleProbes []ruleLatencyProbe, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool, servicesOnly bool) bool {
+	if servicesOnly {
+		// A service deadline must not trigger extra rule/tunnel health probes or
+		// scan local rule files between ordinary runtime probe cycles.
+		ruleProbes, probes, groupProbes = nil, nil, nil
+	}
 	startActionEpoch := runtimeActionEpoch.Load()
 	startedWithActionsPending := atomic.LoadInt64(&actionPendingCount) > 0
 	if startedWithActionsPending && (len(ruleProbes) > 0 || len(probes) > 0 || len(groupProbes) > 0) {
@@ -1634,7 +1698,7 @@ func scheduleTCPingCollection(cfg Config, ruleProbes []ruleLatencyProbe, probes 
 	go func() {
 		started := time.Now()
 		defer finishTCPingCollection()
-		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force, startActionEpoch, startedWithActionsPending)
+		collectTCPing(cfg, ruleProbesCopy, probesCopy, groupProbesCopy, serviceProbesCopy, force, startActionEpoch, startedWithActionsPending, servicesOnly)
 		if elapsed := time.Since(started); elapsed >= 5*time.Second && shouldLogAgentReport("tcping-collect-slow-async", 5*time.Minute) {
 			logf("tcping collect slow duration=%s ruleProbes=%d tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(ruleProbesCopy), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
 		}
@@ -3215,7 +3279,8 @@ func readPrevState(port string) trafficPrevState {
 		cacheTrafficPrev(port, state)
 		return state
 	}
-	// 5-line format (current): ruleID, in, out, conns, connSource.
+	// 7-line format: ruleID, in, out, conns, connSource, byteSource, byteEpoch.
+	// Older 4/5-line baselines remain valid (implicit kernel byte source).
 	if len(lines) >= 4 {
 		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
 		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
@@ -3226,6 +3291,12 @@ func readPrevState(port string) trafficPrevState {
 			connSource = normalizeTrafficConnectionSource(strings.TrimSpace(lines[4]))
 		}
 		state := trafficPrevState{ruleID: rid, in: prevIn, out: prevOut, conns: prevConns, connSource: connSource}
+		if len(lines) >= 6 {
+			state.byteSource = strings.TrimSpace(lines[5])
+		}
+		if len(lines) >= 7 {
+			state.byteEpoch = strings.TrimSpace(lines[6])
+		}
 		cacheTrafficPrev(port, state)
 		return state
 	}
@@ -3270,7 +3341,7 @@ func writePrevState(port string, next trafficPrevState) error {
 		return nil
 	}
 	path := trafficStateDir + "/traffic_" + port + ".prev"
-	data := []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n%s\n", next.ruleID, next.in, next.out, next.conns, next.connSource))
+	data := []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n%s\n%s\n%s\n", next.ruleID, next.in, next.out, next.conns, next.connSource, next.byteSource, next.byteEpoch))
 	if err := writeTrafficStateFile(path, data, 0644); err != nil {
 		return err
 	}

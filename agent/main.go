@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.203"
+var Version = "2.2.204"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -3247,13 +3247,18 @@ func scheduleAgentTCPing(cfg Config, force bool) bool {
 	tcpingScheduleMu.Lock()
 	due := lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= interval
 	tcpingScheduleMu.Unlock()
-	if !force && !due {
+	// A service can become due between global (jittered) TCPing ticks. Do not
+	// make it wait another whole cycle just because other probes ran recently.
+	servicesOnly := !force && !due
+	if servicesOnly && !agentServiceProbeSchedule.due(state.HostProbeServices, time.Now()) {
 		return false
 	}
-	if scheduleTCPingCollection(cfg, state.RuleLatencyProbes, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, force) {
-		tcpingScheduleMu.Lock()
-		lastTCPingAt = time.Now()
-		tcpingScheduleMu.Unlock()
+	if scheduleTCPingCollectionMode(cfg, state.RuleLatencyProbes, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, force, servicesOnly) {
+		if !servicesOnly {
+			tcpingScheduleMu.Lock()
+			lastTCPingAt = time.Now()
+			tcpingScheduleMu.Unlock()
+		}
 		return true
 	}
 	return false
@@ -3838,6 +3843,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		payload["forceReconcile"] = true
 	}
 	payload["loadAverage"] = systemLoadAverage()
+	payload["connectionStats"] = systemConnectionStats()
 	pluginVersions, pluginSyncSignatures := installedPluginInventory()
 	forwardTools, forwardToolsCheckedAt := forwardToolInventory()
 	payload["forwardTools"] = forwardTools
@@ -4040,6 +4046,7 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 	payload["mimicEnvironment"] = mimicEnvironment(false)
 	payload["ipv4Addresses"], payload["ipv6Addresses"] = publicAddressInventory()
 	payload["loadAverage"] = systemLoadAverage()
+	payload["connectionStats"] = systemConnectionStats()
 	if compactAgentReports.Load() {
 		payload["m"] = []any{
 			cpuUsage(),
@@ -4193,14 +4200,7 @@ func tcpingDueInterval(serviceProbes []hostProbeServiceProbe, ruleCount int, lin
 		interval = 30 * time.Second
 	}
 	for _, probe := range serviceProbes {
-		seconds := probe.IntervalSeconds
-		if seconds <= 0 {
-			seconds = 30
-		}
-		if seconds < 5 {
-			seconds = 5
-		}
-		duration := time.Duration(seconds) * time.Second
+		duration := serviceProbeInterval(probe)
 		if duration < interval {
 			interval = duration
 		}
@@ -7736,7 +7736,7 @@ func restartManagedService(name string) {
 
 func sanitizeServiceName(name string) string {
 	name = strings.TrimSpace(name)
-	if name == "" {
+	if name == "" || strings.HasPrefix(name, "-") || name == "." || name == ".." {
 		return ""
 	}
 	for _, r := range name {
@@ -7819,6 +7819,10 @@ func hardenManagedSystemdUnit(unit string) string {
 }
 
 func openRCServiceScript(name, execStart string) string {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return ""
+	}
 	return strings.Join([]string{
 		"#!/sbin/openrc-run",
 		"name=\"" + name + "\"",
@@ -7837,6 +7841,10 @@ func openRCServiceScript(name, execStart string) string {
 }
 
 func sysVServiceScript(name, execStart string) string {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return ""
+	}
 	quotedCmd := shellQuote("ulimit -c 0 2>/dev/null || true; exec " + execStart)
 	return strings.Join([]string{
 		"#!/bin/sh",
@@ -7872,6 +7880,10 @@ func sysVServiceScript(name, execStart string) string {
 }
 
 func managedServiceCleanupShell(name string) string {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return ":"
+	}
 	q := shellQuote(name)
 	return "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop " + q + ".service 2>/dev/null || true; systemctl disable " + q + ".service 2>/dev/null || true; systemd_unit=/etc/systemd/system/" + name + ".service; systemd_removed=0; if [ -e \"$systemd_unit\" ]; then rm -f \"$systemd_unit\"; systemd_removed=1; fi; if [ \"$systemd_removed\" = \"1\" ]; then systemctl daemon-reload 2>/dev/null || true; fi; systemctl reset-failed " + q + ".service 2>/dev/null || true; fi; " +
 		"if command -v rc-service >/dev/null 2>&1; then rc-service " + q + " stop 2>/dev/null || true; fi; " +
@@ -8593,6 +8605,9 @@ func ensureCountingChainsWithCleanup(rule runningRule, cleanup bool) bool {
 	}
 	p := strconv.Itoa(rule.SourcePort)
 	mode := countingRuleModeForForwardType(rule.ForwardType)
+	if mode != countingRuleNone && kernelTrafficUnavailable() {
+		return false
+	}
 	if mode == countingRuleKernel {
 		target := iptablesAgentAddress(rule.TargetIP)
 		if !iptablesAgentIsIPAddress(target) || rule.TargetPort <= 0 {
@@ -8675,6 +8690,12 @@ func ensureCountingChainsNonDestructive(rule runningRule, mode countingRuleMode)
 
 func ensureCountingChainsIfNeeded(r runningRule) {
 	if r.SourcePort <= 0 {
+		return
+	}
+	if countingRuleModeForForwardType(r.ForwardType) != countingRuleNone && kernelTrafficUnavailable() {
+		if shouldLogAgentReport("traffic-counting-no-net-admin", 5*time.Minute) {
+			logf("traffic kernel counting unavailable reason=CAP_NET_ADMIN-not-in-bounding-set; GOST/ForwardX can use native traffic counters; other engines need host permissions")
+		}
 		return
 	}
 	signature := countingChainRuleSignature(r)
@@ -11345,19 +11366,23 @@ func stopProtocolGuardRateTimer(timer *time.Timer) {
 }
 
 type protocolGuardServer struct {
-	rule        guardRule
-	tcpLn       net.Listener
-	udpConn     net.PacketConn
-	done        chan struct{}
-	doneOnce    sync.Once
-	ctx         context.Context
-	cancel      context.CancelFunc
-	rateMu      sync.RWMutex
-	rateScope   string
-	rateIn      *protocolGuardSharedRateLimiter
-	rateOut     *protocolGuardSharedRateLimiter
-	rateChanged chan struct{}
-	closed      bool
+	rule         guardRule
+	tcpLn        net.Listener
+	udpConn      net.PacketConn
+	done         chan struct{}
+	doneOnce     sync.Once
+	ctx          context.Context
+	cancel       context.CancelFunc
+	rateMu       sync.RWMutex
+	rateScope    string
+	rateIn       *protocolGuardSharedRateLimiter
+	rateOut      *protocolGuardSharedRateLimiter
+	rateChanged  chan struct{}
+	closed       bool
+	trafficIn    atomic.Uint64
+	trafficOut   atomic.Uint64
+	trafficConns atomic.Uint64
+	trafficEpoch string
 }
 
 func newProtocolGuardServer(rule guardRule) *protocolGuardServer {
@@ -11368,6 +11393,8 @@ func newProtocolGuardServer(rule guardRule) *protocolGuardServer {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	epoch := sha256.Sum256([]byte(newTrafficReportID()))
+	server.trafficEpoch = hex.EncodeToString(epoch[:])
 	server.updateRateLimits(rule)
 	return server
 }
@@ -12634,6 +12661,7 @@ func (s *protocolGuardServer) serveTCP(cfg Config) {
 }
 
 func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
+	s.trafficConns.Add(1)
 	baseCtx := s.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -12711,7 +12739,8 @@ func (s *protocolGuardServer) copyTCPToTargetWithGuard(ctx context.Context, cfg 
 		if err := s.waitRate(ctx, protocolGuardRateIn, len(chunk)); err != nil {
 			return err
 		}
-		_, err := target.Write(chunk)
+		n, err := target.Write(chunk)
+		s.trafficIn.Add(uint64(n))
 		return err
 	}
 	if err := writeChunk(initial); err != nil {
@@ -12746,7 +12775,9 @@ func (s *protocolGuardServer) copyTCPToClientWithGuard(ctx context.Context, cfg 
 			if err := s.waitRate(ctx, protocolGuardRateOut, len(chunk)); err != nil {
 				return err
 			}
-			if _, writeErr := client.Write(chunk); writeErr != nil {
+			written, writeErr := client.Write(chunk)
+			s.trafficOut.Add(uint64(written))
+			if writeErr != nil {
 				return writeErr
 			}
 		}
@@ -12849,13 +12880,16 @@ func (s *protocolGuardServer) serveUDP() {
 				continue
 			}
 			session = &protocolGuardUDPSession{target: target, last: time.Now()}
+			s.trafficConns.Add(1)
 			sessions[key] = session
 			go s.copyUDPToClient(key, clientAddr, target, sessions, &sessionMu)
 		}
 		session.last = time.Now()
 		target := session.target
 		sessionMu.Unlock()
-		if _, err := target.Write(packet); err != nil {
+		written, err := target.Write(packet)
+		s.trafficIn.Add(uint64(written))
+		if err != nil {
 			sessionMu.Lock()
 			if sessions[key] == session {
 				delete(sessions, key)
@@ -12882,7 +12916,9 @@ func (s *protocolGuardServer) copyUDPToClient(key string, clientAddr net.Addr, t
 			if err := s.waitRate(s.ctx, protocolGuardRateOut, n); err != nil {
 				break
 			}
-			if _, err := s.udpConn.WriteTo(buf[:n], clientAddr); err != nil {
+			written, err := s.udpConn.WriteTo(buf[:n], clientAddr)
+			s.trafficOut.Add(uint64(written))
+			if err != nil {
 				if shouldLogAgentReport(fmt.Sprintf("protocol-guard-udp-reply:%d", s.rule.RuleID), agentReportLogInterval) {
 					logf("protocol guard udp reply failed rule=%d client=%s: %v", s.rule.RuleID, key, err)
 				}

@@ -3502,7 +3502,7 @@ function PersonalizationSettingsSection() {
                   onClick={() => handleThemePresetSelect(preset.id)}
                   disabled={isSavingPersonalization("theme")}
                   className={cn(
-                    "group flex min-h-32 flex-col justify-between rounded-lg border bg-background/50 p-3 text-left text-foreground transition hover:-translate-y-0.5 hover:border-primary/50 hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-70",
+                    "pearl-hover-card group flex min-h-32 flex-col justify-between rounded-lg border bg-background/50 p-3 text-left text-foreground hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-70",
                     active ? "border-primary bg-primary/5 ring-2 ring-primary/15" : "border-border/40",
                   )}
                 >
