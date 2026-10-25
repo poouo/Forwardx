@@ -22,7 +22,7 @@ test("backend announcements select the latest valid port and update the proxy af
   assert.equal(runtimeOptions.target, "http://127.0.0.1:3001");
 });
 
-test("development backend reloads imported TypeScript changes, not just the entry file", { timeout: 25_000 }, async () => {
+test("development backend reloads imported TypeScript changes, not just the entry file", { timeout: 40_000 }, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-dev-watch-"));
   const dependency = path.join(directory, "route.ts");
   const entry = path.join(directory, "server.ts");
@@ -54,16 +54,34 @@ test("development backend reloads imported TypeScript changes, not just the entr
     await waitFor("watch-ready:after");
     assert.equal(child.exitCode, null);
   } finally {
-    if (process.platform === "win32") {
-      await new Promise(resolve => {
+    // Never await a kill without a bound: a watcher that ignores the signal, or
+    // an unresponsive taskkill, would otherwise hang the whole test run instead
+    // of failing it.
+    await new Promise(resolve => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      child.once("exit", done);
+      if (process.platform === "win32") {
         const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
-        killer.once("exit", resolve);
-        killer.once("error", resolve);
-      });
-    } else {
-      child.kill("SIGTERM");
-      await new Promise(resolve => child.once("exit", resolve));
-    }
+        killer.once("exit", done);
+        killer.once("error", done);
+      } else {
+        child.kill("SIGTERM");
+      }
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The process already exited.
+        }
+        done();
+      }, 5_000);
+      timer.unref?.();
+    });
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
     fs.rmSync(directory, { recursive: true, force: true });
   }

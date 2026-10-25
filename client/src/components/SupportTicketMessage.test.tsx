@@ -118,7 +118,9 @@ test("all batch dialog count pills stay horizontal and headers wrap by panel wid
     rules.match(
       /className="inline-flex[^"\n]*self-start[^"\n]*rounded-full[^"\n]*"/g,
     ) || [];
-  assert.equal(pills.length, 6);
+  // The export dialog reports its count as inline wrapping text, so only these
+  // five batch dialogs keep a fixed pill.
+  assert.equal(pills.length, 5);
   for (const pill of pills) {
     assert.match(pill, /shrink-0/);
     assert.match(pill, /whitespace-nowrap/);
@@ -128,7 +130,6 @@ test("all batch dialog count pills stay horizontal and headers wrap by panel wid
     "复制目标",
     "导入文件",
     "导入目标",
-    "导出内容",
     "批量编辑内容",
   ]) {
     const index = rules.indexOf(`<Label>{translateText("${label}")}</Label>`);
@@ -137,4 +138,12 @@ test("all batch dialog count pills stay horizontal and headers wrap by panel wid
     assert.match(header, /flex flex-wrap items-start justify-between gap-2/);
     assert.match(header, /min-w-0 flex-1 basis-40/);
   }
+});
+test("export dialog states the exported rule count as wrapping text", () => {
+  const rules = readFileSync("client/src/pages/Rules.tsx", "utf8");
+  const title = rules.indexOf('{translateText("导出规则")}');
+  assert.ok(title > 0);
+  const dialog = rules.slice(title, title + 2500);
+  assert.ok(dialog.includes("将导出 {0} 条{1}规则"), "export dialog must show the rule count");
+  assert.ok(dialog.includes("请选择{0}"), "export dialog must prompt before a scope is chosen");
 });
