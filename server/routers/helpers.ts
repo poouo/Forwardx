@@ -22,6 +22,25 @@ export async function requireHostAccess(ctx: { user: { id: number; role: string 
   return host;
 }
 
+/** Same ownership/direct/active-plan checks as requireHostAccess, in batches.
+ * Always read live permissions; physical metric caches must not cache access. */
+export async function requireHostsAccess(ctx: { user: { id: number; role: string } }, hostIds: number[]) {
+  const ids = Array.from(new Set(hostIds));
+  if (!ids.length) return [];
+  const hosts = await db.getHostsByIds(ids);
+  const byId = new Map(hosts.map(host => [host.id, host]));
+  for (const id of ids) if (!byId.has(id)) throw new Error("主机不存在");
+  const shared = ctx.user.role === "admin" ? [] : hosts.filter(host => host.userId !== ctx.user.id);
+  if (shared.length) {
+    let allowed = new Set(await db.getUserAllowedHostIds(ctx.user.id));
+    if (shared.some(host => !allowed.has(host.id))) {
+      allowed = new Set(await db.getUserEffectiveAllowedHostIds(ctx.user.id));
+    }
+    if (shared.some(host => !allowed.has(host.id))) throw new Error("无权访问该主机");
+  }
+  return ids.map(id => byId.get(id)!);
+}
+
 export async function requireRuleAccess(ctx: { user: { id: number; role: string } }, ruleId: number) {
   const rule = await db.getForwardRuleById(ruleId);
   if (!rule) throw new Error("规则不存在");

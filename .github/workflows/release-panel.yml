@@ -72,6 +72,7 @@ jobs:
           pnpm test:product-stock
           pnpm test:performance
           pnpm test:rule-batch
+          pnpm test:rule-tasks
           pnpm test:ai-models
           pnpm test:globe-ui
           pnpm test:list-settings

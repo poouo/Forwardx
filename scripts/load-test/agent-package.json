@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "drizzle-orm": "0.36.4", "@trpc/server": "11.16.0", "superjson": "2.2.6",
+    "zod": "3.25.76", "jsonwebtoken": "9.0.3", "express": "4.22.1",
+    "better-sqlite3": "11.10.0", "nodemailer": "6.10.1", "nanoid": "5.1.9",
+    "svg-captcha": "1.4.0", "@cap.js/server": "4.0.5", "ip2region.js": "3.1.8",
+    "mysql2": "3.22.3", "pg": "8.21.0", "cookie-parser": "1.4.7", "esbuild": "0.25.12"
+  }
+}

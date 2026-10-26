@@ -13,6 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { pollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
 import {
@@ -501,23 +502,23 @@ function DashboardContent() {
   const motionEnabled = useMotionEnabled();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const { data: stats, isLoading, isError: statsError, dataUpdatedAt: statsAt } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: pollingInterval("normal"), placeholderData: (previousData) => previousData });
+  const { data: stats, isLoading, isError: statsError, dataUpdatedAt: statsAt } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: adaptivePollingInterval(pollingInterval("normal")), placeholderData: (previousData) => previousData });
   const { data: trafficTotals, isLoading: trafficTotalsLoading, isError: totalsError, dataUpdatedAt: totalsAt } = trpc.dashboard.trafficTotals.useQuery(undefined, {
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 5000,
     placeholderData: (previousData) => previousData,
   });
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
   const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin, placeholderData: (previousData) => previousData });
-  const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: pollingInterval("slow"), placeholderData: (previousData) => previousData });
+  const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: adaptivePollingInterval(pollingInterval("slow")), placeholderData: (previousData) => previousData });
   const { data: trafficBreakdown, isLoading: breakdownLoading, isError: breakdownError, dataUpdatedAt: breakdownAt } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 24, limit: 30 },
-    { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
+    { refetchInterval: adaptivePollingInterval(pollingInterval("slow")), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
   const { data: trafficSeries, isLoading: trendLoading, isError: trendError, dataUpdatedAt: trendAt } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 24, bucketMinutes: 60 },
-    { refetchInterval: pollingInterval("slow"), staleTime: 25000, placeholderData: (previousData) => previousData },
+    { refetchInterval: adaptivePollingInterval(pollingInterval("slow")), staleTime: 25000, placeholderData: (previousData) => previousData },
   );
 
   const chartData = useMemo(

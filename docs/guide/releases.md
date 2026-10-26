@@ -4,18 +4,18 @@
 
 | 组件 | 源码标识 |
 | --- | --- |
-| 面板 | 2.3.291 |
-| Android / iOS | 2.4.9 |
-| Agent | 2.2.204 |
+| 面板 | 2.3.292 |
+| Android / iOS | 2.4.10 |
+| Agent | 2.2.205 |
 | FXP 运行时 | 2.2.122 |
 
-`2.3.291` 于 2026-10-26 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
+`2.3.292` 于 2026-10-26 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
 
-本次包括主机列表 TCP / UDP 连接数、受限 LXC 流量统计兼容、资源展示流量重置、自测结果渐进展示、地球视图与卡片效果优化，以及资源占用和安全修复。使用方法见 [流量与延迟](./traffic-latency.md)、[转发规则](./rules.md) 和 [Agent](./agent.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+本次包括数据库鉴权、展示查询及流量记账优化，修复数据库繁忙时误退出登录；转发规则批量操作支持后台队列与数量／百分比进度，面板及 Agent 日志按天轮转并保留最近三天，同时修复地球视图悬浮信息遮挡。使用方法见 [数据库](./database.md)、[转发规则](./rules.md) 和 [路径与日志](./paths-logs.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 该表反映仓库中的版本字段，不证明对应 Release 已构建完成。安装或升级时，以实际 Release 附件和构建任务结果为准；各平台安装包可能先后完成。
 
-Agent 代理功能自 `2.2.197` 起提供；当前源码 Agent 为 `2.2.204`，FXP 为 `2.2.122`（本次未改动）。连接数上报、原生流量统计回退与队列优化需更新 Agent；GOST 统计回退还需同步更新面板并应用规则配置。同 Token 换机接管需配套升级 Agent / FXP，旧版 Agent 不具备停止同步的接管处理。V3 的入口与出口需同时升级，不兼容旧 V3，且暂未在面板开放；V1/V2 协议保持兼容。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。确认安装附件已生成后，按需 [备份并升级](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
+Agent 代理功能自 `2.2.197` 起提供；当前源码 Agent 为 `2.2.205`，FXP 为 `2.2.122`（本次未改动）。日志轮转、连接数上报、原生流量统计回退与 Agent 队列优化需更新 Agent；GOST 统计回退还需同步更新面板并应用规则配置。同 Token 换机接管需配套升级 Agent / FXP，旧版 Agent 不具备停止同步的接管处理。V3 的入口与出口需同时升级，不兼容旧 V3，且暂未在面板开放；V1/V2 协议保持兼容。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。确认安装附件已生成后，按需 [备份并升级](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
 
 Android 和 iOS 使用相同的应用版本号；面板、Agent 和 FXP 分别维护自己的版本。安装包按平台识别更新，不会把 APK 当作 IPA。iOS 包仍需 [自行签名](./mobile-app.md)。
 

@@ -1,4 +1,5 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["server.ts"]
+  "compilerOptions": { "allowJs": true, "checkJs": false },
+  "include": ["server.ts", "agent-server.ts"]
 }

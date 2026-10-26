@@ -83,7 +83,7 @@ tcpdump -ni any 'tcp port 入口端口 or udp port 入口端口'
 
 | 组件 | 位置 | 查看命令 |
 |------|------|----------|
-| 面板网页日志 | 系统设置 → 面板日志（最近 24 小时） | 可按等级筛选或导出 |
+| 面板网页日志 | 系统设置 → 面板日志（最近三天） | 可按等级筛选或导出 |
 | 面板持久日志（Docker） | 容器内 `/data/logs/panel.jsonl` | `docker exec forwardx-panel tail -n 300 /data/logs/panel.jsonl` |
 | 面板持久日志（非 Docker） | 通常为 `<面板工作目录>/data/logs/panel.jsonl`；宿主机已有 `/data` 时可能为 `/data/logs/panel.jsonl` | `tail -n 300 data/logs/panel.jsonl` |
 | 面板自定义日志目录 | `$FORWARDX_LOG_DIR/panel.jsonl` | `tail -n 300 "$FORWARDX_LOG_DIR/panel.jsonl"` |
@@ -99,7 +99,7 @@ tcpdump -ni any 'tcp port 入口端口 or udp port 入口端口'
 | mimic 网卡服务 | `mimic@<网卡>.service` | `journalctl -u 'mimic@ens3.service' -b -n 300 --no-pager` |
 | OpenRC/SysV 托管运行时 | `/var/log/forwardx-agent/<服务名>.log` | `tail -n 300 /var/log/forwardx-agent/<服务名>.log` |
 
-面板的日志目录先使用 `FORWARDX_LOG_DIR`，否则非 Windows 且存在 `/data` 时用 `/data/logs`，其他情况用工作目录下的 `data/logs`，详见 [目录与日志](./paths-logs.md)。Docker 启动/数据库连接错误通常先出现在 `docker logs`，业务运行记录则可在网页日志或 `panel.jsonl` 中查看。
+面板的日志目录先使用 `FORWARDX_LOG_DIR`，否则非 Windows 且存在 `/data` 时用 `/data/logs`，其他情况用工作目录下的 `data/logs`，详见 [目录与日志](./paths-logs.md)。Docker 启动/数据库连接错误通常先出现在 `docker logs`，业务运行记录则可在网页日志或 `panel.jsonl` 中查看。面板主日志与 Agent 主日志每天轮转一次，保留今天及前两天；历史文件分别为 `panel.YYYY-MM-DD.jsonl`、`agent-go.YYYY-MM-DD.log`。
 
 ### 相关配置和状态位置
 

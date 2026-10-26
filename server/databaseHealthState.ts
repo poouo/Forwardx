@@ -3,6 +3,7 @@ import type { DatabaseHealth } from "../shared/databaseHealth";
 // Never expose driver messages: they can contain passwords, SQL, parameters,
 // internal addresses or filesystem paths. Codes and explanations are allowlisted.
 const mysqlErrorCodes: Record<number, string> = {
+  1040: "ER_CON_COUNT_ERROR", 1203: "ER_TOO_MANY_USER_CONNECTIONS",
   1044: "ER_DBACCESS_DENIED_ERROR", 1045: "ER_ACCESS_DENIED_ERROR",
   1049: "ER_BAD_DB_ERROR", 1054: "ER_BAD_FIELD_ERROR", 1062: "ER_DUP_ENTRY",
   1064: "ER_PARSE_ERROR", 1071: "ER_TOO_LONG_KEY", 1114: "ER_RECORD_FILE_FULL",
@@ -22,6 +23,25 @@ const initializationOnlyCodes = new Set([
   "ER_TOO_LONG_KEY", "ER_TOO_BIG_ROWSIZE", "ER_DUP_ENTRY", "23505",
   "ER_RECORD_FILE_FULL", "53100", "ER_LOCK_WAIT_TIMEOUT", "ER_LOCK_DEADLOCK", "55P03", "40P01",
 ]);
+
+// Pool saturation is backpressure, not proof of invalid credentials or a
+// disconnected database. Drivers/Drizzle may nest these errors in cause.
+export function isDatabaseBusyError(error: unknown): boolean {
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  for (let count = 0; pending.length && count < 16; count++) {
+    const item = pending.shift();
+    if (!item || typeof item !== "object" || seen.has(item)) continue;
+    seen.add(item);
+    const value = item as { code?: unknown; errno?: unknown; message?: unknown; cause?: unknown; errors?: unknown[] };
+    const code = String(value.code || mysqlErrorCodes[Number(value.errno)] || "").toUpperCase();
+    if (["POOL_ENQUEUELIMIT", "POOL_CONNLIMIT", "ER_CON_COUNT_ERROR", "ER_TOO_MANY_USER_CONNECTIONS", "53300", "ER_LOCK_WAIT_TIMEOUT", "SQLITE_BUSY", "SQLITE_LOCKED"].includes(code) ||
+      /^(Queue limit reached\.?|No connections available\.?)$/i.test(String(value.message || ""))) return true;
+    pending.push(value.cause);
+    if (Array.isArray(value.errors)) pending.push(...value.errors.slice(0, 8));
+  }
+  return false;
+}
 
 export function describeDatabaseError(error: unknown, initialization = false): NonNullable<DatabaseHealth["reason"]> | null {
   const pending: unknown[] = [error];
@@ -82,6 +102,7 @@ export class DatabaseHealthTracker {
   canRetryInitialization() { return !this.initializationBlocked; }
 
   unavailable(error: unknown, initialization = false, force = false) {
+    if (!initialization && isDatabaseBusyError(error)) return false;
     const reason = describeDatabaseError(error, initialization);
     if (!reason && !initialization && !force) return false;
     // A later network probe must not hide the original failed migration or

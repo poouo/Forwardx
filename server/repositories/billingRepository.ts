@@ -373,9 +373,41 @@ async function snapshotForPlanId(planId: number) {
 }
 
 async function attachSubscriptionSnapshots<T extends { planId: number; planSnapshot?: string | null }>(subscriptions: T[]) {
-  return Promise.all(subscriptions.map(async (subscription: any) => {
-    const snapshot = parsePlanSnapshot(subscription.planSnapshot);
-    const addonTraffic = await getActiveTrafficAddonBreakdownForSubscription(Number(subscription.id));
+  if (!subscriptions.length) return [];
+  const db = await getDb();
+  if (!db) return [];
+  const snapshots = subscriptions.map(subscription => parsePlanSnapshot(subscription.planSnapshot));
+  const legacyPlanIds = [...new Set(subscriptions.filter((_, index) => !snapshots[index]).map(row => Number(row.planId)))];
+  const planIds = [...new Set(subscriptions.map(row => Number(row.planId)))];
+  const addonTraffic = await getActiveTrafficAddonBreakdowns(subscriptions.map((row: any) => Number(row.id)));
+  const resources = new Map<number, { hostIds: number[]; tunnelIds: number[]; forwardGroupIds: number[] }>();
+  for (let offset = 0; offset < legacyPlanIds.length; offset += 500) {
+    const batch = legacyPlanIds.slice(offset, offset + 500);
+    const [hostRows, tunnelRows, groupRows] = await Promise.all([
+      db.select().from(subscriptionPlanHosts).where(inArray(subscriptionPlanHosts.planId, batch)),
+      db.select().from(subscriptionPlanTunnels).where(inArray(subscriptionPlanTunnels.planId, batch)),
+      db.select().from(subscriptionPlanForwardGroups).where(inArray(subscriptionPlanForwardGroups.planId, batch)),
+    ]);
+    for (const id of batch) resources.set(id, { hostIds: [], tunnelIds: [], forwardGroupIds: [] });
+    for (const row of hostRows) resources.get(Number(row.planId))!.hostIds.push(Number(row.hostId));
+    for (const row of tunnelRows) resources.get(Number(row.planId))!.tunnelIds.push(Number(row.tunnelId));
+    for (const row of groupRows) resources.get(Number(row.planId))!.forwardGroupIds.push(Number(row.forwardGroupId));
+  }
+  const addons = new Map<number, any[]>();
+  for (let offset = 0; offset < planIds.length; offset += 500) {
+    const rows = await db.select().from(subscriptionPlanTrafficAddons)
+      .where(and(inArray(subscriptionPlanTrafficAddons.planId, planIds.slice(offset, offset + 500)), eq(subscriptionPlanTrafficAddons.isActive, true)))
+      .orderBy(asc(subscriptionPlanTrafficAddons.sortOrder), asc(subscriptionPlanTrafficAddons.priceCents));
+    for (const row of rows) {
+      const id = Number(row.planId);
+      const list = addons.get(id) ?? [];
+      list.push(row); addons.set(id, list);
+    }
+  }
+  return subscriptions.map((subscription: any, index) => {
+    const snapshot = snapshots[index];
+    const traffic = addonTraffic.get(Number(subscription.id));
+    const fallback = resources.get(Number(subscription.planId));
     return {
       ...subscription,
       planName: snapshot?.name || subscription.planName,
@@ -385,15 +417,15 @@ async function attachSubscriptionSnapshots<T extends { planId: number; planSnaps
       maxRules: snapshot?.maxRules ?? subscription.maxRules,
       maxConnections: snapshot?.maxConnections ?? subscription.maxConnections,
       maxIPs: snapshot?.maxIPs ?? subscription.maxIPs,
-      hostIds: snapshot ? snapshot.hostIds : await getPlanHostIds(Number(subscription.planId)),
-      tunnelIds: snapshot ? snapshot.tunnelIds : await getPlanTunnelIds(Number(subscription.planId)),
-      forwardGroupIds: snapshot ? snapshot.forwardGroupIds : await getPlanForwardGroupIds(Number(subscription.planId)),
-      trafficAddons: await getPlanTrafficAddons(Number(subscription.planId), false),
-      activeTrafficAddonBytes: addonTraffic.totalBytes,
-      purchasedTrafficAddonBytes: addonTraffic.purchasedBytes,
-      grantedTrafficAddonBytes: addonTraffic.grantedBytes,
+      hostIds: snapshot ? snapshot.hostIds : [...(fallback?.hostIds ?? [])],
+      tunnelIds: snapshot ? snapshot.tunnelIds : [...(fallback?.tunnelIds ?? [])],
+      forwardGroupIds: snapshot ? snapshot.forwardGroupIds : [...(fallback?.forwardGroupIds ?? [])],
+      trafficAddons: (addons.get(Number(subscription.planId)) ?? []).map(row => ({ ...row })),
+      activeTrafficAddonBytes: traffic?.totalBytes ?? 0,
+      purchasedTrafficAddonBytes: traffic?.purchasedBytes ?? 0,
+      grantedTrafficAddonBytes: traffic?.grantedBytes ?? 0,
     };
-  }));
+  });
 }
 
 
@@ -866,30 +898,69 @@ async function attachUserSubscriptionDetails<T extends { id: number; planId: num
   return attachSubscriptionSnapshots(subscriptions as any);
 }
 
-async function getActiveTrafficAddonBreakdownForSubscription(subscriptionId: number) {
+async function getActiveTrafficAddonBreakdowns(subscriptionIds: number[]) {
   const db = await getDb();
-  if (!db || !subscriptionId) return { totalBytes: 0, purchasedBytes: 0, grantedBytes: 0 };
+  const result = new Map<number, { totalBytes: number; purchasedBytes: number; grantedBytes: number }>();
+  const ids = [...new Set(subscriptionIds.filter(id => Number.isInteger(id) && id > 0))];
+  if (!db || !ids.length) return result;
   const nowSec = Math.floor(Date.now() / 1000);
-  const rows = await db
-    .select({
-      total: sql<number>`COALESCE(SUM(${userTrafficAddons.trafficBytes}), 0)`,
-      purchased: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'user' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
-      granted: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'admin' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
-    })
-    .from(userTrafficAddons)
-    .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
-    .where(and(
-      eq(userTrafficAddons.subscriptionId, subscriptionId),
-      eq(userTrafficAddons.status, "active"),
-      sql`(${userTrafficAddons.expiresAt} IS NULL OR ${userTrafficAddons.expiresAt} > ${nowSec})`,
-      eq(userSubscriptions.status, "active"),
-      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
-    ));
-  return {
-    totalBytes: Number(rows?.[0]?.total || 0),
-    purchasedBytes: Number(rows?.[0]?.purchased || 0),
-    grantedBytes: Number(rows?.[0]?.granted || 0),
-  };
+  for (let offset = 0; offset < ids.length; offset += 500) {
+    const rows = await db
+      .select({
+        subscriptionId: userTrafficAddons.subscriptionId,
+        total: sql<number>`COALESCE(SUM(${userTrafficAddons.trafficBytes}), 0)`,
+        purchased: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'user' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
+        granted: sql<number>`COALESCE(SUM(CASE WHEN ${userTrafficAddons.source} = 'admin' THEN ${userTrafficAddons.trafficBytes} ELSE 0 END), 0)`,
+      })
+      .from(userTrafficAddons)
+      .innerJoin(userSubscriptions, eq(userTrafficAddons.subscriptionId, userSubscriptions.id))
+      .where(and(
+        inArray(userTrafficAddons.subscriptionId, ids.slice(offset, offset + 500)),
+        eq(userTrafficAddons.status, "active"),
+        sql`(${userTrafficAddons.expiresAt} IS NULL OR ${userTrafficAddons.expiresAt} > ${nowSec})`,
+        eq(userSubscriptions.status, "active"),
+        sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+      )).groupBy(userTrafficAddons.subscriptionId);
+    for (const row of rows) result.set(Number(row.subscriptionId), {
+      totalBytes: Number(row.total || 0), purchasedBytes: Number(row.purchased || 0), grantedBytes: Number(row.granted || 0),
+    });
+  }
+  return result;
+}
+
+/** Permission reads need resource IDs, not add-on prices/traffic aggregates.
+ * Keep these reads live: expired subscriptions and revoked access are never
+ * accepted from a cross-request authorization cache. */
+export async function getActiveUserSubscriptionResourceIds(userId: number, kind: "hostIds" | "tunnelIds" | "forwardGroupIds"): Promise<number[]> {
+  try {
+    const db = await getDb();
+    if (!db) return [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const rows = await db.select({ planId: userSubscriptions.planId, planSnapshot: userSubscriptions.planSnapshot })
+      .from(userSubscriptions).where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, "active"),
+        sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`));
+    const ids = new Set<number>();
+    const legacyPlans = new Set<number>();
+    for (const row of rows) {
+      const snapshot = parsePlanSnapshot(row.planSnapshot);
+      if (snapshot) for (const id of snapshot[kind]) ids.add(id);
+      else legacyPlans.add(Number(row.planId));
+    }
+    const plans = [...legacyPlans];
+    for (let offset = 0; offset < plans.length; offset += 500) {
+      const batch = plans.slice(offset, offset + 500);
+      const resources = kind === "hostIds"
+        ? await db.select({ id: subscriptionPlanHosts.hostId }).from(subscriptionPlanHosts).where(inArray(subscriptionPlanHosts.planId, batch))
+        : kind === "tunnelIds"
+          ? await db.select({ id: subscriptionPlanTunnels.tunnelId }).from(subscriptionPlanTunnels).where(inArray(subscriptionPlanTunnels.planId, batch))
+          : await db.select({ id: subscriptionPlanForwardGroups.forwardGroupId }).from(subscriptionPlanForwardGroups).where(inArray(subscriptionPlanForwardGroups.planId, batch));
+      for (const row of resources) ids.add(Number(row.id));
+    }
+    return [...ids];
+  } catch (error) {
+    warnActiveSubscriptionLookupFailure(error);
+    return [];
+  }
 }
 
 export async function getActiveUserTrafficAddonBytes(userId: number) {

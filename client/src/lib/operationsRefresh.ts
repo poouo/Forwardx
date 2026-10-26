@@ -1,3 +1,5 @@
+import { adaptivePollingInterval } from "./queryPolicy";
+
 export const OPERATIONS_REFRESH_SECONDS = [5, 10, 30, 0] as const;
 export type OperationsRefreshSeconds = typeof OPERATIONS_REFRESH_SECONDS[number];
 export const DEFAULT_OPERATIONS_REFRESH_SECONDS: OperationsRefreshSeconds = 30;
@@ -19,7 +21,7 @@ export function operationsRefreshInterval(seconds: OperationsRefreshSeconds, vis
 
 export function operationsRefreshOptions(interval: number | false) {
   return {
-    refetchInterval: interval,
+    refetchInterval: interval === false ? false : adaptivePollingInterval(interval),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

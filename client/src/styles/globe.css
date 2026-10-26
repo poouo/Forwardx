@@ -13,8 +13,20 @@
   transform: translate(-50%, -50%); pointer-events: none;
 }
 .globe-orbit-inner { width: min(66%, 560px); border-style: dashed; opacity: .65; }
+/* Reset the library's padded black shell; only our themed card is visible.
+   Keep the canvas unstacked so this tooltip can sit above the bottom controls. */
+.globe-stage .float-tooltip-kap {
+  padding: 0; border: 0; border-radius: 14px; background: transparent; box-shadow: none;
+  max-width: none; z-index: 4; pointer-events: none;
+  left: var(--globe-tooltip-x, -10000px) !important;
+  top: var(--globe-tooltip-y, -10000px) !important;
+  transform: none !important;
+}
 .globe-tooltip {
-  width: max-content; min-width: min(230px, 80vw); max-width: min(330px, 80vw);
+  width: max-content;
+  min-width: min(230px, 80vw, var(--globe-tooltip-max-width, 330px));
+  max-width: min(330px, 80vw, var(--globe-tooltip-max-width, 330px));
+  max-height: var(--globe-tooltip-max-height, none); overflow: auto; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 14px;
   background: var(--popover); color: var(--popover-foreground); padding: 14px;
   box-shadow: var(--pearl-overlay-shadow);

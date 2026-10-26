@@ -519,9 +519,14 @@ export async function getHostOptions(ownerUserId?: number, allowedHostIds?: numb
     // Drizzle expands `db.select().from(hosts)` to every column declared in
     // the current schema, so it is not a real SELECT * fallback when an older
     // database is missing one of those columns. Use the raw driver query,
-    // whose projection is resolved by the database itself, and apply the
-    // visibility predicate in memory.
-    const fallbackRows: Array<Record<string, any>> = await queryRaw<Record<string, any>>(`SELECT * FROM ${quoteIdentifier("hosts")}`);
+    // whose projection is resolved by the database itself. Still constrain
+    // ownership in SQL: a compatibility fallback must not load other tenants.
+    const ids = normalizeIds(allowedHostIds);
+    const scoped = Number(ownerUserId || 0) > 0;
+    const fallbackRows: Array<Record<string, any>> = await queryRaw<Record<string, any>>(
+      `SELECT * FROM ${quoteIdentifier("hosts")}${scoped ? ` WHERE (${quoteIdentifier("userId")} = ?${ids.length ? ` OR ${quoteIdentifier("id")} IN (${ids.map(() => "?").join(",")})` : ""})` : ""}`,
+      scoped ? [Number(ownerUserId), ...ids] : [],
+    );
     const allowed = new Set((allowedHostIds || [])
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0));

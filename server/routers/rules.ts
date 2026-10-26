@@ -12,6 +12,7 @@ import { personalRuleGroupsRouter } from "./rules.groups";
 import { ruleGroupFilterSchema, personalRuleGroupChangeFilterSchema, type PersonalRuleGroupChangeFilter } from "../../shared/ruleGroups";
 import { getRulePersonalGroupIds, assertPersonalRuleGroups } from "../repositories/ruleGroupRepository";
 import { displayQueries } from "../displayQueryCache";
+import { ruleTasksRouter } from "./rules.tasks";
 
 async function withRuleResourceAccess<T extends any>(value: T, user: { id: number; role: string }): Promise<T> {
   const scope = user.role === "admin" ? null : await getLinkAccessScope(user);
@@ -169,6 +170,7 @@ export const rulesRouter = router({
               userId: ctx.user.role === "admin" ? undefined : ctx.user.id,
               ruleIds: selection.ruleIds,
               since: new Date(Date.now() - 24 * 60 * 60 * 1000),
+              includeLatency: false,
             }),
           ])
           : [[], []];
@@ -215,6 +217,7 @@ export const rulesRouter = router({
   ...portsRulesRouter._def.procedures,
   ...personalRuleGroupsRouter._def.procedures,
   ...crudRulesRouter._def.procedures,
+  ...ruleTasksRouter._def.procedures,
   ...trafficRulesRouter._def.procedures,
   ...selfTestRulesRouter._def.procedures,
 });

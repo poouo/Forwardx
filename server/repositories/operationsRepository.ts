@@ -5,6 +5,7 @@ import { getAllSettings } from "./settingsRepository";
 import { deleteExpiredHistoryRows } from "./historyRetention";
 import { operationsDay, chinaProvince, provinceAliases, OPERATIONS_SOURCE_PAGE_SIZE, type OperationsSourceSort } from "../../shared/operations";
 import { resolveOperationsSourceGeo, SOURCE_GEO_VERSION } from "../operationsSourceGeo";
+import { writeMysqlTrafficCounters } from "../mysqlTrafficCounters";
 
 export async function sourceAnalyticsEnabled() {
   return (await getAllSettings()).operationsSourceAnalytics === "true";
@@ -35,10 +36,15 @@ export async function recordOperationsTraffic(items: any[], contexts: Map<number
 }
 
 async function upsertRows(table: string, columns: string[], rows: any[][], keys: string[], sums: string[]) {
-  const mysql = getDatabaseKind() === "mysql";
-  const incoming = (column: string) => mysql ? `VALUES(${q(column)})` : `excluded.${q(column)}`;
+  if (getDatabaseKind() === "mysql") {
+    await writeMysqlTrafficCounters({ table, columns, rows, keys, add: sums,
+      replace: columns.filter(column => !keys.includes(column) && !sums.includes(column)),
+    }, { query: queryRaw, execute: executeRaw });
+    return;
+  }
+  const incoming = (column: string) => `excluded.${q(column)}`;
   const current = (column: string) => getDatabaseKind() === "postgresql" ? `${q(table)}.${q(column)}` : q(column);
-  const suffix = (mysql ? " ON DUPLICATE KEY UPDATE " : ` ON CONFLICT (${keys.map(q).join(",")}) DO UPDATE SET `) +
+  const suffix = ` ON CONFLICT (${keys.map(q).join(",")}) DO UPDATE SET ` +
     columns.filter(column => !keys.includes(column)).map(column => `${q(column)} = ${sums.includes(column) ? `${current(column)} + ` : ""}${incoming(column)}`).join(",");
   for (let offset = 0; offset < rows.length; offset += 50) {
     const batch = rows.slice(offset, offset + 50);

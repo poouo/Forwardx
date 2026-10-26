@@ -38,7 +38,7 @@ docker logs --tail 300 forwardx-panel
 journalctl -u forwardx-panel -n 300 --no-pager
 ~~~
 
-结构化日志文件名为 panel.jsonl，目录按以下顺序确定：
+当天结构化日志为 `panel.jsonl`，跨天后归档为 `panel.YYYY-MM-DD.jsonl`。按面板运行环境时区保留今天、昨天、前天，每天一个文件，启动时及每日零点自动清理过期归档。网页日志、分页、筛选和导出同时覆盖保留的三天。目录按以下顺序确定：
 
 1. 配置了 FORWARDX_LOG_DIR 时使用该目录。
 2. 非 Windows 且 /data 存在时使用 /data/logs。
@@ -68,6 +68,10 @@ docker exec forwardx-panel tail -n 300 /data/logs/panel.jsonl
 tail -n 300 /var/log/forwardx-agent/agent-go.log
 journalctl -u forwardx-agent -n 300 --no-pager
 ~~~
+
+Agent 当天主日志保持为 `agent-go.log`，跨天归档为 `agent-go.YYYY-MM-DD.log`，按 Agent 运行环境时区保留今天、昨天、前天，后台自动清理过期归档，即使没有新日志也会检查。已有的单文件及目录体积保护仍生效，高频日志达到上限时可能提前裁剪；运行时独立日志继续受大小和时长限制。
+
+三天策略针对 ForwardX 自己管理的日志文件。Docker `logs`、systemd journal、安装器重定向的 `panel.log` 等系统输出由部署环境单独管理，不会由应用删除；需要按对应的 Docker/journald/logrotate 配置限制占用。
 
 ForwardX Nginx 与系统 nginx.service 不是同一个服务。临时运行态和监听配置由 Agent 管理，不要把编辑 /run 中的生成文件当成持久化设置。
 

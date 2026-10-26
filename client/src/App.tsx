@@ -184,10 +184,7 @@ function SetupGate() {
   if (loginRoute) return <Router />;
 
   if (setup.isError) {
-    if (mobileAuth.isNative) {
-      if (location !== "/login") return <Redirect to="/login" />;
-      return <Router />;
-    }
+    // A failed setup/status read (including DB backpressure) is not a logout.
     return <Router />;
   }
 
@@ -202,6 +199,7 @@ function SetupGate() {
 }
 
 import { SeamlessMigrationGate } from "./components/SeamlessMigrationGate";
+import RuleTaskNotifications from "./components/RuleTaskNotifications";
 
 function App() {
   return (
@@ -215,6 +213,7 @@ function App() {
                   <PersonalizationLayer />
                   <Live2DWidgetHost />
                   <Toaster />
+                  <RuleTaskNotifications />
                   <SetupGate />
                 </SeamlessMigrationGate>
               </DatabaseHealthGate>

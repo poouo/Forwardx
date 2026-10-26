@@ -111,7 +111,7 @@ test("globe chrome follows light, dark and custom themes without covering the ca
   assert.match(css, /\.dark \.globe-stage/);
   assert.match(css, /var\(--primary\)/);
   assert.match(css, /background: var\(--popover\); color: var\(--popover-foreground\)/);
-  assert.match(css, /max-width: min\(330px, 80vw\)/);
+  assert.match(css, /max-width: min\(330px, 80vw, var\(--globe-tooltip-max-width, 330px\)\)/);
   assert.match(css, /\.globe-list-row:focus-visible/);
   assert.match(readFileSync("client/src/pages/Settings.tsx", "utf8"), /pearl-hover-card group flex min-h-32/);
 });

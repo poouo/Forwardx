@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.204"
+var Version = "2.2.205"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -14887,20 +14887,14 @@ func logVerbosef(format string, args ...any) {
 
 func logf(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
-	createdAt := time.Now().Format(time.RFC3339)
+	now := time.Now()
+	createdAt := now.Format(time.RFC3339)
 	line := createdAt + " " + message + "\n"
 	fmt.Print(line)
-	_ = os.MkdirAll(agentLogDir, 0755)
 	agentLogMu.Lock()
 	defer agentLogMu.Unlock()
-	f, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err == nil {
-		_, _ = f.WriteString(line)
-		info, _ := f.Stat()
-		_ = f.Close()
-		if info != nil && info.Size() > agentLogMaxBytes {
-			trimLogFileTail(agentLogPath, agentLogTailBytes)
-		}
+	if err := appendAgentDailyLog(agentLogPath, now, line); err != nil {
+		reportAgentLogError("write", err)
 	}
 	pruneAgentLocalLogsLocked()
 }
@@ -14935,6 +14929,9 @@ func pruneAgentLocalLogsLocked() {
 	checkRetention := agentLogRetentionPrunedAt.IsZero() || now.Sub(agentLogRetentionPrunedAt) >= agentLogRetentionCheckInterval
 	if !checkSizes && !checkRetention {
 		return
+	}
+	if err := rotateAgentLogFile(agentLogPath, now); err != nil {
+		reportAgentLogError("rotation", err)
 	}
 	if checkSizes {
 		agentLogSizePrunedAt = now
@@ -14973,6 +14970,12 @@ func pruneLogDirectory(dir string, primaryPath string, now time.Time, checkReten
 		paths = []string{primaryPath}
 	}
 	for _, path := range paths {
+		if day, ok := agentLogArchiveDay(primaryPath, path, now.Location()); ok && day.Before(agentLogRetentionStart(now)) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				reportAgentLogError("cleanup", err)
+			}
+			continue
+		}
 		pruneAgentLocalLogFile(path, now, checkRetention, limits)
 	}
 	enforceLogDirectoryLimit(paths, primaryPath, limits)
@@ -14994,6 +14997,11 @@ func pruneAgentLocalLogFile(path string, now time.Time, checkRetention bool, lim
 		return
 	}
 	cutoff := now.Add(-limits.retention)
+	if filepath.Base(path) == filepath.Base(agentLogPath) {
+		cutoff = agentLogRetentionStart(now)
+	} else if _, ok := agentLogArchiveDay(agentLogPath, path, now.Location()); ok {
+		cutoff = agentLogRetentionStart(now)
+	}
 	if info.ModTime().Before(cutoff) {
 		_ = os.Truncate(path, 0)
 		return
@@ -15014,7 +15022,7 @@ func pruneAgentLocalLogFile(path string, now time.Time, checkRetention bool, lim
 			retained = append(retained, line)
 			continue
 		}
-		if t.After(cutoff) {
+		if !t.Before(cutoff) {
 			retained = append(retained, line)
 			continue
 		}

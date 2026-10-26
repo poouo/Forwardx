@@ -1,4 +1,5 @@
 export const DATABASE_UNAVAILABLE_MESSAGE = "数据库暂时不可用，请查看数据库异常提示";
+export const SERVICE_BUSY_MESSAGE = "服务繁忙，请稍后重试";
 
 export type DatabaseHealth = {
   state: "checking" | "healthy" | "unavailable" | "not_configured";

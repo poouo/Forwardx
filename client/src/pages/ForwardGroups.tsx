@@ -54,6 +54,7 @@ import HostStatusLabel from "@/components/HostStatusLabel";
 import MultiHopEditor from "@/components/MultiHopEditor";
 import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimisticSortableOrder, useSortableReorder } from "@/components/SortableDragHandle";
 import { pollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { buildLinkAvailabilityIndex } from "@/lib/linkAvailability";
 import { handoffManualTestResult } from "@/lib/manualTestCache";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -602,7 +603,7 @@ function ForwardGroupSelfTestDialog({
   const manualTestRef = useRef(false);
   const { data: latest } = trpc.forwardGroups.latestTest.useQuery(
     { groupId, includeActive: optimisticTesting },
-    { enabled: open, refetchInterval: pollingInterval("interactive", open), refetchOnWindowFocus: false }
+    { enabled: open, refetchInterval: adaptivePollingInterval(pollingInterval("interactive", open)), refetchOnWindowFocus: false }
   );
   const lastFailureToastKey = useRef("");
   const testMutation = trpc.forwardGroups.test.useMutation({
@@ -840,7 +841,7 @@ export function ForwardGroupsContent({
     search: searchQuery,
   } as const;
   const groupPageQuery = trpc.forwardGroups.listPage.useQuery(groupPageInput, {
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
@@ -848,7 +849,7 @@ export function ForwardGroupsContent({
   const needsFullGroupList = showDialog || !!latencyGroup || !!testGroup || !!editRequest;
   const fullGroupQuery = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: needsFullGroupList,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,

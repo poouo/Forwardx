@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   forwardRules,
   forwardGroups,
@@ -11,7 +11,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
 import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
-import { getActiveUserSubscriptions } from "./billingRepository";
+import { getActiveUserSubscriptions, getActiveUserSubscriptionResourceIds } from "./billingRepository";
 import { getTrafficBillingAccessSnapshot, getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 import { clearLinkAccessScopeCache } from "../linkAccessView";
 
@@ -53,30 +53,15 @@ export async function getUserEffectiveAllowedHostIds(userId: number): Promise<nu
 }
 
 async function _getActiveSubscriptionHostIds(userId: number): Promise<number[]> {
-  const active = await getActiveUserSubscriptions(userId);
-  const ids = new Set<number>();
-  for (const sub of active as any[]) {
-    for (const hostId of sub.hostIds || []) ids.add(Number(hostId));
-  }
-  return Array.from(ids);
+  return getActiveUserSubscriptionResourceIds(userId, "hostIds");
 }
 
 async function _getActiveSubscriptionTunnelIds(userId: number): Promise<number[]> {
-  const active = await getActiveUserSubscriptions(userId);
-  const ids = new Set<number>();
-  for (const sub of active as any[]) {
-    for (const tunnelId of sub.tunnelIds || []) ids.add(Number(tunnelId));
-  }
-  return Array.from(ids);
+  return getActiveUserSubscriptionResourceIds(userId, "tunnelIds");
 }
 
 async function _getActiveSubscriptionForwardGroupIds(userId: number): Promise<number[]> {
-  const active = await getActiveUserSubscriptions(userId);
-  const ids = new Set<number>();
-  for (const sub of active as any[]) {
-    for (const forwardGroupId of sub.forwardGroupIds || []) ids.add(Number(forwardGroupId));
-  }
-  return Array.from(ids);
+  return getActiveUserSubscriptionResourceIds(userId, "forwardGroupIds");
 }
 
 /** 获取某用户被授权的主机列表（含主机信息） */
@@ -85,8 +70,11 @@ export async function getUserAllowedHosts(userId: number) {
   if (!db) return [];
   const hostIds = await getUserEffectiveAllowedHostIds(userId);
   if (hostIds.length === 0) return [];
-  const allHosts = await db.select().from(hosts);
-  return allHosts.filter((h: any) => hostIds.includes(h.id));
+  const rows: any[] = [];
+  for (let offset = 0; offset < hostIds.length; offset += 500) {
+    rows.push(...await db.select().from(hosts).where(inArray(hosts.id, hostIds.slice(offset, offset + 500))));
+  }
+  return rows;
 }
 
 /** 设置某用户的主机权限（全量替换） */
@@ -267,12 +255,11 @@ export async function getTunnelsForUser(userId: number) {
   ]);
   const allAllowedTunnelIds = Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds]));
   if (allAllowedTunnelIds.length === 0) return owned.sort(compareTunnelDisplayOrder);
-  const ids = new Set(allAllowedTunnelIds);
-  const all = await db.select().from(tunnels);
   const merged = new Map<number, any>();
   for (const tunnel of owned) merged.set(tunnel.id, tunnel);
-  for (const tunnel of all) {
-    if (ids.has(tunnel.id)) merged.set(tunnel.id, tunnel);
+  for (let offset = 0; offset < allAllowedTunnelIds.length; offset += 500) {
+    const allowed = await db.select().from(tunnels).where(inArray(tunnels.id, allAllowedTunnelIds.slice(offset, offset + 500)));
+    for (const tunnel of allowed) merged.set(tunnel.id, tunnel);
   }
   return Array.from(merged.values()).sort(compareTunnelDisplayOrder);
 }

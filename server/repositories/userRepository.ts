@@ -860,6 +860,41 @@ export async function addUserTraffic(userId: number, bytes: number) {
   return rows[0];
 }
 
+/** Called with the accounting users locked; returns only live quota fields. */
+export async function addUsersTrafficBatch(entries: Iterable<readonly [number, number]>) {
+  const deltas = new Map<number, number>();
+  for (const [id, bytes] of entries) {
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(bytes) || bytes <= 0) continue;
+    deltas.set(id, (deltas.get(id) || 0) + bytes);
+  }
+  const selection = { id: users.id, trafficLimit: users.trafficLimit, trafficUsed: users.trafficUsed, expiresAt: users.expiresAt };
+  type QuotaUser = { id: number; trafficLimit: number; trafficUsed: number; expiresAt: Date | null };
+  const result: QuotaUser[] = [];
+  const values = [...deltas].sort((left, right) => left[0] - right[0]);
+  if (!values.length) return result;
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db) return result;
+    for (let offset = 0; offset < values.length; offset += 64) {
+      const batch = values.slice(offset, offset + 64);
+      const ids = batch.map(([id]) => id);
+      const cases = sql.join(batch.map(([id, bytes]) => getDatabaseKind() === "postgresql"
+        ? sql`WHEN ${id} THEN CAST(${bytes} AS bigint)` : sql`WHEN ${id} THEN ${bytes}`), sql` `);
+      const update = db.update(users).set({
+        trafficUsed: sql`${users.trafficUsed} + CASE ${users.id} ${cases} ELSE 0 END`,
+        updatedAt: nowDate(),
+      }).where(inArray(users.id, ids));
+      if (getDatabaseKind() === "mysql") {
+        await update;
+        result.push(...await db.select(selection).from(users).where(inArray(users.id, ids)));
+      } else {
+        result.push(...await update.returning(selection));
+      }
+    }
+    return result;
+  });
+}
+
 /** 获取所有需要月度自动重置的用户 */
 export async function getUsersForAutoReset(reference = nowDate()) {
   const db = await getDb();

@@ -2,6 +2,21 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [2.3.292] - 2026-10-26
+
+- Queue bulk rule import, copy, edit, toggle, restart and delete in server memory with bottom-right counts, percentages and outcomes; continue across navigation, stop pending items and deduplicate submissions.
+- Batch traffic-accounting user locks and quota updates with narrow projections; avoid repeated MySQL counter inserts and bound retries to rolled-back accounting conflicts.
+- Add isolated multi-user rule CRUD, toggle and restart workloads with ownership, port-allocation and post-delete cache checks.
+- Rotate panel and Agent main logs daily and automatically retain today plus the previous two days; panel log browsing and exports cover all three days.
+- Fix clipped globe tooltips and their dark outer edge in host/rule views; position them using actual dimensions and visible bounds.
+- Seek only the latest two metric samples per host on MySQL and PostgreSQL instead of ranking retained history.
+- Batch subscription/add-on hydration and settings writes; permission reads fetch only resource IDs without unrelated pricing or traffic data.
+- Aggregate host group counts in SQL, skip latency history for rule traffic summaries, and scope compatibility host queries in the database.
+
+- Preserve sessions during database saturation or query failures and recover verification automatically.
+- Combine authentication reads, batch host-metric permission checks, bound query queues, and back off failed live refreshes.
+- Versions: panel `2.3.292`, Android / iOS `2.4.10`, Agent `2.2.205`, ForwardX FXP runtime `2.2.122` (unchanged). Upgrade the Agent to enable its daily log rotation.
+
 ## [2.3.291] - 2026-10-26
 
 - Report host TCP/UDP socket counts from Agents and display them in the host list.
@@ -178,62 +193,3 @@ Upgrade note: V3 entry and exit must be upgraded together; older V3 runtimes are
 - Support per-source-IP TCP connection limits for ordinary forwarding, shared per user and entry host. UDP is excluded; update the Agent.
 - Reorganize deployment and usage docs, clarify traffic/probe statistics, and verify GitHub Pages publication.
 - Versions: panel `2.3.283`, Android / iOS `2.4.1`, Agent `2.2.196`, ForwardX FXP runtime `2.2.118`. Incremental tunnel updates require matching Agent/runtime upgrades; the upgrade itself is not guaranteed connection-preserving.
-
-## [2.3.282] - 2026-10-07
-
-### Features and configuration
-
-- Add an administrator-controlled sign-in/sign-up human-verification switch, enabled by default. Disabling it hides the widgets and skips only CAPTCHA checks on the server, preserving passwords, sign-in rate limits, email verification and 2FA. Include Chinese/English UI and HTTP compatibility guidance. Advance Android to `2.4.0` so installed clients detect this UI update.
-- Fix iOS IPA icon generation with a supported 32-bit CoreGraphics context and opaque PNG export. Add an actual macOS rendering regression test and actionable errors instead of a Swift crash.
-
-- Provide complete Chinese/English changelog histories and include both languages automatically in GitHub Releases, with checks for missing release sections or translations.
-- Reorganize deployment and usage documentation into Docker, local installation, databases, HTTPS, paths/logs, account recovery, migration and development guides. Update both READMEs, move AI and per-rule quota documentation to their own sections, and correct outdated commands, container environment handling, installer configuration preservation and consistent SQLite backups.
-- Add optional Google registration and sign-in, disabled by default. Administrators configure a Web OAuth client and callback in Settings; users can explicitly link accounts, confirm unlinking with a password, and set a password for a new Google-only account. Preserve registration controls, email allowlists, ordinary-user permissions, disabled-account checks, 2FA and session policies; never automatically merge accounts with matching emails. Protect flows with one-time browser-bound state, PKCE, signature/audience/nonce checks, request timeouts and rate limits. Keep secrets out of browser responses and plaintext audit logs, with Chinese/English UI and setup documentation.
-- Support per-rule quotas for rules owned by administrators themselves, including rules shared with other people without separate user accounts. Add regression coverage for ordinary administrator-owned rules, generated group members, independent usage accounting and recovery; administrator privileges do not bypass these limits.
-- Add dynamic AI parameter buttons: after specifying a target, choose an authorized tunnel, forwarding chain or forwarding group, with pagination, random/manual entry ports and TCP/UDP choices. Preserve the target and unfinished steps across restarts, invalidate stale buttons, recheck permissions, and require final confirmation. Known settings with a missing on/off value also offer buttons in Telegram and Discord.
-- Show usage, quota, remaining allowance and counting mode for administrator-managed rules in user cards and lists. Persist managed ownership: users may view but cannot edit, enable/disable, delete, sort or reset these rules. Clearing limits does not remove the read-only restriction; ordinary self-created rules are unaffected. Apply the same permissions to bots and batch operations.
-- Add a collapsed per-rule configuration section for administrators: speed limits, traffic quotas, outbound-only/combined/maximum-direction accounting, editable creation and expiry dates using the calendar, and optional time values. Quota/expiry suspensions cover generated group members and tunnel endpoints without changing the configured enabled switch. Removing the restriction restores service; ordinary users cannot modify limits or reset restricted usage. Establish a baseline from cumulative ingress counters, then persist logical-rule usage transactionally so resource switches, member rebuilds and creation-date edits do not clear it. Include Chinese/English UI and controlled AI queries/updates.
-- Expand controlled AI tools to cover rule editing and resource-specific creation, upcoming account/host/subscription expiry, system/protocol/menu switches, host traffic and renewal configuration, tunnels/groups, user quotas and resource permissions, plans/subscriptions, usage billing and announcements. Reuse web validation and permissions; preview and confirm each write step. Keep unfinished parameters through restarts and expired confirmations, preserve unspecified fields, and reject stale previews after concurrent changes. Credentials, database migration, upgrades and arbitrary commands remain outside natural-language write tools.
-
-### Fixes and improvements
-
-- Rebuild bot AI operations around intent, minimal authorized context, structured plans, business validation and step-by-step confirmation. Persist parameters, missing inputs, remaining steps and progress; resume with “continue” after restart or confirmation expiry. Isolate channels, users and chats, prevent duplicate execution, and stop automatic retries when an outcome is uncertain. Fix renewal dates being overwritten by entitlement synchronization and bound model response-body time and size.
-- Fix manual latency batches being claimed too early, losing partial results or failing to aggregate after panel restart. Persist complete tunnel/chain jobs before dispatch, keep original requests/results, make duplicate reports idempotent and prevent old batches overwriting new ones. Retries do not extend the original timeout; add overall deadlines and stale-state recovery.
-- Correct manual probe topology and aggregation for multiple entries/exits and standby relays. Evaluate complete available paths instead of treating alternatives as serial hops; background probes no longer overwrite active manual tests. Keep completed segment results, show request/refresh/deadline failures, and clarify that a TCP connection is not an authenticated application handshake. Do not change normal forwarding state.
-- Improve Chinese/English layouts: sliding tabs reserve translated text, icon and count widths, scroll locally when needed and track actual label sizes. Allow long labels and action bars to wrap in tabs, dialogs, hosts, rules, links and users. Shorten English navigation/action text and adapt notification forms, binding status and plugin dialogs without dropping explanations or changing business behavior.
-- Let installers choose the initial setup language with --language zh-CN|en|auto for Docker/local deployments. Chinese and English README commands pass their respective language; upgrades preserve it. The wizard switches language without losing form inputs, manual browser choices take priority, and normal automatic detection resumes after initialization.
-- Add Discord Bot notifications as an alternative to Telegram, which remains the default. Switching preserves each channel's configuration and bindings. Support private binding/unbinding, announcement subscriptions, usage/rules, one-time web login, administrator actions, AI queries/confirmations and host/traffic/expiry/group-switch/rule-error notifications. Adapt Slash Commands, buttons, message limits and rate limits; validate Bot identity before saving, bound interaction queues and reconnect Gateway sessions on timeout. Never reuse Telegram credentials; report private-message delivery failures explicitly.
-- Fix forwarding self-tests clearing tunnel runtime status, causing unnecessary reapplication and delaying probes. Probe-only refresh preserves runtime state and configuration versions; configuration edits still use the reapply path. Pending probes retain fast-heartbeat retries during recovery without bypassing readiness checks or hiding failures with longer timeouts.
-- Add Simplified Chinese/English UI selection in account menus, login and initial setup. Automatic mode prioritizes browser language, then existing IP-country hints or trusted-proxy country data, without new visitor-location requests. Persist manual browser preferences and localize dates/currency. Add an English README with cross-links; preserve user content and raw diagnostics.
-- Fix newly added GOST forwarding-chain rules restarting shared host runtimes and interrupting other chains. The new Agent adds listeners/dependencies through a root-private Unix socket while keeping unchanged rules running. Port conflicts or apply failures roll back only the addition, without restarting the shared process. Initial API activation requires one service restart; edits, deletions and runtime failures retain existing recovery behavior. Older Agents remain compatible.
-- Add an iOS/iPadOS 15+ project and independent macOS GitHub build workflow producing unsigned arm64 IPA, SHA256 and signing instructions. Support manual builds and tag-based Release uploads without Apple signing secrets, plus download links, iOS update checks, LAN permissions and safe-area handling. Users handle signing and installation.
-- Add optional seamless panel migration through the old URL: freeze writes, export a consistent snapshot, preserve IDs/Tokens/ports/runtime state and suppress rebuild/cleanup actions during verification. Do not require Agent/runtime restarts; retain the old database read-only and persist resumable migration state. Both panels must use the same version and database type, the destination must have no business data, and the old URL/forwarding service must remain available. Seamless incremental merging is unsupported.
-- Fix standalone host monitoring (default /dev) not requesting live metrics, stalled refresh after hanging requests and transient failures appearing as missing pages. Add isolated requests/timeouts, visibility/network recovery, last-refresh time and manual retry. Preserve previous data on errors, prioritize current metrics in details and avoid excessive chart parameters with long ranges/many services.
-- Fix rule category/link filtering shrinking the “All” count and zeroing unrelated badges. Compute category counts independently of category/link selection within the current user/search scope; pagination and summaries still follow the selected link. Keep complete counts during loading rather than estimating from one page.
-- Fix probe failure rates being inflated by throttled successful reports. Agents retain bounded cumulative counters; the panel uses monotonic snapshot deltas and ignores duplicate/out-of-order reports. Hop caches still inform health, but are not independent failure samples.
-- Distinguish Ping packet loss, TCP connection failures and hop-probe failures with explicit coverage. Do not use legacy sampled rows for accurate failure rates or stability scores; retain their latency curves. Chart smoothing no longer changes stability statistics, and compressed multi-batch counters are no longer truncated.
-
-### Versions and upgrade notes
-
-- Panel and APK release: 2.3.282; Android app: 2.4.0; iOS app: 1.0.0; Agent: 2.2.195; ForwardX FXP runtime remains `2.2.117`.
-- Back up databases and custom deployment configuration before upgrading. Google sign-in is disabled by default; Telegram remains the default bot channel. Seamless migration requires the old URL and forwarding service to stay running.
-- Upgrade Agents to use incremental GOST additions. Initial API activation restarts the shared runtime once; subsequent additions can retain unchanged listeners. Edits, deletions and recovery may still rebuild runtimes.
-- The IPA is unsigned and requires user-provided signing/installation. Platform packages and Docker images build in independent GitHub Actions and may become available after the code push.
-
-## [2.3.281] - 2026-10-02
-
-### Fixes and improvements
-
-- Fix infinite Map iteration during captcha-refresh and 2FA rate-limit cleanup, preventing full panel CPU utilization and unresponsive Web/API service while retaining rate limits and capacity guards. Add live/mixed-expiry regression cases.
-- Add host traffic failover switches and percentage thresholds. Temporarily exclude over-quota hosts from forwarding groups, failover and tunnel entry/exit groups using the host's accounting mode. Preserve members/ports and restore eligibility after a traffic reset or disabling the switch.
-- Keep a Web diagnostic page available on database failures, with sanitized causes, error codes and troubleshooting advice; recover automatically without clearing login cookies.
-- Fix PostgreSQL idle-connection errors and asynchronous Agent database reads exiting the panel process. Static pages/assets no longer depend on Agent database checks.
-- Add bounded, non-overlapping database health checks, pause database-dependent scheduled jobs during outages, and cache verified panel TLS configuration for startup without the database.
-- Make administrator rule creation, copies, imports and traffic resets follow the selected user; “All users” creation defaults to the administrator. Validate target-user permissions, quotas and port policies.
-- Use the server's effective host/tunnel/group/plan port policy in rule editors, avoiding hints that allow port 65535 while saving rejects it.
-- Treat iperf3 as an optional, independently installed dependency. Failed installation warns that network tests are unavailable without interrupting Agent installation.
-- Fix toast text/background mismatch when switching between light and dark themes.
-
-### Versions
-
-- Panel/APK release: 2.3.281; Android: 2.3.98; Agent: 2.2.194; ForwardX FXP runtime: `2.2.117`.
