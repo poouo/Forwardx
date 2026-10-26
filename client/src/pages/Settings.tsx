@@ -911,7 +911,7 @@ function PanelLogsSection() {
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
                 <FileText className="h-4 w-4 text-primary" />{translateText("面板日志")}</CardTitle>
-              <CardDescription>{translateText("最近 24 小时运行日志。")}</CardDescription>
+              <CardDescription>{translateText("最近三天运行日志。")}</CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <div className="flex items-center gap-2">

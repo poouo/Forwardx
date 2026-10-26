@@ -1,4 +1,6 @@
 import { Router, Request, Response } from "express";
+import { isDatabaseBusyError } from "./databaseHealthState";
+import { SERVICE_BUSY_MESSAGE } from "../shared/databaseHealth";
 import { parseHostLoadAverage } from "../shared/hostLoad";
 import { observeHostResources } from "./operationsMonitor";
 import * as db from "./db";
@@ -1377,6 +1379,19 @@ export function buildNginxRuntimeRetirementPlan() {
   };
 }
 
+let lastAgentDatabaseBusyLogAt = 0;
+function respondAgentDatabaseBusy(error: unknown, res: Response) {
+  if (!isDatabaseBusyError(error)) return false;
+  const now = Date.now();
+  if (now - lastAgentDatabaseBusyLogAt >= 60_000) {
+    lastAgentDatabaseBusyLogAt = now;
+    console.warn("[Agent] Database busy; retrying reports after backpressure");
+  }
+  res.setHeader("Retry-After", "5");
+  res.status(503).json({ error: SERVICE_BUSY_MESSAGE, code: "SERVICE_UNAVAILABLE" });
+  return true;
+}
+
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
   try {
@@ -1404,6 +1419,7 @@ agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
     const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
     res.json(buildPresenceAgentHeartbeatResponse({ panelMigration }));
   } catch (error) {
+    if (respondAgentDatabaseBusy(error, res)) return;
     console.error("[Agent Presence] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -6741,6 +6757,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...(metricsWatching ? { trafficReportInterval: 10 } : {}),
     });
   } catch (error) {
+    if (respondAgentDatabaseBusy(error, res)) return;
     console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });
   } finally {

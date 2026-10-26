@@ -15,6 +15,7 @@ import { dashboardSummaries, operationsSummaries } from "./backgroundSummaryCach
 import { seamlessDatabaseOperation } from "./seamlessMigrationState";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 import { displayQueries } from "./displayQueryCache";
+import { retryTransactionConflicts, type TransactionAttemptState } from "./transactionRetry";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -742,11 +743,13 @@ async function runAfterSettledCallbacks(callbacks: Array<() => Promise<void> | v
   for (const callback of callbacks) await callback();
 }
 
-export async function withDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
-  return seamlessDatabaseOperation("BEGIN", () => reportDatabaseErrors(() => runDatabaseTransaction(work)));
+export async function withDatabaseTransaction<T>(work: () => Promise<T>, options: { retryConflicts?: boolean } = {}): Promise<T> {
+  return seamlessDatabaseOperation("BEGIN", () => reportDatabaseErrors(() => retryTransactionConflicts(
+    state => runDatabaseTransaction(work, state), options.retryConflicts,
+  )));
 }
 
-async function runDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
+async function runDatabaseTransaction<T>(work: () => Promise<T>, attempt: TransactionAttemptState): Promise<T> {
   if (transactionContext.getStore()) return work();
   if (!_db || !_kind) await connectDatabase();
   if (_kind === "mysql") {
@@ -762,7 +765,7 @@ async function runDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
         result = await transactionContext.run({ db, mysqlConnection: connection, afterCommit, afterSettled }, work);
         await connection.commit();
       } catch (error) {
-        await connection.rollback().catch(() => undefined);
+        await connection.rollback().then(() => { attempt.rolledBack = true; }).catch(() => undefined);
         throw error;
       } finally {
         connection.release();
@@ -786,7 +789,7 @@ async function runDatabaseTransaction<T>(work: () => Promise<T>): Promise<T> {
         result = await transactionContext.run({ db, postgresClient: client, afterCommit, afterSettled }, work);
         await client.query("COMMIT");
       } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
+        await client.query("ROLLBACK").then(() => { attempt.rolledBack = true; }).catch(() => undefined);
         throw error;
       } finally {
         client.release();

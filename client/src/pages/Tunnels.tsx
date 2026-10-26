@@ -64,6 +64,7 @@ import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/l
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
 import { MAX_NGINX_PEM_FILES, MAX_NGINX_PEM_UPLOAD_BYTES, parseNginxPemFiles } from "@/lib/nginxPemFiles";
 import { pollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getTunnelCardRouteSummary, getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -1506,7 +1507,7 @@ function TunnelSelfTestDialog({
   const utils = trpc.useUtils();
   const tunnelQuery = trpc.tunnels.getById.useQuery({ id: tunnelId }, {
     enabled: open,
-    refetchInterval: pollingInterval("interactive", open),
+    refetchInterval: adaptivePollingInterval(pollingInterval("interactive", open)),
     refetchOnWindowFocus: false,
   });
   const { data: tunnel } = tunnelQuery;
@@ -2291,7 +2292,7 @@ function TunnelsContent() {
   const sectionCountsQuery = trpc.tunnels.sectionCounts.useQuery({ search: linkSearchQuery }, {
     enabled: !!user,
     staleTime: 10_000,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     refetchOnWindowFocus: false,
     placeholderData: previous => previous,
   });
@@ -2323,7 +2324,7 @@ function TunnelsContent() {
   };
   const tunnelPageQuery = trpc.tunnels.listPage.useQuery(tunnelPageInput, {
     enabled: activeSection === "tunnels",
-    refetchInterval: pollingInterval("active"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("active")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
@@ -2362,7 +2363,7 @@ function TunnelsContent() {
   const needsFullTunnelList = activeSection !== "tunnels";
   const fullTunnelQuery = trpc.tunnels.options.useQuery(undefined, {
     enabled: needsFullTunnelList,
-    refetchInterval: pollingInterval("active"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("active")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
@@ -2394,7 +2395,7 @@ function TunnelsContent() {
     search: linkSearchQuery,
   }, {
     enabled: activeForwardGroupMode !== null,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
@@ -2403,7 +2404,7 @@ function TunnelsContent() {
   const needsFullForwardGroupList = showDialog || showCreateTypeDialog || isChainGlobeView;
   const fullForwardGroupQuery = trpc.forwardGroups.options.useQuery(undefined, {
     enabled: needsFullForwardGroupList,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });

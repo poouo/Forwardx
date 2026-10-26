@@ -41,6 +41,18 @@ export async function getActiveAuthSession(userId: number, sid: string, kind: Se
   return rows[0];
 }
 
+// One indexed lookup instead of separate users + auth_sessions round trips.
+// LEFT JOIN preserves the disabled-account check even for a revoked session.
+// No cross-request authorization cache: revocations and permissions stay live.
+export async function getAuthSessionIdentity(userId: number, sid: string, kind: SessionKind) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const rows = await db.select({ user: users, session: authSessions }).from(users)
+    .leftJoin(authSessions, activeSessionWhere(userId, sid, kind))
+    .where(eq(users.id, userId)).limit(1);
+  return rows[0];
+}
+
 export async function touchAuthSession(userId: number, sid: string, kind: SessionKind, knownActiveSession?: { userId: number; sid: string; kind: string; lastSeenAt: unknown }) {
   const db = await getDb();
   if (!db) return;

@@ -16,11 +16,12 @@ import {
   type SessionKind,
 } from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
-import { getActiveAuthSession, revokeAuthSession, touchAuthSession } from "../repositories/sessionRepository";
+import { getAuthSessionIdentity, revokeAuthSession, touchAuthSession } from "../repositories/sessionRepository";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { TRPCError } from "@trpc/server";
-import { databaseHealth, describeDatabaseError } from "../databaseHealthState";
-import { DATABASE_UNAVAILABLE_MESSAGE } from "../../shared/databaseHealth";
+import { databaseHealth, describeDatabaseError, isDatabaseBusyError } from "../databaseHealthState";
+import { DATABASE_UNAVAILABLE_MESSAGE, SERVICE_BUSY_MESSAGE } from "../../shared/databaseHealth";
+import { createRequestWorkPool } from "../requestWorkPool";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -42,9 +43,14 @@ type TokenSource = "cookie" | "bearer";
 
 const MULTI_DEVICE_LOGIN_SETTING_CACHE_MS = 30 * 1000;
 let allowMultiDeviceLoginCache: { value: boolean; loadedAt: number } = { value: false, loadedAt: 0 };
+let multiDeviceLoginLoad: Promise<boolean> | undefined;
+// Absorb short UI bursts in application memory, without putting every request
+// into the driver's queue. A healthy DB must not lose reads to a tiny queue.
+const authReads = createRequestWorkPool({ concurrency: 8, maxQueued: 256, queueTimeoutMs: 2000 });
 
 export function updateMultiDeviceLoginSettingCache(value: boolean) {
   allowMultiDeviceLoginCache = { value, loadedAt: Date.now() };
+  multiDeviceLoginLoad = undefined;
 }
 
 function getRequestToken(req: Request): { token: string; source: TokenSource | null } {
@@ -81,9 +87,17 @@ async function allowMultiDeviceLogin() {
   if (now - allowMultiDeviceLoginCache.loadedAt < MULTI_DEVICE_LOGIN_SETTING_CACHE_MS) {
     return allowMultiDeviceLoginCache.value;
   }
-  const value = (await db.getSetting("allowMultiDeviceLogin")) === "true";
-  allowMultiDeviceLoginCache = { value, loadedAt: now };
-  return value;
+  if (!multiDeviceLoginLoad) {
+    const currentCache = allowMultiDeviceLoginCache;
+    const pending = db.getSetting("allowMultiDeviceLogin").then((setting) => {
+      if (allowMultiDeviceLoginCache === currentCache) {
+        allowMultiDeviceLoginCache = { value: setting === "true", loadedAt: Date.now() };
+      }
+      return allowMultiDeviceLoginCache.value;
+    }).finally(() => { if (multiDeviceLoginLoad === pending) multiDeviceLoginLoad = undefined; });
+    multiDeviceLoginLoad = pending;
+  }
+  return multiDeviceLoginLoad;
 }
 
 async function claimSessionLease(user: User, sessionKind: SessionKind, sid: string) {
@@ -109,9 +123,16 @@ type ResolveSessionResult =
   | { user: null; authSession: null; failureReason: "session_replaced" | "account_disabled" | null };
 
 async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<ResolveSessionResult> {
+  if (!ENV.cookieSecret) return { user: null, authSession: null, failureReason: null };
+  let payload: unknown;
   try {
-    if (!ENV.cookieSecret) return { user: null, authSession: null, failureReason: null };
-    const payload = jwt.verify(token, ENV.cookieSecret);
+    payload = jwt.verify(token, ENV.cookieSecret);
+  } catch {
+    // Only cryptographically invalid/expired tokens may be discarded here.
+    if (source === "cookie") clearSessionCookie(res, req);
+    return { user: null, authSession: null, failureReason: null };
+  }
+  try {
     const normalized = normalizeSessionPayload(req, payload);
     if (!normalized) return { user: null, authSession: null, failureReason: null };
     if (!normalized.sid) {
@@ -119,7 +140,8 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
       return { user: null, authSession: null, failureReason: "session_replaced" };
     }
 
-    const found = await db.getUserById(normalized.userId);
+    const identity = await authReads.run(() => getAuthSessionIdentity(normalized.userId, normalized.sid!, normalized.kind));
+    const found = identity?.user;
     if (!found) return { user: null, authSession: null, failureReason: null };
 
     // Account state is checked while resolving the token, before any public
@@ -131,7 +153,7 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     }
 
     const sessionKind = normalized.kind;
-    const activeSession = await getActiveAuthSession(found.id, normalized.sid, sessionKind);
+    const activeSession = identity?.session;
     if (!activeSession) {
       if (source === "cookie") clearSessionCookie(res, req);
       return {
@@ -166,16 +188,19 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
       },
     };
   } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    if (isDatabaseBusyError(error)) {
+      throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: SERVICE_BUSY_MESSAGE, cause: error });
+    }
     if (describeDatabaseError(error) || databaseHealth.snapshot().state === "unavailable") {
       databaseHealth.unavailable(error);
       // A DB outage is not evidence that a cookie is invalid. Keep the session
       // for recovery, but never bypass account/session checks or grant access.
       throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
     }
-    if (source === "cookie") {
-      clearSessionCookie(res, req);
-    }
-    return { user: null, authSession: null, failureReason: null };
+    // Unknown database/service errors are not an authentication decision either.
+    // Fail closed, but keep credentials so recovery needs no fresh login.
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "登录验证暂时失败，请稍后重试", cause: error });
   }
 }
 

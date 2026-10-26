@@ -78,6 +78,7 @@ import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatur
 import { normalizeForwardProtocolSettings } from "@shared/forwardTypes";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { pollingInterval, visiblePollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
@@ -1251,7 +1252,7 @@ function HostsContent() {
   const managementCountsQuery = trpc.hosts.managementCounts.useQuery(undefined, {
     enabled: user?.role === "admin",
     staleTime: 25_000,
-    refetchInterval: hostListRefreshInterval,
+    refetchInterval: adaptivePollingInterval(hostListRefreshInterval),
     refetchOnWindowFocus: true,
   });
   const hostPageQuery = trpc.hosts.listPage.useQuery({
@@ -1261,7 +1262,7 @@ function HostsContent() {
     groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
   }, {
     enabled: activeManageTab === "hosts",
-    refetchInterval: hostListRefreshInterval,
+    refetchInterval: adaptivePollingInterval(hostListRefreshInterval),
     refetchOnWindowFocus: true,
     staleTime: 25_000,
     placeholderData: (previousData) => previousData,
@@ -1388,7 +1389,7 @@ function HostsContent() {
   );
   const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery({ hostIds: currentPageHostIds }, {
     enabled: !isHostMapView && !needsFullHostList && !!hostLiveRefreshInterval && currentPageHostIds.length > 0,
-    refetchInterval: hostLiveRefreshInterval,
+    refetchInterval: adaptivePollingInterval(hostLiveRefreshInterval),
     refetchOnWindowFocus: false,
     placeholderData: (previousData: any) => previousData,
   });
@@ -1510,7 +1511,7 @@ function HostsContent() {
     groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
   }, {
     enabled: activeManageTab === "hosts",
-    refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
+    refetchInterval: adaptivePollingInterval(hostLiveRefreshInterval || pollingInterval("slow")),
     placeholderData: (previousData) => previousData,
   });
   const effectiveHostSummary = hostSummary;
@@ -2021,10 +2022,10 @@ function HostsContent() {
     }, hostLiveRefreshInterval);
     return () => window.clearInterval(timer);
   }, [hostLiveRefreshInterval, pagedHostIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
+  const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: adaptivePollingInterval(pollingInterval("slow")) });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedMetricHostIds },
-    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
+    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: adaptivePollingInterval(hostLiveRefreshInterval) }
   );
   const hostTrafficById = useMemo(() => {
     const map = new Map<number, any>();
@@ -2033,7 +2034,7 @@ function HostsContent() {
   }, [hostTrafficRows]);
   const { data: hostLatestMetricRows = [] } = trpc.hosts.latestMetricsSummary.useQuery(
     { hostIds: pagedMetricHostIds },
-    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
+    { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: adaptivePollingInterval(hostLiveRefreshInterval) }
   );
   const hostLatestMetricById = useMemo(() => {
     const map = new Map<number, any>();

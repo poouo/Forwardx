@@ -7,7 +7,7 @@ import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
 import { getMissingBundledAgentAssets } from "../agentAssets";
-import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
+import { pushTunnelEndpointRefresh, requireHostAccess, requireHostsAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
@@ -761,10 +761,10 @@ export const hostsRouter = router({
         }
         const scope = await visibleHostQueryScope(ctx.user);
         const pageQuery = { ...input, ...scope, orderByGroups: ctx.user.role === "admin" };
-        const [pageData, groups] = await Promise.all([
+        const [pageData, groupCounts] = await Promise.all([
           displayQueries.get(ctx.user, "hosts.page", pageQuery,
             () => db.getHostsPage(pageQuery), { ttlMs: 2000, staleMs: 0 }),
-          ctx.user.role === "admin" ? db.getHostGroups() : Promise.resolve([]),
+          ctx.user.role === "admin" ? displayQueries.get(ctx.user, "hosts.groupCounts", null, () => db.getHostGroupCounts()) : Promise.resolve({}),
         ]);
         const items = await clearCompletedHostAgentUpgradeRequests(pageData.items as any[]);
         scheduleHostGeoRefresh(items);
@@ -778,11 +778,6 @@ export const hostsRouter = router({
           if (row.online) onlineOutdatedItems += count;
           else offlineUpgradeableItems += count;
         }
-        const groupCounts = Object.fromEntries((groups as any[]).map((group) => [
-          Number(group.id),
-          (group.hostIds || group.members?.map((member: any) => member.hostId) || [])
-            .filter((hostId: unknown) => Number(hostId) > 0).length,
-        ]));
         return {
           ...pageData,
           items: items.map(compactHostForList),
@@ -1397,7 +1392,7 @@ export const hostsRouter = router({
           .map((id) => Number(id))
           .filter((id) => Number.isInteger(id) && id > 0)));
         if (hostIds.length === 0) return [];
-        for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
+        await requireHostsAccess(ctx, hostIds);
         const rows = await displayQueries.metrics("hosts.metrics", hostIds, () => db.getLatestHostMetricRows(hostIds));
         return (rows as any[]).map(compactHostMetricSummary).filter((row) => row.hostId > 0);
       }),
@@ -1415,7 +1410,7 @@ export const hostsRouter = router({
           .filter((id) => Number.isInteger(id) && id > 0)));
         if (ctx.user.role !== "admin" && hostIds.length === 0) return [];
         if (ctx.user.role !== "admin" || hostIds.length > 0) {
-          for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
+          await requireHostsAccess(ctx, hostIds);
           const rows = await displayQueries.metrics("hosts.traffic", hostIds, () => db.getHostTrafficSummary(hostIds));
           return (rows as any[]).map(compactHostTrafficSummary).filter((row) => row.hostId > 0);
         }
@@ -1448,11 +1443,8 @@ export const hostsRouter = router({
     watchMetrics: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(200) }))
       .mutation(async ({ input, ctx }) => {
-        const allowed: number[] = [];
-        for (const hostId of input.hostIds) {
-          await requireHostAccess(ctx, hostId);
-          allowed.push(hostId);
-        }
+        await requireHostsAccess(ctx, input.hostIds);
+        const allowed = Array.from(new Set(input.hostIds));
         const newlyWatched = markHostMetricsWatching(allowed);
         for (const hostId of newlyWatched) pushAgentRefresh(hostId, "metrics-watch");
         return { success: true, count: allowed.length };

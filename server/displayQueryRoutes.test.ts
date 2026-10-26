@@ -49,7 +49,36 @@ test("cached display routes keep ownership, live permission checks and write inv
     assert.equal((await a.hosts.listPage(query)).items.length, 0);
     assert.equal((await b.hosts.statusSummary({ hostIds: [1] })).length, 1);
     await assert.rejects(a.hosts.trafficSummary({ hostIds: [1] }), /无权访问/);
+    await assert.rejects(a.hosts.latestMetricsSummary({ hostIds: [1] }), /无权访问/);
+    await assert.rejects(a.hosts.watchMetrics({ hostIds: [1] }), /无权访问/);
     await b.hosts.trafficSummary({ hostIds: [1] });
+    // Live batch access does not query hosts/permissions once per visible row.
+    const { requireHostsAccess, requireHostAccess } = await import("./routers/helpers");
+    await runtime.executeRaw("INSERT INTO hosts (id,name,ip,userId) VALUES (2,'owned','192.0.2.2',2),(3,'private','192.0.2.3',3)");
+    assert.equal((await requireHostsAccess({ user: { id: 2, role: "user" } }, [2,2]))[0].id, 2);
+    assert.equal((await requireHostsAccess({ user: { id: 1, role: "admin" } }, [1,2,3])).length, 3);
+    await assert.rejects(requireHostsAccess({ user: { id: 2, role: "user" } }, [2,3]), /无权访问/);
+    await assert.rejects(requireHostsAccess({ user: { id: 1, role: "admin" } }, [1,999]), /主机不存在/);
+    const inputs = [1,2,3];
+    await runtime.withSqliteExclusive((sqlite) => {
+      sqlite.exec("INSERT INTO user_host_permissions (userId,hostId) VALUES (2,1),(2,3)");
+    });
+    let queries = 0;
+    const sqlite = runtime.requireSqlite();
+    const originalPrepare = sqlite.prepare;
+    sqlite.prepare = function (this: typeof sqlite, ...args: Parameters<typeof originalPrepare>) { queries++; return originalPrepare.apply(this, args); } as typeof originalPrepare;
+    try {
+      await requireHostsAccess({ user: { id: 2, role: "user" } }, inputs);
+      assert.equal(queries, 2, "one host query and one direct permission query for the whole batch");
+      queries = 0;
+      for (const id of inputs) await requireHostAccess({ user: { id: 2, role: "user" } }, id);
+      assert.equal(queries, 5, "the former loop issues one host read per row plus shared permission reads");
+    } finally { sqlite.prepare = originalPrepare; }
+    await runtime.executeRaw("DELETE FROM user_host_permissions WHERE userId=2 AND hostId=3");
+    await runtime.executeRaw("INSERT INTO user_subscriptions (id,userId,planId,status,planSnapshot,expiresAt) VALUES (1,2,99,'active',?,?)", [JSON.stringify({ name: "Test", hostIds: [3] }), Math.floor(Date.now() / 1000) + 60]);
+    assert.equal((await requireHostsAccess({ user: { id: 2, role: "user" } }, [3]))[0].id, 3);
+    await runtime.executeRaw("UPDATE user_subscriptions SET expiresAt=1 WHERE id=1");
+    await assert.rejects(requireHostsAccess({ user: { id: 2, role: "user" } }, [3]), /无权访问/);
     // Existing rules stay editable/visible after their resource was revoked.
     assert.equal((await a.rules.listPage(query)).items[0].resourceAccessAllowed, false);
     assert.ok(displayQueries.stats().entries > 0);

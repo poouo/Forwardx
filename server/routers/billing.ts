@@ -24,13 +24,15 @@ function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: strin
   return ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
 }
 
+async function billingFeatureStatus() {
+  const settings = await db.getSettings(["redemptionEnabled", "discountEnabled"]);
+  return { redemptionEnabled: settings.redemptionEnabled !== "false", discountEnabled: settings.discountEnabled !== "false" };
+}
+
 export const billingRouter = router({
   summary: adminProcedure.query(async () => db.getBillingAdminSummary()),
 
-  featureStatus: protectedProcedure.query(async () => ({
-    redemptionEnabled: (await db.getSetting("redemptionEnabled")) !== "false",
-    discountEnabled: (await db.getSetting("discountEnabled")) !== "false",
-  })),
+  featureStatus: protectedProcedure.query(billingFeatureStatus),
 
   setFeatureStatus: adminProcedure
     .input(z.object({
@@ -38,14 +40,13 @@ export const billingRouter = router({
       discountEnabled: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
-      if (input.redemptionEnabled !== undefined) await db.setSetting("redemptionEnabled", input.redemptionEnabled ? "true" : "false");
-      if (input.discountEnabled !== undefined) await db.setSetting("discountEnabled", input.discountEnabled ? "true" : "false");
+      const updates: Record<string, string> = {};
+      if (input.redemptionEnabled !== undefined) updates.redemptionEnabled = input.redemptionEnabled ? "true" : "false";
+      if (input.discountEnabled !== undefined) updates.discountEnabled = input.discountEnabled ? "true" : "false";
+      await db.setSettings(updates);
       clearForwardxAiSettingsCache();
       appendPanelLog("info", `[Billing] feature status updated redemption=${input.redemptionEnabled ?? "-"} discount=${input.discountEnabled ?? "-"}`);
-      return {
-        redemptionEnabled: (await db.getSetting("redemptionEnabled")) !== "false",
-        discountEnabled: (await db.getSetting("discountEnabled")) !== "false",
-      };
+      return billingFeatureStatus();
     }),
 
   me: protectedProcedure.query(async ({ ctx }) => {

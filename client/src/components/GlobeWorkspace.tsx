@@ -5,6 +5,7 @@ import { t } from "@/i18n";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import { Button } from "@/components/ui/button";
+import { trackGlobeTooltip } from "@/lib/globeTooltipPosition";
 
 export function globeTooltip({ title, color, status, rows, action }: {
   title: string; color: string; status?: string;
@@ -60,6 +61,10 @@ export function useGlobeScene(hovered: boolean) {
   const { resolvedTheme } = useTheme();
   const motionEnabled = useMotionEnabled();
   const [primary, setPrimary] = useState("#236de9");
+  useEffect(() => {
+    const element = containerRef.current;
+    if (element) return trackGlobeTooltip(element);
+  }, []);
   useEffect(() => {
     const root = document.documentElement;
     const update = () => {
@@ -146,7 +151,7 @@ export function GlobeWorkspace({ title, subtitle, stats, scene, sidebar, childre
       <div className="grid min-w-0 xl:grid-cols-[minmax(0,1fr)_19rem]">
         <div ref={scene.containerRef} className="globe-stage relative min-w-0 overflow-hidden" style={{ height: scene.size.height }}>
           <div className="globe-orbit globe-orbit-outer" aria-hidden="true" /><div className="globe-orbit globe-orbit-inner" aria-hidden="true" />
-          <div className="absolute inset-0 z-[1]"><GlobeSceneBoundary>{children}</GlobeSceneBoundary></div>
+          <div className="absolute inset-0"><GlobeSceneBoundary>{children}</GlobeSceneBoundary></div>
           {empty && <div className="pointer-events-none absolute inset-0 z-[2] grid place-items-center px-8"><div className="rounded-xl border border-border/60 bg-card/90 px-5 py-3 text-center text-sm text-muted-foreground shadow-sm">{empty}</div></div>}
           <div className="pointer-events-none absolute inset-x-4 bottom-4 z-[3] flex items-end justify-between gap-3">
             <div className="space-y-2 text-[11px] text-muted-foreground"><div className="flex flex-wrap items-center gap-3">{legend}</div><p className="flex items-center gap-1.5"><ScanLine className="h-3.5 w-3.5" />{t("拖动旋转 · 滚轮缩放")}</p></div>

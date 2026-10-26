@@ -2,6 +2,23 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { runHistoryMaintenance } from "./historyMaintenance";
+import { LATENCY_HISTORY_DAYS, LATENCY_HISTORY_HOURS } from "../shared/latencyHistory";
+
+test("all latency and availability histories use scheduled 30-day retention", () => {
+  assert.equal(LATENCY_HISTORY_DAYS, 30);
+  assert.equal(LATENCY_HISTORY_HOURS, 720);
+  const scheduler = fs.readFileSync(new URL("./scheduler.ts", import.meta.url), "utf8");
+  for (const name of ["cleanOldTcpingStats", "cleanOldTunnelLatencyStats", "cleanOldHostProbeServiceStats"]) {
+    assert.ok(scheduler.includes(`db.${name}(LATENCY_HISTORY_HOURS)`), name);
+  }
+  assert.match(scheduler, /\["host-availability", cleanOldHostAvailability\]/);
+  const availability = fs.readFileSync(new URL("./repositories/hostAvailabilityRepository.ts", import.meta.url), "utf8");
+  assert.match(availability, /deleteExpiredHistoryRows\("host_availability_intervals", "endAt",[^;]*LATENCY_HISTORY_HOURS \* 3600/);
+  const metrics = fs.readFileSync(new URL("./repositories/metricsRepository.ts", import.meta.url), "utf8");
+  for (const table of ["tcping_stats", "tunnel_latency_stats", "forward_group_latency_stats", "probe_counter_snapshots"]) {
+    assert.ok(metrics.includes(`deleteExpiredHistoryRows("${table}", "recordedAt", cutoff)`), table);
+  }
+});
 
 test("history cleanup is serial and a failed table does not skip later jobs", async () => {
   const calls: string[] = [];

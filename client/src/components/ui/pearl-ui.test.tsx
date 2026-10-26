@@ -123,8 +123,8 @@ test("shared dialogs scroll long forms within short viewports instead of clippin
 test("dashboard background polling does not flash the online badge and the date uses themed colors", () => {
   const source = readFileSync("client/src/pages/Home.tsx", "utf8");
   assert.doesNotMatch(source, /dashboardRefreshing|isFetching|数据更新中/);
-  assert.match(source, /refetchInterval: pollingInterval\("normal"\)/);
-  assert.match(source, /refetchInterval: pollingInterval\("slow"\)/);
+  assert.match(source, /refetchInterval: adaptivePollingInterval\(pollingInterval\("normal"\)\)/);
+  assert.match(source, /refetchInterval: adaptivePollingInterval\(pollingInterval\("slow"\)\)/);
   assert.match(source, /dashboardRefreshFailed \? "部分数据更新失败，保留上次结果" : "系统在线"/);
   assert.match(source, /title=\{Number.isFinite\(dashboardUpdatedAt\)/);
   const date = css.match(/\.pearl-page-header \.pearl-spec-plate\s*\{([^}]+)\}/)?.[1];

@@ -111,6 +111,19 @@ export async function getHostGroups(userId?: number) {
   return rows.map((row: any) => mapHostGroup(row, membersByGroup.get(Number(row.id)) || []));
 }
 
+/** Counts for the list header do not need every membership row in Node. */
+export async function getHostGroupCounts(): Promise<Record<number, number>> {
+  if (!await getDb()) return {};
+  const q = quoteIdentifier;
+  const rows = await queryRaw<{ id: number; count: number }>(
+    `SELECT g.${q("id")}, COUNT(m.${q("id")}) AS ${q("count")}
+       FROM ${q("host_groups")} g
+       LEFT JOIN ${q("host_group_members")} m ON m.${q("groupId")} = g.${q("id")} AND m.${q("hostId")} > 0
+      GROUP BY g.${q("id")}`,
+  );
+  return Object.fromEntries(rows.map(row => [Number(row.id), Number(row.count) || 0]));
+}
+
 export async function getHostGroupById(id: number) {
   const db = await getDb();
   if (!db) return null;

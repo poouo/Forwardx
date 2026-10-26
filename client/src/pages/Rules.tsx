@@ -69,6 +69,7 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
+import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { handoffManualTestResult } from "@/lib/manualTestCache";
 import {
   buildStableRuleProbeMap,
@@ -82,7 +83,9 @@ import {
   writeRuleStatusSnapshots,
   type RuleVisualStatusSnapshot,
 } from "@/lib/ruleStatusCache";
-import { batchOperationErrorMessage, chunkBatchItems, isBatchPortConflictError, runBatchOperations, runPortOrderedBatch } from "@/lib/batchOperations";
+import { batchOperationErrorMessage, chunkBatchItems, type BatchOperationResult } from "@/lib/batchOperations";
+import { submitRuleTask } from "@/lib/ruleTaskTracker";
+import type { RuleTaskAction, RuleTaskResult } from "@shared/ruleTaskQueue";
 import {
   RULE_TRANSFER_FILE_KIND,
   RULE_TRANSFER_FILE_VERSION,
@@ -96,7 +99,7 @@ import {
   serializeRuleTransferText,
   type RuleTransferFileRule,
 } from "@/lib/ruleTransfer";
-import { createImportedRule, parseCompatibleRuleTransferText, validateNyanpassImportTarget, type CompatibleRuleFile } from "@/lib/nyanpassImport";
+import { parseCompatibleRuleTransferText, validateNyanpassImportTarget, type CompatibleRuleFile } from "@/lib/nyanpassImport";
 import {
   filterRuleEntryAddressesForDisplay,
   getEntryAddressFamily as addressFamily,
@@ -2081,12 +2084,12 @@ function RulesContent() {
     refetchOnWindowFocus: false,
   });
   const { data: tunnels } = trpc.tunnels.options.useQuery(undefined, {
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
   const { data: forwardGroups, isFetched: forwardGroupsFetched, isError: forwardGroupsError } = trpc.forwardGroups.options.useQuery(undefined, {
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
@@ -2268,7 +2271,7 @@ function RulesContent() {
     category: ruleCategory,
     search: ruleSearchQuery,
   }, {
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
@@ -2314,7 +2317,7 @@ function RulesContent() {
     || showImportDialog;
   const fullRulesQuery = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
     enabled: needsFullRuleList,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData: any) => previousData,
@@ -2336,7 +2339,7 @@ function RulesContent() {
     search: ruleSearchQuery,
   }, {
     enabled: secondaryQueriesReady,
-    refetchInterval: pollingInterval("normal"),
+    refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
     staleTime: 10_000,
     refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
@@ -2419,13 +2422,23 @@ function RulesContent() {
   });
   const ruleReorderPending = reorderRulesMutation.isPending;
 
-  const batchCreateMutation = trpc.rules.create.useMutation();
-  const batchUpdateMutation = trpc.rules.update.useMutation();
-  const batchDeleteMutation = trpc.rules.deleteBatch.useMutation();
-  const batchToggleMutation = trpc.rules.toggle.useMutation();
-  const batchRestartMutation = trpc.rules.restart.useMutation();
-
-  const importCreateMutation = trpc.rules.create.useMutation();
+  const [ruleTaskEnqueued, setRuleTaskEnqueued] = useState(false);
+  const ruleTaskSubmitting = useRef(false);
+  const runQueuedRules = async <T, R,>(items: readonly T[], title: string, action: (item: T) => RuleTaskAction,
+    value: (result: RuleTaskResult, item: T) => R): Promise<Array<BatchOperationResult<T, R>>> => {
+    if (ruleTaskSubmitting.current) throw Error(translateText("已有批量任务正在提交或执行"));
+    if (!user) throw Error(translateText("请先登录"));
+    ruleTaskSubmitting.current = true;
+    try {
+      const task = await submitRuleTask({
+        enqueue: input => utils.client.rules.enqueueTask.mutate(input),
+        lookup: input => utils.client.rules.taskLookup.query(input),
+      }, user.id, title, items.map(action), () => setRuleTaskEnqueued(true));
+      return (task.results || []).map(result => result.status === "failed" || result.status === "cancelled"
+        ? { item: items[result.index], status: "rejected" as const, reason: Error(result.error || translateText("任务已停止，该项未执行")) }
+        : { item: items[result.index], status: "fulfilled" as const, value: value(result, items[result.index]) });
+    } finally { ruleTaskSubmitting.current = false; setRuleTaskEnqueued(false); }
+  };
 
   const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string; isForwardChain?: boolean; probeMethod?: "tcping" | "ping" } | null>(null);
   const [selfTestRule, setSelfTestRule] = useState<{ id: number; name: string } | null>(null);
@@ -3315,36 +3328,6 @@ function RulesContent() {
     return payload;
   };
 
-  const createBatchCopyRule = async (rule: any, targetType: RuleTransferScopeType, resource: any) => {
-    const sourcePort = Number(rule.sourcePort || 0);
-    try {
-      await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, sourcePort) as any);
-      return { copied: true, skipped: false };
-    } catch (error: any) {
-      if (copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
-      if (copyConflictStrategy === "auto") {
-        await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, 0) as any);
-        return { copied: true, skipped: false };
-      }
-      return { copied: false, skipped: true };
-    }
-  };
-
-  const updateBatchRuleTarget = async (rule: any) => {
-    const sourcePort = Number(rule.sourcePort || 0);
-    try {
-      await batchUpdateMutation.mutateAsync(buildBatchEditRulePayload(rule, sourcePort) as any);
-      return { updated: true, skipped: false };
-    } catch (error: any) {
-      if (!hasBatchEditRouteSelection || copyConflictStrategy === "error" || !isBatchPortConflictError(error)) throw error;
-      if (copyConflictStrategy === "auto") {
-        await batchUpdateMutation.mutateAsync(buildBatchEditRulePayload(rule, 0) as any);
-        return { updated: true, skipped: false };
-      }
-      return { updated: false, skipped: true };
-    }
-  };
-
   const handleCopyRules = async () => {
     if (!canAdd) {
       toast.error(translateText("当前账号没有添加转发规则的权限"));
@@ -3374,26 +3357,18 @@ function RulesContent() {
       toast.error(translateText("请选择目标") + ruleTransferScopeLabels[targetType]);
       return;
     }
-    const targetNames = selectedTargets.map((resource: any) => (
-      `${getTransferResourceLabel(targetType, resource)} (#${Number(resource.id)})`
-    ));
-    const targetSummary = targetNames.length <= 3
-      ? targetNames.join("、")
-      : translateText("{0} 等 {1} 个目标", [targetNames.slice(0, 3).join("、"), targetNames.length]);
     setCopyWorking(true);
     let copied = 0;
-    let skipped = 0;
     try {
       const jobs: Array<{ resource: any; rule: any }> = selectedTargets.flatMap((resource: any) => (
         copySelectedRules.map((rule: any) => ({ resource, rule }))
       ));
-      const results = await runBatchOperations(jobs, 6, ({ resource, rule }) => (
-        createBatchCopyRule(rule, targetType, resource)
-      ));
+      const results = await runQueuedRules(jobs, "批量复制", ({ resource, rule }) => ({ operation: "create",
+        input: buildBatchCopyRulePayload(rule, targetType, resource, Number(rule.sourcePort || 0)), conflictStrategy: copyConflictStrategy,
+      }), result => ({ copied: result.status === "succeeded", skipped: result.status === "skipped" }));
       for (const result of results) {
         if (result.status === "rejected") continue;
         if (result.value.copied) copied += 1;
-        if (result.value.skipped) skipped += 1;
       }
       await Promise.all([
         utils.rules.list.invalidate(),
@@ -3405,12 +3380,7 @@ function RulesContent() {
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        toast.error(translateText("批量复制完成：成功 {0} 条，跳过 {1} 条，失败 {2} 条。{3}", [copied, skipped, failures.length, batchOperationErrorMessage(failures[0].reason)]));
-      } else {
-        toast.success(translateText("已复制 {0} 条规则到 {1}{2}", [copied, targetSummary, skipped ? translateText("，跳过 ") + skipped + translateText(" 条") : ""]));
-        if (copied > 0) setShowCopyDialog(false);
-      }
+      if (!failures.length && copied > 0) setShowCopyDialog(false);
     } catch (error: any) {
       toast.error(translateText("批量复制处理失败：") + (error?.message || translateText("请检查目标配置")));
     } finally {
@@ -3445,13 +3415,13 @@ function RulesContent() {
     }
     setCopyWorking(true);
     let updated = 0;
-    let skipped = 0;
     try {
-      const results = await runBatchOperations(copySelectedRules, 6, (rule) => updateBatchRuleTarget(rule));
+      const results = await runQueuedRules(copySelectedRules, "批量编辑", (rule: any) => ({ operation: "update",
+        input: buildBatchEditRulePayload(rule, Number(rule.sourcePort || 0)), conflictStrategy: hasBatchEditRouteSelection ? copyConflictStrategy : "error",
+      }), result => ({ updated: result.status === "succeeded", skipped: result.status === "skipped" }));
       for (const result of results) {
         if (result.status === "rejected") continue;
         if (result.value.updated) updated += 1;
-        if (result.value.skipped) skipped += 1;
       }
       invalidateRuleProbeStatuses(results
         .filter((result) => result.status === "fulfilled" && result.value.updated)
@@ -3466,12 +3436,7 @@ function RulesContent() {
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
       const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        toast.error(translateText("批量编辑完成：成功 {0} 条，跳过 {1} 条，失败 {2} 条。{3}", [updated, skipped, failures.length, batchOperationErrorMessage(failures[0].reason)]));
-      } else {
-        toast.success(translateText("已批量编辑 ") + updated + translateText(" 条规则") + (skipped ? translateText("，跳过 ") + skipped + translateText(" 条") : ""));
-        if (updated > 0) setShowCopyDialog(false);
-      }
+      if (!failures.length && updated > 0) setShowCopyDialog(false);
     } catch (error: any) {
       toast.error(translateText("批量编辑处理失败：") + (error?.message || translateText("请检查目标配置")));
     } finally {
@@ -3507,23 +3472,14 @@ function RulesContent() {
 
   const handleBatchRuleOperation = async (operation: "enable" | "pause" | "restart") => {
     if (copyActionPending || !copySelectedRules.length) return;
-    const label = operation === "enable" ? translateText("启用") : operation === "pause" ? translateText("暂停") : translateText("重启");
     setCopyWorking(true);
     try {
-      const results = await runBatchOperations(copySelectedRules, 4, async (rule) => {
-        const id = Number(rule.id);
-        if (operation === "restart") return batchRestartMutation.mutateAsync({ id });
-        return batchToggleMutation.mutateAsync({ id, isEnabled: operation === "enable" });
-      });
+      const results = await runQueuedRules(copySelectedRules, operation === "enable" ? "批量启用" : operation === "pause" ? "批量暂停" : "批量重启", (rule: any) => ({
+        operation: operation === "restart" ? "restart" : "toggle",
+        input: operation === "restart" ? { id: Number(rule.id) } : { id: Number(rule.id), isEnabled: operation === "enable" }, conflictStrategy: "error",
+      }), result => result.value || {});
       const failures = results.filter((result) => result.status === "rejected");
-      const skipped = results.filter((result) => result.status === "fulfilled" && "skipped" in result.value && result.value.skipped).length;
-      const succeeded = results.length - failures.length - skipped;
       setCopyRuleIds(failures.map((result) => Number(result.item.id)));
-      if (failures.length) {
-        toast.error(translateText("批量{0}：成功 {1} 条，跳过 {2} 条，失败 {3} 条。{4}", [label, succeeded, skipped, failures.length, batchOperationErrorMessage(failures[0].reason)]));
-      } else {
-        toast.success(translateText("批量{0}：成功 {1} 条，跳过 {2} 条", [label, succeeded, skipped]));
-      }
       await refreshBatchRuleState();
     } catch (error) {
       toast.error(batchOperationErrorMessage(error));
@@ -3547,9 +3503,8 @@ function RulesContent() {
     setCopyWorking(true);
     try {
       const requestedIds = Array.from(new Set(copySelectedRules.map((rule: any) => Number(rule.id))));
-      const chunkResults = await runBatchOperations(chunkBatchItems(requestedIds, 500), 2, (ids) => (
-        batchDeleteMutation.mutateAsync({ ids })
-      ));
+      const chunkResults = await runQueuedRules(requestedIds, "批量删除", id => ({ operation: "delete", input: { id }, conflictStrategy: "error" }),
+        (_result, id) => ({ deletedIds: [id], failures: [] as Array<{ id: number; error: string }> }));
       const deletedIdList: number[] = [];
       const failures: Array<{ id: number; error: string }> = [];
       for (const chunkResult of chunkResults) {
@@ -3562,7 +3517,7 @@ function RulesContent() {
           continue;
         }
         const error = batchOperationErrorMessage(chunkResult.reason);
-        failures.push(...chunkResult.item.map((id) => ({ id: Number(id), error })));
+        failures.push({ id: Number(chunkResult.item), error });
       }
       const deletedIds = new Set(deletedIdList);
       invalidateRuleProbeStatuses(deletedIdList);
@@ -3576,11 +3531,6 @@ function RulesContent() {
         utils.rules.personalGroups.invalidate(),
       ]);
       if (showCopyDialog) await fullRulesQuery.refetch();
-      if (failures.length > 0) {
-        toast.error(translateText("批量删除完成：成功 {0} 条，失败 {1} 条。{2}", [deletedIdList.length, failures.length, failures[0]?.error || translateText("请稍后重试")]));
-      } else {
-        toast.success(translateText("已删除 ") + deletedIdList.length + translateText(" 条规则"));
-      }
     } catch (error: any) {
       toast.error(translateText("批量删除失败：") + (error?.message || translateText("请稍后重试")));
     } finally {
@@ -3855,7 +3805,7 @@ function RulesContent() {
     return copyTargetResources.filter((resource: any) => selected.has(Number(resource.id)));
   }, [copyTargetResourceIds, copyTargetResources]);
   const copyTargetScopeLabel = ruleTransferScopeLabels[copyTargetScopeType];
-  const copyActionPending = copyWorking || importingRules || batchGroupEditor.isPending || batchCreateMutation.isPending || batchUpdateMutation.isPending || batchDeleteMutation.isPending || batchToggleMutation.isPending || batchRestartMutation.isPending;
+  const copyActionPending = copyWorking || importingRules || batchGroupEditor.isPending;
   const batchAccess = { hasRules: transferSourceRules.length > 0, canAdd, isOwnRuleScope };
   const batchCategory = ruleBatchCategory(copyManageMode);
   const batchModeLabels: Record<RuleBatchManageMode, string> = {
@@ -4147,7 +4097,7 @@ function RulesContent() {
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: pollingInterval("normal"),
+      refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
       staleTime: 5000,
       refetchOnWindowFocus: false,
       placeholderData: (previousData) => previousData,
@@ -4157,7 +4107,7 @@ function RulesContent() {
     { hours: 24, range: "24h", ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: pollingInterval("normal"),
+      refetchInterval: adaptivePollingInterval(pollingInterval("normal")),
       staleTime: 5000,
       refetchOnWindowFocus: false,
       placeholderData: (previousData) => previousData,
@@ -5479,11 +5429,10 @@ function RulesContent() {
     importingRulesRef.current = true;
     setImportingRules(true);
     try {
-      const results = await runPortOrderedBatch(importValidation.rules, 6, async (rule) => {
-        const payload = buildImportRulePayload(rule);
-        return createImportedRule(rule.sourcePort,importValidation.preservePorts,sourcePort=>importCreateMutation.mutateAsync({...payload,sourcePort}));
-      });
-      const importedCount = results.filter((result) => result.status === "fulfilled").length;
+      const orderedRules = [...importValidation.rules.filter(rule => rule.sourcePort > 0), ...importValidation.rules.filter(rule => rule.sourcePort <= 0)];
+      const results = await runQueuedRules(orderedRules, "批量导入", rule => ({ operation: "create", input: buildImportRulePayload(rule),
+        conflictStrategy: importValidation.preservePorts || rule.sourcePort <= 0 ? "error" : "auto",
+      }), result => result.value);
       const failures = results.filter((result) => result.status === "rejected");
       await Promise.all([
         utils.rules.list.invalidate(),
@@ -5508,9 +5457,7 @@ function RulesContent() {
             .map((rule) => `${rule.sourcePort > 0 ? rule.sourcePort + ":" : ""}${formatAddressWithPort(rule.targetIp, rule.targetPort)}`)
             .join("\n"));
         }
-        toast.error(translateText("批量导入完成：成功 {0} 条，失败 {1} 条，已仅保留失败项供重试。{2}", [importedCount, failures.length, batchOperationErrorMessage(failures[0].reason)]));
       } else {
-        toast.success(translateText("已导入 {0} 条规则", [importedCount]));
         setShowImportDialog(false);
         setShowCopyDialog(false);
         resetImportDialog();
@@ -7645,8 +7592,9 @@ function RulesContent() {
       <Dialog
         open={showImportDialog}
         onOpenChange={(open) => {
+          if (importingRules && !ruleTaskEnqueued) return;
           setShowImportDialog(open);
-          if (!open) resetImportDialog();
+          if (!open && !importingRules) resetImportDialog();
         }}
       >
         <DialogContent className="sm:max-w-2xl">
@@ -7716,8 +7664,8 @@ function RulesContent() {
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setShowImportDialog(false)} disabled={importingRules}>
-              {translateText("取消")}
+            <Button type="button" variant="outline" onClick={() => setShowImportDialog(false)} disabled={importingRules && !ruleTaskEnqueued}>
+              {translateText(ruleTaskEnqueued ? "后台执行" : "取消")}
             </Button>
             <Button type="button" onClick={handleImportRules} disabled={!importValidation.ok || importingRules}>
               {importingRules && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -7726,7 +7674,7 @@ function RulesContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={showCopyDialog} onOpenChange={(open) => !copyActionPending && setShowCopyDialog(open)}>
+      <Dialog open={showCopyDialog} onOpenChange={(open) => (!copyActionPending || ruleTaskEnqueued) && setShowCopyDialog(open)}>
         <DialogContent className={cn("grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden sm:max-w-[640px]", isBatchGroupMode && "h-[min(720px,85svh)]")}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -8303,7 +8251,7 @@ function RulesContent() {
             )}
           </div>
           <DialogFooter className="gap-2 border-t border-border/50 pt-3 sm:justify-between">
-            {isBatchOperateMode ? <div className="flex w-full flex-wrap items-center justify-between gap-2">
+            {ruleTaskEnqueued ? <Button variant="outline" onClick={() => setShowCopyDialog(false)}>{translateText("后台执行")}</Button> : isBatchOperateMode ? <div className="flex w-full flex-wrap items-center justify-between gap-2">
               <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
                 <Button variant="outline" onClick={() => handleBatchRuleOperation("enable")} disabled={copyActionPending || !selectedBatchRuleCount}><Play className="mr-2 h-4 w-4" />{translateText("启用")}</Button>
                 <Button variant="outline" onClick={() => handleBatchRuleOperation("pause")} disabled={copyActionPending || !selectedBatchRuleCount}><Pause className="mr-2 h-4 w-4" />{translateText("暂停")}</Button>
@@ -8441,7 +8389,7 @@ function SelfTestDialog({
     { ruleId, includeActive: optimisticTesting },
     {
       enabled: open,
-      refetchInterval: pollingInterval("interactive", open),
+      refetchInterval: adaptivePollingInterval(pollingInterval("interactive", open)),
       refetchOnWindowFocus: false,
     }
   );

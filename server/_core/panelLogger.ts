@@ -123,8 +123,16 @@ export function installPanelLogger() {
     });
   };
   runRetention();
-  const retentionTimer = setInterval(runRetention, 60 * 60 * 1000);
-  retentionTimer.unref?.();
+  const scheduleRetention = () => {
+    const next = new Date();
+    next.setHours(24, 0, 0, 0);
+    const timer = setTimeout(() => {
+      runRetention();
+      scheduleRetention();
+    }, Math.max(1_000, next.getTime() - Date.now()));
+    timer.unref?.();
+  };
+  scheduleRetention();
   const original = {
     log: console.log.bind(console),
     info: console.info.bind(console),

@@ -41,12 +41,13 @@ export async function lockTrafficBillingUserRows(userIds: number | number[]) {
   if (ids.length === 0) return;
   const q = quoteDbIdentifier;
   const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
-  for (const userId of ids) {
+  for (let offset = 0; offset < ids.length; offset += 64) {
+    const batch = ids.slice(offset, offset + 64);
     const rows = await queryRaw<{ id: number }>(
-      `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("id")} = ?${lock}`,
-      [userId],
+      `SELECT ${q("id")} AS ${q("id")} FROM ${q("users")} WHERE ${q("id")} IN (${batch.map(() => "?").join(",")}) ORDER BY ${q("id")}${lock}`,
+      batch,
     );
-    if (!rows[0]) throw new Error("User not found");
+    if (rows.length !== batch.length) throw new Error("User not found");
   }
 }
 

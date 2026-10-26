@@ -4,8 +4,8 @@ import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { getSessionCookieOptions } from "./cookies";
 import { runWithConfigAuditContext } from "../configAudit";
-import { databaseHealth } from "../databaseHealthState";
-import { DATABASE_UNAVAILABLE_MESSAGE } from "../../shared/databaseHealth";
+import { databaseHealth, isDatabaseBusyError } from "../databaseHealthState";
+import { DATABASE_UNAVAILABLE_MESSAGE, SERVICE_BUSY_MESSAGE } from "../../shared/databaseHealth";
 import { displayQueries } from "../displayQueryCache";
 
 const t = initTRPC.context<TrpcContext>().create({
@@ -24,6 +24,9 @@ const databaseSafeProcedure = t.procedure.use(async ({ next, type, ctx, path }) 
   let result;
   try { result = await next(); }
   finally { if (invalidatesDisplay) displayQueries.invalidate(ctx.user!); }
+  if (!result.ok && isDatabaseBusyError(result.error)) {
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: SERVICE_BUSY_MESSAGE, cause: result.error });
+  }
   if (!result.ok && databaseHealth.snapshot().state === "unavailable") {
     throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
   }

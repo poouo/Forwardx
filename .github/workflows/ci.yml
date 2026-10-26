@@ -100,6 +100,7 @@ jobs:
           pnpm test:port-access-limits
           pnpm test:rule-groups
           pnpm test:rule-batch
+          pnpm test:rule-tasks
           pnpm test:ai-models
           pnpm test:plan-display
           pnpm test:host-deletion

@@ -28,12 +28,13 @@ import { mapLatencyChartBucket, queryLatencyChartBuckets, queryLatestHistoryRows
 import { scopedTrafficSource } from "./trafficQueryScope";
 import { dashboardSummaries } from "../backgroundSummaryCache";
 import { billingStartOfCalendarDay } from "../../shared/billingTime";
+import { writeMysqlTrafficCounters } from "../mysqlTrafficCounters";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
 const TRAFFIC_BUCKET_RETENTION_HOURS = 72;
 const LEGACY_TRAFFIC_REPORT_RETENTION_HOURS = 7 * 24;
-const SQLITE_LATEST_METRIC_HOST_BATCH_SIZE = 100;
+const LATEST_METRIC_HOST_BATCH_SIZE = 100;
 // v3 repairs bucket gaps left by older best-effort writes. Current traffic
 // writes update raw rows, counters and buckets in one transaction.
 const TRAFFIC_BUCKET_BACKFILL_MARKER = "v3";
@@ -133,31 +134,12 @@ async function queryLatestHostMetricRows(
 ) {
   const q = quoteIdentifier;
 
-  if (getDatabaseKind() !== "sqlite") {
-    const placeholders = hostIds.map(() => "?").join(",");
-    const selected = columns.map((column) => `hm.${q(column)}`).join(",\n                  ");
-    return queryRaw<any>(
-      `SELECT ${columns.map((column) => `ranked.${q(column)}`).join(",\n              ")},
-              ranked.rn
-         FROM (
-           SELECT ${selected},
-                  ROW_NUMBER() OVER (
-                    PARTITION BY hm.${q("hostId")}
-                    ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
-                  ) AS rn
-             FROM ${q("host_metrics")} hm
-            WHERE hm.${q("hostId")} IN (${placeholders})
-         ) ranked
-        WHERE ranked.rn <= 2
-        ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
-      hostIds,
-    );
-  }
-
+  // Seek the last two samples per host on every dialect. Window-ranking the
+  // entire retained history makes a tiny live summary grow with history size.
   const sortedHostIds = [...hostIds].sort((a, b) => a - b);
   const rows: any[] = [];
-  for (let offset = 0; offset < sortedHostIds.length; offset += SQLITE_LATEST_METRIC_HOST_BATCH_SIZE) {
-    const batch = sortedHostIds.slice(offset, offset + SQLITE_LATEST_METRIC_HOST_BATCH_SIZE);
+  for (let offset = 0; offset < sortedHostIds.length; offset += LATEST_METRIC_HOST_BATCH_SIZE) {
+    const batch = sortedHostIds.slice(offset, offset + LATEST_METRIC_HOST_BATCH_SIZE);
     const innerColumns = columns.map((column) => q(column)).join(", ");
     const outerColumns = columns.map((column) => `recent.${q(column)}`).join(", ");
     const perHostQueries = batch.map(() => (
@@ -723,19 +705,20 @@ async function upsertUserTrafficCountersBatch(rows: AggregatedTrafficRow[]) {
     aggregate.connections += row.connections;
     byUser.set(row.userId, aggregate);
   }
-  const values = Array.from(byUser.values());
+  const values = Array.from(byUser.values()).sort((left, right) => left.userId - right.userId);
   if (values.length === 0) return;
   const q = quoteIdentifier;
   const nowSec = epochSeconds(nowDate());
   const columns = ["userId", "bytesIn", "bytesOut", "connections", "createdAt", "updatedAt"];
   const kind = getDatabaseKind();
-  const suffix = kind === "mysql"
-    ? ` ON DUPLICATE KEY UPDATE
-         ${q("bytesIn")} = ${q("bytesIn")} + VALUES(${q("bytesIn")}),
-         ${q("bytesOut")} = ${q("bytesOut")} + VALUES(${q("bytesOut")}),
-         ${q("connections")} = ${q("connections")} + VALUES(${q("connections")}),
-         ${q("updatedAt")} = VALUES(${q("updatedAt")})`
-    : ` ON CONFLICT (${q("userId")}) DO UPDATE SET
+  if (kind === "mysql") {
+    await writeMysqlTrafficCounters({ table: "user_traffic_counters", columns, keys: ["userId"],
+      rows: values.map(row => [row.userId, row.bytesIn, row.bytesOut, row.connections, nowSec, nowSec]),
+      add: ["bytesIn", "bytesOut", "connections"], replace: ["updatedAt"],
+    }, { query: queryRaw, execute: executeRaw });
+    return;
+  }
+  const suffix = ` ON CONFLICT (${q("userId")}) DO UPDATE SET
          ${q("bytesIn")} = ${kind === "postgresql" ? `${q("user_traffic_counters")}.${q("bytesIn")}` : q("bytesIn")} + ${kind === "postgresql" ? "EXCLUDED" : "excluded"}.${q("bytesIn")},
          ${q("bytesOut")} = ${kind === "postgresql" ? `${q("user_traffic_counters")}.${q("bytesOut")}` : q("bytesOut")} + ${kind === "postgresql" ? "EXCLUDED" : "excluded"}.${q("bytesOut")},
          ${q("connections")} = ${kind === "postgresql" ? `${q("user_traffic_counters")}.${q("connections")}` : q("connections")} + ${kind === "postgresql" ? "EXCLUDED" : "excluded"}.${q("connections")},
@@ -756,16 +739,16 @@ async function upsertForwardRuleTrafficCountersBatch(rows: AggregatedTrafficRow[
   const nowSec = epochSeconds(nowDate());
   const columns = ["ruleId", "hostId", "userId", "bytesIn", "bytesOut", "connections", "createdAt", "updatedAt"];
   const kind = getDatabaseKind();
+  if (kind === "mysql") {
+    await writeMysqlTrafficCounters({ table: "forward_rule_traffic_counters", columns, keys: ["ruleId", "hostId"],
+      rows: rows.map(row => [row.ruleId, row.hostId, row.userId, row.bytesIn, row.bytesOut, row.connections, nowSec, nowSec]),
+      add: ["bytesIn", "bytesOut", "connections"], replace: ["userId", "updatedAt"],
+    }, { query: queryRaw, execute: executeRaw });
+    return;
+  }
   const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
   const current = (column: string) => kind === "postgresql" ? `${q("forward_rule_traffic_counters")}.${q(column)}` : q(column);
-  const suffix = kind === "mysql"
-    ? ` ON DUPLICATE KEY UPDATE
-         ${q("userId")} = VALUES(${q("userId")}),
-         ${q("bytesIn")} = ${q("bytesIn")} + VALUES(${q("bytesIn")}),
-         ${q("bytesOut")} = ${q("bytesOut")} + VALUES(${q("bytesOut")}),
-         ${q("connections")} = ${q("connections")} + VALUES(${q("connections")}),
-         ${q("updatedAt")} = VALUES(${q("updatedAt")})`
-    : ` ON CONFLICT (${q("ruleId")}, ${q("hostId")}) DO UPDATE SET
+  const suffix = ` ON CONFLICT (${q("ruleId")}, ${q("hostId")}) DO UPDATE SET
          ${q("userId")} = ${excluded}.${q("userId")},
          ${q("bytesIn")} = ${current("bytesIn")} + ${excluded}.${q("bytesIn")},
          ${q("bytesOut")} = ${current("bytesOut")} + ${excluded}.${q("bytesOut")},
@@ -803,16 +786,16 @@ async function upsertTrafficStatBucketsBatch(rows: AggregatedTrafficRow[]) {
   const nowSec = epochSeconds(nowDate());
   const columns = ["bucketStart", "bucketMinutes", "userId", "ruleId", "hostId", "bytesIn", "bytesOut", "connections", "updatedAt"];
   const kind = getDatabaseKind();
+  if (kind === "mysql") {
+    await writeMysqlTrafficCounters({ table: "traffic_stat_buckets", columns, keys: ["bucketStart", "bucketMinutes", "ruleId", "hostId"],
+      rows: Array.from(byBucket.values()).map(row => [row.bucketStart, TRAFFIC_BUCKET_MINUTES, row.userId, row.ruleId, row.hostId, row.bytesIn, row.bytesOut, row.connections, nowSec]),
+      add: ["bytesIn", "bytesOut", "connections"], replace: ["userId", "updatedAt"],
+    }, { query: queryRaw, execute: executeRaw });
+    return;
+  }
   const excluded = kind === "postgresql" ? "EXCLUDED" : "excluded";
   const current = (column: string) => kind === "postgresql" ? `${q("traffic_stat_buckets")}.${q(column)}` : q(column);
-  const suffix = kind === "mysql"
-    ? ` ON DUPLICATE KEY UPDATE
-         ${q("userId")} = VALUES(${q("userId")}),
-         ${q("bytesIn")} = ${q("bytesIn")} + VALUES(${q("bytesIn")}),
-         ${q("bytesOut")} = ${q("bytesOut")} + VALUES(${q("bytesOut")}),
-         ${q("connections")} = ${q("connections")} + VALUES(${q("connections")}),
-         ${q("updatedAt")} = VALUES(${q("updatedAt")})`
-    : ` ON CONFLICT (${q("bucketStart")}, ${q("bucketMinutes")}, ${q("ruleId")}, ${q("hostId")}) DO UPDATE SET
+  const suffix = ` ON CONFLICT (${q("bucketStart")}, ${q("bucketMinutes")}, ${q("ruleId")}, ${q("hostId")}) DO UPDATE SET
          ${q("userId")} = ${excluded}.${q("userId")},
          ${q("bytesIn")} = ${current("bytesIn")} + ${excluded}.${q("bytesIn")},
          ${q("bytesOut")} = ${current("bytesOut")} + ${excluded}.${q("bytesOut")},
