@@ -24,6 +24,7 @@ test("real tunnel reports refresh gated live samples and incomplete snapshots wi
       const { tunnelProbeTopologyKey } = await load("server/probeTopology.ts");
       const insert = (table, columns, values) => runtime.executeRaw('INSERT INTO "' + table + '" ('
         + columns.map(c => '"' + c + '"').join(',') + ') VALUES (' + values.map(() => '?').join(',') + ')', values);
+      await runtime.insertAndGetId("users", { id: 7, username: "report-admin", password: "unused", role: "admin", accountEnabled: true });
       for (const id of [11,12,20,30,99]) await insert("hosts",
         ["id","name","ip","hostType","agentToken","userId"], [id,"host-"+id,"192.0.2."+id,"slave","probe-token-"+id,7]);
       await insert("forward_groups", ["id","name","groupMode","groupType","targetIp","userId"],

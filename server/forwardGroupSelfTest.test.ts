@@ -37,7 +37,10 @@ test("group rule tests follow active host/tunnel members and persist their selec
       return result;
     };
     try {
-      for (let id = 1; id <= 4; id++) await insert("hosts", { id, name: "host-" + id, ip: "198.51.100." + id, ipv4: "198.51.100." + id, userId: 1, isOnline: 1, agentToken: "token-" + id, lastHeartbeat: id === 1 ? now - 600 : now });
+      // Agents belong to an enabled administrator; the rule caller stays a regular user.
+      await insert("users", { id: 1000, username: "agent-admin", password: "unused", role: "admin", accountEnabled: 1 });
+      await insert("users", { id: 1, username: "rule-user", password: "unused", role: "user", accountEnabled: 1 });
+      for (let id = 1; id <= 4; id++) await insert("hosts", { id, name: "host-" + id, ip: "198.51.100." + id, ipv4: "198.51.100." + id, userId: 1000, isOnline: 1, agentToken: "token-" + id, lastHeartbeat: id === 1 ? now - 600 : now });
       await insert("forward_groups", { id: 10, name: "failover", groupMode: "failover", groupType: "host", userId: 1, domain: "entry.example.test", activeMemberId: 102, isEnabled: 1, targetIp: "203.0.113.10" });
       for (const [id, hostId, priority] of [[101, 1, 0], [102, 2, 1]]) await insert("forward_group_members", { id, groupId: 10, memberType: "host", hostId, priority, isEnabled: 1 });
       const rule = { userId: 1, name: "my-rule", sourcePort: 18000, targetIp: "203.0.113.10", targetPort: 443, forwardType: "gost", protocol: "tcp", isEnabled: 1, pendingDelete: 0, forwardGroupId: 10 };

@@ -78,6 +78,7 @@ test("rule tunnel batches stream durable results, isolate generations and recove
     const details = result => JSON.parse(result.message).details;
     try {
       if (process.env.FORWARDX_PROBE_STAGE === "seed") {
+        await runtime.insertAndGetId("users", { id: 1, username: "probe-admin", password: "unused", role: "admin", accountEnabled: true });
         for (let id = 1; id <= 3; id++) await runtime.insertAndGetId("hosts", {
           id, name: "host-" + id, ip: "192.0.2." + id, ipv4: "192.0.2." + id,
           userId: 1, isOnline: true, agentToken: "token-" + id,
