@@ -6,9 +6,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:database-network": "node --import tsx --test server/databaseNetworkGuard.test.ts",
     "test:resource-traffic": "node --import tsx --test server/resourceTrafficReset.test.ts server/resourceTrafficSummary.test.ts server/portEntryGroup.test.ts client/src/components/ResourceTrafficSummary.test.tsx client/src/components/ResourceTrafficReset.test.tsx",
     "test:globe-ui": "node --import tsx --test client/src/components/GlobeWorkspace.test.tsx client/src/lib/globeTooltipPosition.test.ts client/src/components/ui/pearl-ui.test.tsx client/src/components/AnimationPreferencesCard.test.tsx client/src/components/SummaryMetricCard.test.tsx client/src/i18n/ui-coverage.test.tsx",
-    "test:security-boundaries": "node --import tsx --test server/cookieSecret.test.ts server/requestBodyParser.test.ts server/agentActionCommands.test.ts",
+    "test:security-boundaries": "node --import tsx --test server/cookieSecret.test.ts server/requestBodyParser.test.ts server/agentActionCommands.test.ts server/managementPermissions.test.ts server/mcpAccess.test.ts",
     "test:ai-models": "node --import tsx --test server/ai/models.test.ts server/ai/settings.test.ts client/src/components/AiModelSelect.test.tsx",
     "test:rule-batch": "node --import tsx --test client/src/lib/ruleBatchFlow.test.ts client/src/components/rules/PersonalRuleGroups.test.tsx server/rulesBatchOperations.test.ts server/ruleOperationOwner.test.ts server/forwardGroupToggle.test.ts",
     "test:rule-tasks": "node --import tsx --test server/ruleTaskQueue.test.ts server/ruleTaskRoutes.test.ts client/src/lib/ruleTaskTracker.test.ts client/src/components/RuleTaskNotifications.test.tsx",

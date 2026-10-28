@@ -22,6 +22,7 @@ import { ENV } from "./env";
 import { exportMigrationSnapshot, summarizeMigrationSnapshot, type MigrationSnapshotSummary } from "./migration";
 import { maintainPostgresqlDatabase } from "./postgresqlMaintenance";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
+import { guardDatabasePool, withDatabaseMaintenanceBudget } from "./databaseNetworkGuard";
 
 export type DatabaseSwitchJobStatus = "pending" | "running" | "success" | "failed";
 export type DatabaseSwitchStage =
@@ -368,13 +369,14 @@ function postgresqlPoolOptions(config: DatabaseConfig & { type: "postgresql" }):
 
 async function openTarget(config: DatabaseConfig): Promise<TargetHandle> {
   if (config.type === "mysql") {
-    const pool = mysql.createPool(mysqlPoolOptions(config));
-    await pool.query("SELECT 1");
+    const pool = guardDatabasePool(mysql.createPool(mysqlPoolOptions(config)), "mysql", getDatabasePoolSettings);
+    try { await pool.query("SELECT 1"); } catch (error) { await pool.end(); throw error; }
     return { kind: "mysql", pool };
   }
   if (config.type === "postgresql") {
-    const pool = new pg.Pool(postgresqlPoolOptions(config));
-    await pool.query("SELECT 1");
+    const pool = guardDatabasePool(new pg.Pool(postgresqlPoolOptions(config)), "postgresql", getDatabasePoolSettings);
+    pool.on("error", () => {});
+    try { await pool.query("SELECT 1"); } catch (error) { await pool.end(); throw error; }
     return { kind: "postgresql", pool };
   }
   const sqlitePath = normalizeSqlitePath(config);
@@ -795,7 +797,7 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
   jobs.set(job.id, job);
   activeJobId = job.id;
 
-  void (async () => {
+  void withDatabaseMaintenanceBudget(async () => {
     let handle: TargetHandle | null = null;
     try {
       setJobStage(job, "connection", { status: "running", progress: 5 });
@@ -868,7 +870,7 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
         activeJobId = null;
       }
     }
-  })();
+  });
 
   return job;
 }

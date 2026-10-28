@@ -759,9 +759,15 @@ install_runtime_dependencies() {
 write_env() {
   local jwt_secret="${JWT_SECRET:-}"
   if [ -z "$jwt_secret" ]; then
-    jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
+    if ! jwt_secret="$(openssl rand -hex 32 2>/dev/null)" || [[ ! "$jwt_secret" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "[ERROR] Unable to generate a cryptographically secure JWT secret; existing configuration was not changed." >&2
+      return 1
+    fi
   fi
   mkdir -p "$APP_DIR/data"
+  (umask 077
+  : >> "$APP_DIR/.env"
+  chmod 600 "$APP_DIR/.env"
   cat > "$APP_DIR/.env" <<EOF
 NODE_ENV=production
 PORT=$PORT
@@ -775,6 +781,7 @@ FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
 FORWARDX_SETUP_LANGUAGE=$SETUP_LANGUAGE
 FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgrade"
 EOF
+  )
 }
 
 register_management_command() {

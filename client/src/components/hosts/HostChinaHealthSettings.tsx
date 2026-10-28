@@ -80,13 +80,13 @@ export default function HostChinaHealthSettings({ value, onChange }: { value: Ch
   return <section className="space-y-3 rounded-lg border border-sky-500/25 bg-sky-500/5 p-3">
       <div className="grid min-w-0 grid-cols-2 gap-2.5 [&>*]:min-w-0">{([
         ["failureThreshold", "失败次数", 2, 20], ["failureSeconds", "失败时长（秒）", 30, 3600],
-        ["recoveryThreshold", "恢复次数", 2, 20], ["cooldownSeconds", "换 IP 冷却（秒）", 300, 86400],
+        ["recoveryThreshold", "恢复次数", 2, 20], ["cooldownSeconds", "商家换 IP 间隔（分钟）", 5, 1440],
         ["maxSwitchesPerDay", "24h 换 IP 上限", 1, 10],
-      ] as const).map(([key, label, min, max]) => <div className="space-y-1" key={key}><Label className="text-xs" htmlFor={`china-${key}`}>{t(label)}</Label><Input className="h-9 sm:h-8" id={`china-${key}`} type="number" min={min} max={max} value={value[key]} onChange={event => patch({ [key]: Number(event.target.value) })} /></div>)}</div>
+      ] as const).map(([key, label, min, max]) => <div className="space-y-1" key={key}><Label className="text-xs" htmlFor={`china-${key}`}>{t(label)}</Label><Input className="h-9 sm:h-8" id={`china-${key}`} type="number" min={min} max={max} value={key === "cooldownSeconds" ? value[key] / 60 : value[key]} onChange={event => patch({ [key]: key === "cooldownSeconds" ? Math.round(Number(event.target.value) * 60) : Number(event.target.value) })} /></div>)}</div>
       <Label className="flex items-center justify-between gap-3">{t("通知用户")}<Switch checked={value.notify} onCheckedChange={notify => patch({ notify })} /></Label>
       {value.notify && <UserSelect className="h-9 sm:h-8" value={value.notifyUserId ? String(value.notifyUserId) : "owner"} specialOptions={[{ value: "owner", label: t("主机所有者") }]} onValueChange={id => patch({ notifyUserId: id === "owner" ? null : Number(id) })} />}
       <Label className="flex items-center justify-between gap-3">{t("自动切换 IP")}<Switch checked={value.autoSwitch} onCheckedChange={autoSwitch => patch({ autoSwitch })} /></Label>
-      {value.autoSwitch && <p className="text-xs text-muted-foreground">{t("可能收费或重启；每次故障仅请求一次，结果不明不重试。")}</p>}
+      {value.autoSwitch && <p className="text-xs text-muted-foreground">{t("可能收费或重启；已接收或结果不明的请求不自动重试。")}</p>}
       {value.hookConfigured && <Label className="flex items-center justify-between gap-3 text-xs">{t("替换已存接口")}<Switch checked={value.replaceHook} onCheckedChange={replaceHook => patch({ replaceHook })} /></Label>}
       {showHook && <div className="space-y-3 border-t pt-3">
         <div className="space-y-1.5"><Label htmlFor="china-hook-url">{t("商家换 IP 接口地址")}</Label><Input id="china-hook-url" type="password" autoComplete="new-password" value={value.hookUrl} onChange={event => patch({ hookUrl: event.target.value })} placeholder="http://10.x.x.x/api/changeip?token=xxx" /></div>
@@ -110,6 +110,7 @@ export default function HostChinaHealthSettings({ value, onChange }: { value: Ch
             <p className="break-all">{t("可用变量：{{hostId}}、{{serviceId}}、{{ip}}、{{incidentId}}。凭据加密保存且不回显，仅通过加密任务交给对应 Agent；保存不会调用接口。")}</p>
             <p>{t("HTTP 2xx 只表示请求已接收，不代表 IP 已换好；有响应文档时建议使用 JSON 严格匹配，预期值按 JSON 类型匹配。")}</p>
             <p>{t("同步地址需要接口返回有效的新公网 IP，并刷新关联链路。商家异步接口可先不修改地址，等待 Agent 重新上报；不自动轮询商家任务。")}</p>
+            <p>{t("商家换 IP 间隔默认 60 分钟，请按商家限制配置。同一主机共用请求历史，重启或重新添加服务不会清空间隔；明确未执行的任务可在间隔结束后重试。")}</p>
           </>}
         </div>
       </details>

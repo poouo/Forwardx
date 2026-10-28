@@ -4,6 +4,7 @@ import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, 
 import { hashPassword, verifyPassword, verifyPasswordAgainstDummy } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
+import { invalidateAgentAuthTokenCandidates } from "./tokenRepository";
 import {
   AVATAR_DAILY_CHANGE_LIMIT,
   AVATAR_RANDOM_WINDOW_LIMIT,
@@ -676,16 +677,17 @@ export async function updateUserRole(userId: number, role: "user" | "admin") {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ role, updatedAt: nowDate() }).where(eq(users.id, userId));
+  invalidateAgentAuthTokenCandidates();
 }
 
 export async function deleteUser(userId: number) {
-  return withDatabaseTransaction(async () => {
+  try { return await withDatabaseTransaction(async () => {
     const db = await getDb();
     if (!db) return;
     await db.delete(ruleGroupMembers).where(eq(ruleGroupMembers.userId, userId));
     await db.delete(ruleGroups).where(eq(ruleGroups.userId, userId));
     await db.delete(users).where(eq(users.id, userId));
-  });
+  }); } finally { invalidateAgentAuthTokenCandidates(); }
 }
 
 /** 更新用户流量管理设置（管理员操作） */
@@ -745,7 +747,7 @@ export async function setUserForwardAccess(userId: number, enabled: boolean, rea
 }
 
 export async function setUserAccountEnabled(userId: number, enabled: boolean) {
-  return withDatabaseTransaction(async () => {
+  try { return await withDatabaseTransaction(async () => {
     const db = await getDb();
     if (!db) return;
     const now = nowDate();
@@ -771,7 +773,7 @@ export async function setUserAccountEnabled(userId: number, enabled: boolean) {
         eq(forwardRules.pendingDelete, false),
       ));
     }
-  });
+  }); } finally { invalidateAgentAuthTokenCandidates(); }
 }
 
 /** 手动重置用户流量 */

@@ -269,10 +269,11 @@ test("connection retries are single-flight and idle PostgreSQL errors never esca
     const runtime = await import("./server/dbRuntime.ts");
     const { databaseHealth } = await import("./server/databaseHealthState.ts");
     const config = { type: "postgresql", postgresql: { host: "127.0.0.1", port: 5432, user: "test", password: "secret", database: "test" } };
-    const original = pg.Pool.prototype.query;
+    const original = pg.Pool.prototype.connect;
     let probes = 0;
     let release;
-    pg.Pool.prototype.query = async () => { probes++; await new Promise((resolve) => { release = resolve; }); return { rows: [{ "?column?": 1 }] }; };
+    let query = async () => { probes++; await new Promise((resolve) => { release = resolve; }); return { rows: [{ "?column?": 1 }] }; };
+    pg.Pool.prototype.connect = async () => ({ query: (...args) => query(...args), release() {} });
     try {
       databaseHealth.healthy();
       const connections = Array.from({ length: 20 }, () => runtime.connectDatabase(config));
@@ -285,10 +286,10 @@ test("connection retries are single-flight and idle PostgreSQL errors never esca
       assert.doesNotThrow(() => pool.emit("error", Object.assign(new Error("administrator stopped database"), { code: "57P01" })));
       assert.equal(databaseHealth.snapshot().state, "unavailable");
       databaseHealth.healthy();
-      pg.Pool.prototype.query = async () => { throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" }); };
+      query = async () => { throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" }); };
       await assert.rejects(() => dbs[0].execute(sql.raw("SELECT 1")));
       assert.equal(databaseHealth.snapshot().state, "unavailable", "direct Drizzle queries must record actual DB failures");
-    } finally { pg.Pool.prototype.query = original; await runtime.closeDatabase(); }
+    } finally { pg.Pool.prototype.connect = original; await runtime.closeDatabase(); }
   `;
   const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { encoding: "utf8", timeout: 15_000, env: { ...process.env, DATABASE_TYPE: "postgresql" } });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);

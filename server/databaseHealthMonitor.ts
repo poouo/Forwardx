@@ -3,19 +3,20 @@ import pg from "pg";
 import { databaseHealth } from "./databaseHealthState";
 import { getSqlite, readDatabaseConfig, withSqliteExclusive, type DatabaseConfig } from "./dbRuntime";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
+import { guardDatabasePool } from "./databaseNetworkGuard";
 
 export async function probeDatabase(config: DatabaseConfig) {
   // Separate, bounded diagnostic connections cannot queue behind business
   // queries or accumulate in the main pool during an outage.
   if (config.type === "postgresql") {
-    const pool = new pg.Pool({ ...config.postgresql, ssl: config.postgresql.ssl ? true : undefined, max: 1, connectionTimeoutMillis: 3000, query_timeout: 3000 });
+    const pool = guardDatabasePool(new pg.Pool({ ...config.postgresql, ssl: config.postgresql.ssl ? true : undefined, max: 1, connectionTimeoutMillis: 3000 }), "postgresql", () => ({ maxOpen: 1, queueLimit: 1, connectTimeoutMillis: 3000 }), { queryTimeoutMs: 3000 });
     pool.on("error", () => {}); // Query errors are reported by the monitor.
     try { await pool.query("SELECT 1"); } finally { await pool.end(); }
     return;
   }
   if (config.type === "mysql") {
-    const connection = await mysql.createConnection({ ...config.mysql, flags: MYSQL_COMPATIBILITY_FLAGS, ssl: config.mysql.ssl ? {} : undefined, connectTimeout: 3000 });
-    try { await connection.query({ sql: "SELECT 1", timeout: 3000 }); } finally { connection.destroy(); }
+    const pool = guardDatabasePool(mysql.createPool({ ...config.mysql, flags: MYSQL_COMPATIBILITY_FLAGS, ssl: config.mysql.ssl ? {} : undefined, connectTimeout: 3000, connectionLimit: 1, maxIdle: 1 }), "mysql", () => ({ maxOpen: 1, queueLimit: 1, connectTimeoutMillis: 3000 }), { queryTimeoutMs: 3000 });
+    try { await pool.query("SELECT 1"); } finally { await pool.end(); }
     return;
   }
   // Reuse the SQLite handle and its transaction-safe connection lock.

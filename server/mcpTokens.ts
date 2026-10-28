@@ -3,8 +3,10 @@ import { executeRaw, insertAndGetId, queryRaw } from "./dbRuntime";
 import { quoteIdentifier as q } from "./dbCompat";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 
-const fields = ["id", "name", "prefix", "expiresAt", "createdAt", "lastUsedAt"].map(q).join(",");
 export async function listMcpTokens(userId: number) {
+  // The dialect is not known when this module is imported during startup.
+  // MySQL treats precomputed double-quoted field names as string literals.
+  const fields = ["id", "name", "prefix", "expiresAt", "createdAt", "lastUsedAt"].map(q).join(",");
   return queryRaw<any>(`SELECT ${fields} FROM ${q("external_mcp_tokens")} WHERE ${q("userId")} = ? ORDER BY ${q("id")} DESC`, [userId]);
 }
 export async function createMcpToken(userId: number, name: string, days: number) {

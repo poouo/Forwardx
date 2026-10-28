@@ -724,8 +724,15 @@ write_env() {
   existing_jwt="$(get_env_value JWT_SECRET || true)"
   jwt_secret="${JWT_SECRET:-$existing_jwt}"
   if [ -z "$jwt_secret" ]; then
-    jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
+    if ! jwt_secret="$(openssl rand -hex 32 2>/dev/null)" || [[ ! "$jwt_secret" =~ ^[0-9a-fA-F]{64}$ ]]; then
+      echo "[ERROR] Unable to generate a cryptographically secure JWT secret; existing configuration was not changed." >&2
+      return 1
+    fi
   fi
+  # Never create a world-readable environment file containing signing keys.
+  (umask 077
+  : >> "$APP_DIR/.env"
+  chmod 600 "$APP_DIR/.env"
   cat > "$APP_DIR/.env" <<EOF
 PORT=$PORT
 FORWARDX_PUBLIC_PORT=$PORT
@@ -736,6 +743,7 @@ FORWARDX_IMAGE=$image
 FORWARDX_GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL"
 FORWARDX_SETUP_LANGUAGE=$SETUP_LANGUAGE
 EOF
+  )
 }
 
 remove_existing_panel_containers() {

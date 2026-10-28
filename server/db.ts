@@ -28,6 +28,7 @@ import { repairPortForwardRuleHostReferences } from "./portForwardRuleHosts";
 import { backfillTunnelExitGroupReferences } from "./repositories/tunnelRepository";
 import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
 import { databaseHealth, describeDatabaseError } from "./databaseHealthState";
+import { withDatabaseMaintenanceBudget } from "./databaseNetworkGuard";
 
 export { getDb, refreshDatabasePoolSettings, withDatabaseTransaction } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -340,6 +341,10 @@ export async function clearLegacyTunnelRuleLatencyHistoryOnce() {
 }
 
 export async function initDatabase() {
+  return withDatabaseMaintenanceBudget(() => initializeDatabaseWithBudget());
+}
+
+async function initializeDatabaseWithBudget() {
   const initializationStartedAt = Date.now();
   const runInitializationStep = async <T>(name: string, work: () => Promise<T> | T) => {
     const startedAt = Date.now();

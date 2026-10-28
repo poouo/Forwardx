@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import { hostChinaHealthSchema, advanceChinaHealth, type ChinaHealthState, type HostChinaHealthConfig, type IpSwitchHook } from "../shared/hostChinaHealth";
+import { hostChinaHealthSchema, advanceChinaHealth, ipSwitchReasonLabels, type ChinaHealthState, type HostChinaHealthConfig, type IpSwitchHook } from "../shared/hostChinaHealth";
 import { ENV } from "./env";
 import { executeRaw, insertAndGetId, queryRaw } from "./dbRuntime";
 import { boolLiteral, inList, quoteIdentifier as q } from "./dbCompat";
@@ -13,7 +13,7 @@ import { sendUserNotification } from "./notifications";
 import { appendPanelLog } from "./_core/panelLogger";
 import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { setBoundedMapValue } from "./boundedCache";
-import { ipSwitchAgentReady } from "./agentIpSwitchTasks";
+import { ipSwitchAgentReady, IpSwitchNotDispatchedError, type IpSwitchAgentResult } from "./agentIpSwitchTasks";
 
 const key = createHash("sha256").update("forwardx-host-ip-switch-v1:").update(ENV.cookieSecret).digest();
 const inactiveHosts = new Map<number, number>();
@@ -38,12 +38,14 @@ export async function getProbeHealthViews(ids: number[]) {
   const attempts = await queryRaw<any>(`SELECT a.* FROM ${q("host_ip_switch_attempts")} a WHERE a.${q("id")} IN (SELECT MAX(${q("id")}) FROM ${q("host_ip_switch_attempts")} WHERE ${q("serviceId")} IN ${list.sql} GROUP BY ${q("serviceId")})`, list.params);
   const hosts = inList([...new Set(rows.map(row => Number(row.hostId)))]);
   const blocked = rows.length ? await queryRaw<any>(`SELECT a.* FROM ${q("host_ip_switch_attempts")} a WHERE a.${q("id")} IN (SELECT MAX(${q("id")}) FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} IN ${hosts.sql} AND ${q("status")} IN ('pending','uncertain') AND ${q("acknowledged")} = ${boolLiteral(false)} GROUP BY ${q("hostId")})`, hosts.params) : [];
-  const actionView = (item: any) => item ? { id: Number(item.id), status: item.status, newIp: item.newIp, createdAt: Number(item.createdAt), acknowledged: item.acknowledged === true || Number(item.acknowledged) === 1 } : null;
+  const cooldowns = rows.length ? await queryRaw<any>(`SELECT ${q("hostId")}, MAX(${q("cooldownUntil")}) AS ${q("nextAt")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} IN ${hosts.sql} GROUP BY ${q("hostId")}`, hosts.params) : [];
+  const actionView = (item: any) => item ? { id: Number(item.id), status: item.status, reason: item.reason || null, httpStatus: item.httpStatus == null ? null : Number(item.httpStatus), newIp: item.newIp, createdAt: Number(item.createdAt), acknowledged: item.acknowledged === true || Number(item.acknowledged) === 1 } : null;
   return new Map(rows.map(row => {
     const config = hostChinaHealthSchema.parse(JSON.parse(row.config)), state = parseState(row.state);
     const lastAction = attempts.find(item => Number(item.serviceId) === Number(row.serviceId));
     return [Number(row.serviceId), { ...config, hook: undefined, hookConfigured: !!row.hookCiphertext, hostId: Number(row.hostId),
       agentReady: ipSwitchAgentReady(Number(row.hostId)),
+      nextSwitchAt: Number(cooldowns.find(item => Number(item.hostId) === Number(row.hostId))?.nextAt || state?.actionRetryAt || 0),
       state: state ? { ...state, stale: Date.now() / 1000 - state.lastSeen > Math.max(120, Number(row.intervalSeconds || 30) * 3) } : null,
       lastAction: actionView(lastAction), blockedAction: actionView(blocked.find(item => Number(item.hostId) === Number(row.hostId))) }];
   }));
@@ -88,8 +90,8 @@ type Dependencies = { request: typeof requestIpSwitch; notify: typeof notify; re
 const dependencies: Dependencies = { request: requestIpSwitch, notify, refresh: refreshHostAddressRuntime, ready: ipSwitchAgentReady };
 async function performSwitch(row: any, service: any, host: any, state: ChinaHealthState, config: HostChinaHealthConfig, now: number, deps: Dependencies) {
   return withKeyedTaskLock(`probe-health-ip-switch:${host.id}`, async () => {
-    if (!deps.ready(host.id)) return;
     let attemptId: number;
+    let blockedMessage = "";
     const allowed = await withKeyedTaskLock(probeHealthLock(service.id), async () => {
       const [currentRow] = await queryRaw<any>(`SELECT * FROM ${q("host_probe_health")} WHERE ${q("serviceId")} = ? AND ${q("hostId")} = ?`, [service.id, host.id]);
       const currentState = parseState(currentRow?.state);
@@ -99,25 +101,51 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       if (state.failures < config.failureThreshold || !state.failureSince || now - state.failureSince < config.failureSeconds) return false;
       service = await db.getHostProbeServiceById(service.id);
       if (!config.enabled || !config.autoSwitch || !row.hookCiphertext || !service?.isEnabled || service.hostScope !== "specific" || service.hostIds.length !== 1 || service.hostIds[0] !== host.id) return false;
-      const [limits] = await queryRaw<any>(`SELECT COUNT(*) AS ${q("count")}, MAX(${q("createdAt")}) AS ${q("lastAt")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} = ? AND ${q("createdAt")} > ?`, [host.id, now - 86400]);
+      const defer = async (reason: NonNullable<ChinaHealthState["actionBlockedReason"]>, message: string, retryAt = 0) => {
+        if (state.actionBlockedReason !== reason || state.actionRetryAt !== retryAt) {
+          state.actionBlockedReason = reason; state.actionRetryAt = retryAt;
+          await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(state), row.id]);
+          blockedMessage = message;
+        }
+        return false;
+      };
+      if (!deps.ready(host.id)) return defer("agent_unavailable", "自动换 IP 等待中：Agent 未在线上报换 IP 能力，尚未请求商家接口");
+      const [limits] = await queryRaw<any>(`SELECT COUNT(*) AS ${q("count")}, MIN(${q("createdAt")}) AS ${q("firstAt")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} = ? AND ${q("createdAt")} > ?`, [host.id, now - 86400]);
+      const [latest] = await queryRaw<any>(`SELECT ${q("createdAt")}, ${q("finishedAt")}, ${q("cooldownUntil")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} = ? ORDER BY ${q("createdAt")} DESC, ${q("id")} DESC LIMIT 1`, [host.id]);
       const unresolved = await queryRaw<any>(`SELECT ${q("id")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("hostId")} = ? AND ${q("status")} IN ('pending','uncertain') AND ${q("acknowledged")} = ${boolLiteral(false)} LIMIT 1`, [host.id]);
-      if (unresolved.length || Number(limits?.count || 0) >= config.maxSwitchesPerDay || (Number(limits?.lastAt) && now - Number(limits.lastAt) < config.cooldownSeconds)) return false;
+      if (unresolved.length) return defer("unresolved", "自动换 IP 已暂停：上次请求结果不明确，请先核对商家结果");
+      // Measure the merchant interval from completion, not merely queueing.
+      // History is host-wide, so editing/recreating services cannot bypass it.
+      const nextAt = latest ? Math.max(Number(latest.cooldownUntil || 0), Math.max(Number(latest.createdAt), Number(latest.finishedAt || 0)) + config.cooldownSeconds) : 0;
+      if (nextAt > now) return defer("cooldown", `自动换 IP 等待中：商家请求间隔尚未结束，剩余 ${Math.ceil((nextAt - now) / 60)} 分钟`, nextAt);
+      if (Number(limits?.count || 0) >= config.maxSwitchesPerDay) return defer("daily_limit", "自动换 IP 等待中：已达到最近 24 小时请求上限", Number(limits.firstAt) + 86400);
       const freshHost = await db.getHostById(host.id);
       if (!freshHost || hostIngressAddress(freshHost) !== hostIngressAddress(host)) return false;
       // Persist intent BEFORE any request: a crash or timeout must not silently retry a paid action.
-      attemptId = await insertAndGetId("host_ip_switch_attempts", { hostId: host.id, serviceId: service.id, incidentId: state.incidentId, status: "pending", createdAt: now });
+      attemptId = await insertAndGetId("host_ip_switch_attempts", { hostId: host.id, serviceId: service.id, incidentId: state.incidentId, status: "pending", createdAt: now, cooldownUntil: now + config.cooldownSeconds });
       state.actionAttempted = true;
+      delete state.actionBlockedReason; delete state.actionRetryAt;
       await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(state), row.id]);
       return true;
     });
-    if (!allowed) return;
+    if (!allowed) {
+      if (blockedMessage) await deps.notify(service, host, blockedMessage, config);
+      return;
+    }
     let status = "uncertain", newIp: string | null = null, message = "换 IP 请求结果未确认，已停止自动重试，请核对商家结果";
+    let reason: string = "request_failed", httpStatus: number | null = null;
     try {
-      const hook = decryptHook(row.hookCiphertext);
+      let hook: IpSwitchHook;
+      try { hook = decryptHook(row.hookCiphertext); }
+      catch { throw new IpSwitchNotDispatchedError("invalid_request"); }
       const response = await deps.request(hook, { hostId: host.id, serviceId: service.id, ip: hostIngressAddress(host), incidentId: state.incidentId });
+      reason = response.reason; httpStatus = response.httpStatus ?? null;
       if (response.outcome === "not_executed") {
-        status = "not_executed"; message = "Agent 未执行换 IP 请求，请检查 Agent 状态及接口配置";
+        status = "not_executed"; message = `Agent 未执行换 IP 请求：${ipSwitchReasonMessage(response.reason)}；后续仍遵循商家请求间隔`;
         throw new Error("not_executed");
+      }
+      if (response.outcome === "uncertain") {
+        message = `换 IP 请求结果未确认：${ipSwitchReasonMessage(response.reason)}${httpStatus ? `（HTTP ${httpStatus}）` : ""}；已停止自动重试，请核对商家结果`;
       }
       newIp = await verifyIpSwitchResponse(hook, response, hostIngressAddress(host));
       status = response.outcome === "accepted" ? "accepted" : "succeeded";
@@ -132,13 +160,36 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
           message = `商家接口确认换 IP 请求成功，已同步主机地址 ${newIp}，等待后续探测恢复`;
         } else { status = "sync_skipped"; message = "商家接口确认成功，但主机地址已变更或主机已删除，未覆盖面板配置"; }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof IpSwitchNotDispatchedError) {
+        status = "not_executed"; reason = error.message === "invalid_request" ? "invalid_request" : "agent_unavailable";
+        message = `换 IP 任务未下发给 Agent：${ipSwitchReasonMessage(reason)}；尚未调用商家接口，后续仍遵循商家请求间隔`;
+      } else if (status === "uncertain" && reason === "ok") {
+        reason = newIp || (error instanceof Error && error.message === "provider_invalid_new_ip") ? "invalid_ip" : "success_mismatch";
+        message = `换 IP 请求结果未确认：${ipSwitchReasonMessage(reason)}；已停止自动重试，请核对商家结果`;
+      }
       // Neither exception messages nor response bodies are safe to log (URLs/headers may contain keys).
       // Even HTTP errors can follow a successful provider-side action: require operator verification.
     }
-    await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("status")} = ?, ${q("newIp")} = ?, ${q("finishedAt")} = ? WHERE ${q("id")} = ?`, [status, newIp, Math.floor(Date.now() / 1000), attemptId!]);
+    const finishedAt = Math.max(now, Math.floor(Date.now() / 1000));
+    await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("status")} = ?, ${q("reason")} = ?, ${q("httpStatus")} = ?, ${q("newIp")} = ?, ${q("finishedAt")} = ?, ${q("cooldownUntil")} = ? WHERE ${q("id")} = ?`, [status, reason, httpStatus, newIp, finishedAt, finishedAt + config.cooldownSeconds, attemptId!]);
+    if (status === "not_executed") {
+      // A definite non-execution is safe to schedule again after the interval.
+      // Give it a fresh durable task ID; ambiguous/accepted requests NEVER retry.
+      await withKeyedTaskLock(probeHealthLock(service.id), async () => {
+        const [current] = await queryRaw<any>(`SELECT ${q("state")} FROM ${q("host_probe_health")} WHERE ${q("id")} = ?`, [row.id]);
+        const next = parseState(current?.state);
+        if (next?.incidentId !== state.incidentId) return;
+        next.actionAttempted = false; next.incidentId = randomUUID();
+        await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(next), row.id]);
+      });
+    }
     await deps.notify(service, host, message, config);
   });
+}
+
+export function ipSwitchReasonMessage(reason: IpSwitchAgentResult["reason"] | string) {
+  return ipSwitchReasonLabels[reason] || "请求结果未确认";
 }
 const observingHosts = new Set<number>();
 export async function observeProbeHealth(host: any, reports: { serviceId: number; targetIp?: string; targetPort?: number; method?: string; probeSuccesses?: number; probeCount?: number }[], now = Math.floor(Date.now() / 1000), overrides: Partial<Dependencies> = {}) {

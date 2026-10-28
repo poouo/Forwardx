@@ -19,8 +19,9 @@ export function recordIpSwitchAgentCapability(hostId: number, supported: unknown
   else capabilities.delete(hostId);
 }
 export function ipSwitchAgentReady(hostId: number) { return Date.now() - (capabilities.get(hostId) || 0) < 300000; }
+export class IpSwitchNotDispatchedError extends Error {}
 export function enqueueIpSwitchAgentTask(hostId: number, input: Omit<IpSwitchAgentTask, "expiresAt"> & { expectedIp: string }, timeoutMs = 120000): Promise<IpSwitchAgentResult> {
-  if (!ipSwitchAgentReady(hostId) || pending.has(hostId)) throw new Error("agent_unavailable");
+  if (!ipSwitchAgentReady(hostId) || pending.has(hostId)) throw new IpSwitchNotDispatchedError("agent_unavailable");
   return new Promise(resolve => {
     const expiresAt = Math.ceil((panelCryptoNowMs() + Math.min(timeoutMs, 60000)) / 1000);
     const timer = setTimeout(() => {

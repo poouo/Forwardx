@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 安装时按提示选择访问端口和数据库。SQLite 无需额外数据库服务；MySQL/PostgreSQL 需要准备可访问的数据库和账号。脚本可能预填数据库配置，网页仍需确认连接并完成初始化。
 
+JWT 签名密钥无需手动填写：一键安装使用安全随机源生成独立的 256 位密钥（64 位十六进制字符串），保存到仅所有者可读写的 `.env`，升级保留原值。随机源失败时安装会停止，不使用固定值或时间戳代替。
+
 访问 http://服务器IP:9810（端口以安装时选择为准）。英文向导使用 --language en；跟随浏览器语言使用 --language auto，网页可手动切换。
 
 脚本会选择并校验发布镜像；默认镜像仓库为 ghcr.io/poouo/forwardx。新版本镜像尚未构建完成时不要强行替换正在运行的容器。
@@ -76,10 +78,9 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 sudo mkdir -p /opt/forwardx-compose
 cd /opt/forwardx-compose
 sudo curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/docker-compose.yml -o docker-compose.yml
-openssl rand -hex 32
 ~~~
 
-用编辑器创建 .env，填写下列配置；将 JWT_SECRET 的提示文字替换为上一步生成的随机值，不能使用仓库里的示例密钥：
+用编辑器创建 .env，填写下列配置。JWT_SECRET 留空即可在首次启动时安全生成，并持久保存到数据卷 `/data/jwt.secret`；务必保留该数据卷。也可自行使用 `openssl rand -hex 32` 生成密钥并填写，不要使用固定示例值：
 
 ~~~ini
 COMPOSE_PROJECT_NAME=forwardx
@@ -87,7 +88,7 @@ FORWARDX_CONTAINER_NAME=forwardx-panel
 FORWARDX_IMAGE=ghcr.io/poouo/forwardx:latest
 PORT=9810
 FORWARDX_SETUP_LANGUAGE=zh-CN
-JWT_SECRET=替换为随机密钥
+JWT_SECRET=
 ~~~
 
 建议生产环境将 FORWARDX_IMAGE 固定为已发布且构建完成的版本标签。使用 main 分支 Compose 时先核对它与所选镜像支持的配置是否一致。保护 .env 的读取权限。

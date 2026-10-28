@@ -71,17 +71,17 @@ test("schema upgrade and new hosts default to notifications enabled; only admins
   assert.equal((await hosts.getHostById(created.id))?.hostStatusNotifyEnabled, true);
   const disabled = await staff.create({ name: "muted", ip: "198.51.100.3", hostStatusNotifyEnabled: false });
   assert.equal((await hosts.getHostById(disabled.id))?.hostStatusNotifyEnabled, false);
-  const owned = await customer.create({ name: "owned", ip: "198.51.100.4", hostStatusNotifyEnabled: false });
-  assert.equal((await hosts.getHostById(owned.id))?.hostStatusNotifyEnabled, true, "ordinary users cannot disable it during creation");
+  await assert.rejects(customer.create({ name: "owned", ip: "198.51.100.4", hostStatusNotifyEnabled: false }), { code: "FORBIDDEN" });
+  const owned = await staff.create({ name: "owned", ip: "198.51.100.4" });
   await staff.update({ id: owned.id, hostStatusNotifyEnabled: false });
-  await customer.update({ id: owned.id, hostStatusNotifyEnabled: true, name: "renamed" });
+  await assert.rejects(customer.update({ id: owned.id, hostStatusNotifyEnabled: true, name: "renamed" }), { code: "FORBIDDEN" });
   assert.equal((await hosts.getHostById(owned.id))?.hostStatusNotifyEnabled, false, "owner cannot override administrator preference");
-  assert.equal((await hosts.getHostById(owned.id))?.name, "renamed");
+  assert.equal((await hosts.getHostById(owned.id))?.name, "owned");
   await staff.update({ id: owned.id, name: "admin rename" });
   assert.equal((await hosts.getHostById(owned.id))?.hostStatusNotifyEnabled, false, "unrelated updates preserve the switch");
   await staff.update({ id: owned.id, hostStatusNotifyEnabled: true });
   assert.equal((await hosts.getHostById(owned.id))?.hostStatusNotifyEnabled, true);
-  await assert.rejects(router.createCaller(context(99, "user")).update({ id: owned.id, hostStatusNotifyEnabled: false }), /无权/);
+  await assert.rejects(router.createCaller(context(99, "user")).update({ id: owned.id, hostStatusNotifyEnabled: false }), { code: "FORBIDDEN" });
 });
 
 test("both notification channels obey the host switch without suppressing offline state or replaying muted events", async () => {

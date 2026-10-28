@@ -18,7 +18,7 @@ let http: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
 try {
   await ensureDatabaseSchema();
   for (const id of [1, 2]) await runtime.insertAndGetId("users", { id, username: `user-${id}`, password: "test", name: `User ${id}`, role: id === 1 ? "admin" : "user" });
-  for (const id of [1, 2, 3, 4, 5]) await runtime.insertAndGetId("hosts", { id, name: `Host ${id}`, ip: "1.1.1.1", agentToken: `test-token-${id}`, userId: 2 });
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) await runtime.insertAndGetId("hosts", { id, name: `Host ${id}`, ip: "1.1.1.1", agentToken: `test-token-${id}`, userId: 1 });
   const caller = (id: number, role: string) => hostsRouter.createCaller({ user: { id, role }, req: { headers: {}, socket: {} }, res: {}, authSession: null, authFailureReason: null } as any);
   const admin = caller(1, "admin"), user = caller(2, "user");
   const hook = ipSwitchHookSchema.parse({ url: "http://10.0.0.1/api/changeip?token=private-provider-secret", successMode: "http" });
@@ -53,6 +53,7 @@ try {
   assert.equal((await getProbeHealthViews([id])).get(id).state, null);
   for (const offset of [0, 15, 30]) await observeProbeHealth(host, [report], base + offset, deps);
   assert.equal((await getProbeHealthViews([id])).get(id).state.phase, "unhealthy"); assert.equal(calls, 0);
+  assert.equal((await getProbeHealthViews([id])).get(id).state.actionBlockedReason, "agent_unavailable");
   ready = true;
   // No human reply or approval: a capable Agent immediately receives the action.
   await observeProbeHealth(host, [report], base + 45, deps);
@@ -107,6 +108,72 @@ try {
   assert.equal((await getProbeHealthViews([replacement.id])).get(replacement.id).blockedAction.status, "uncertain");
   await acknowledgeIpSwitch(replacement.id);
   assert.equal((await getProbeHealthViews([replacement.id])).get(replacement.id).blockedAction, null);
+
+  // Definite non-execution used to latch actionAttempted for the whole incident.
+  // Retry only after the configured provider interval, using a new durable ID.
+  const retryService = await admin.createProbeService({ ...serviceInput, name: "Retry after non-execution", hostIds: [6] });
+  const host6 = (await db.getHostById(6))!, report6 = { ...report, serviceId: retryService.id };
+  let retryCalls = 0;
+  const taskIds = new Set<string>();
+  const retryDeps = { ...deps, request: async (_hook: any, context: any) => {
+    retryCalls++; assert.ok(!taskIds.has(context.incidentId)); taskIds.add(context.incidentId);
+    return { taskId: context.incidentId, outcome: retryCalls === 1 ? "not_executed" as const : "accepted" as const, reason: retryCalls === 1 ? "expired" as const : "ok" as const };
+  }};
+  for (const offset of [0, 15, 30]) await observeProbeHealth(host6, [report6], base + offset, retryDeps);
+  const retryView = (await getProbeHealthViews([retryService.id])).get(retryService.id);
+  assert.equal(retryView.lastAction.status, "not_executed"); assert.equal(retryView.lastAction.reason, "expired");
+  assert.equal(retryView.state.actionAttempted, false); assert.equal(retryView.nextSwitchAt, base + 330);
+  for (const offset of [45, 300, 315]) await observeProbeHealth(host6, [report6], base + offset, retryDeps);
+  assert.equal(retryCalls, 1);
+  assert.equal((await getProbeHealthViews([retryService.id])).get(retryService.id).state.actionBlockedReason, "cooldown");
+  await observeProbeHealth(host6, [report6], base + 330, retryDeps);
+  assert.equal(retryCalls, 2);
+  for (const offset of [345, 1000, 1015, 1030]) await observeProbeHealth(host6, [report6], base + offset, retryDeps);
+  assert.equal(retryCalls, 2, "accepted calls never retry within the same unresolved incident");
+
+  // The original merchant interval remains host-wide after a shorter service
+  // is added or settings are edited. Read durable history, not an in-memory timer.
+  const longInterval = await admin.createProbeService({ ...serviceInput, hostIds: [7], health: { ...health, cooldownSeconds: 3600 } });
+  const host7 = (await db.getHostById(7))!;
+  let intervalCalls = 0;
+  const intervalDeps = { ...deps, request: async (_hook: any, context: any) => {
+    intervalCalls++; return { taskId: context.incidentId, outcome: "accepted" as const, reason: "ok" as const };
+  }};
+  for (const offset of [0, 15, 30]) await observeProbeHealth(host7, [{ ...report, serviceId: longInterval.id }], base + offset, intervalDeps);
+  const shortInterval = await admin.createProbeService({ ...serviceInput, hostIds: [7] });
+  for (const offset of [400, 415, 430]) await observeProbeHealth(host7, [{ ...report, serviceId: shortInterval.id }], base + offset, intervalDeps);
+  assert.equal(intervalCalls, 1);
+  assert.equal((await getProbeHealthViews([shortInterval.id])).get(shortInterval.id).nextSwitchAt, base + 3630);
+  await admin.updateProbeService({ ...serviceInput, id: shortInterval.id, hostIds: [7], health: { ...health, hook: undefined } });
+  for (const offset of [500, 515, 530]) await observeProbeHealth(host7, [{ ...report, serviceId: shortInterval.id }], base + offset, intervalDeps);
+  assert.equal(intervalCalls, 1);
+  for (const offset of [3600, 3615, 3630]) await observeProbeHealth(host7, [{ ...report, serviceId: shortInterval.id }], base + offset, intervalDeps);
+  assert.equal(intervalCalls, 2);
+
+  // Persist only fixed, safe diagnostic fields, never raw provider responses.
+  const rejected = await admin.createProbeService({ ...serviceInput, hostIds: [8] });
+  const host8 = (await db.getHostById(8))!;
+  for (const offset of [0, 15, 30]) await observeProbeHealth(host8, [{ ...report, serviceId: rejected.id }], base + offset, { ...deps,
+    request: async (_hook, context) => ({ taskId: context.incidentId, outcome: "uncertain", reason: "http_status", httpStatus: 429 }),
+  });
+  const rejectedView = (await getProbeHealthViews([rejected.id])).get(rejected.id);
+  assert.equal(rejectedView.lastAction.status, "uncertain"); assert.equal(rejectedView.lastAction.reason, "http_status");
+  assert.equal(rejectedView.lastAction.httpStatus, 429); assert.ok(rejectedView.blockedAction);
+
+  // Invalid saved ciphertext fails before dispatch, not as an ambiguous paid call.
+  const corrupt = await admin.createProbeService({ ...serviceInput, hostIds: [9] });
+  await runtime.executeRaw("UPDATE host_probe_health SET hookCiphertext = ? WHERE serviceId = ?", ["invalid-saved-ciphertext", corrupt.id]);
+  const host9 = (await db.getHostById(9))!;
+  let corruptCalls = 0;
+  for (const offset of [0, 15, 30]) await observeProbeHealth(host9, [{ ...report, serviceId: corrupt.id }], base + offset, {
+    ...deps, request: async () => { corruptCalls++; throw new Error("must not dispatch"); },
+  });
+  const corruptView = (await getProbeHealthViews([corrupt.id])).get(corrupt.id);
+  assert.equal(corruptCalls, 0);
+  assert.equal(corruptView.lastAction.status, "not_executed");
+  assert.equal(corruptView.lastAction.reason, "invalid_request");
+  assert.equal(corruptView.state.actionAttempted, false);
+  assert.equal(corruptView.blockedAction, null);
 
   // Real encrypted HTTP result routes, and disabling a service while a task is queued.
   const app = express(); app.use(express.json()); app.use("/api/agent", agentEncryptionMiddleware);

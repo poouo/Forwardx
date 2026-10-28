@@ -42,6 +42,7 @@ test("provider schema supports private HTTP GET without allowing shell scripts o
   }
   assert.equal(readJsonPath({}, "__proto__.toString"), undefined);
   assert.equal(hostChinaHealthSchema.parse({}).autoSwitch, false);
+  assert.equal(hostChinaHealthSchema.parse({}).cooldownSeconds, 60 * 60);
 });
 
 test("queued timeouts distinguish undelivered tasks from ambiguous delivered calls", async () => {

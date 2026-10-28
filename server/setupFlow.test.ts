@@ -134,7 +134,7 @@ test("setup localizes unsupported MySQL versions and host authorization through 
 test("setup test/save endpoints return localized DB errors without persisting failed config or bypassing locks", () => {
   runSetupFlow(String.raw`
     const mysql = (await import("mysql2/promise")).default;
-    const originalCreateConnection = mysql.createConnection;
+    const originalCreatePool = mysql.createPool;
     const originalConfig = fs.readFileSync(process.env.DATABASE_CONFIG_PATH, "utf8");
     const input = { host: "fake-mysql", port: 3306, user: "test", password: "private-secret", database: "forwardx", ssl: false };
     const methods = [
@@ -145,9 +145,11 @@ test("setup test/save endpoints return localized DB errors without persisting fa
     ];
     let closed = 0;
     try {
-      mysql.createConnection = async () => ({
-        async ping() {},
-        async query() { return [[{ version: "5.7.44" }]]; },
+      mysql.createPool = () => ({
+        getConnection: async () => ({
+          async query() { return [[{ version: "5.7.44" }]]; },
+          release() {}, destroy() {},
+        }),
         async end() { closed++; },
       });
       for (const call of methods) {
@@ -158,7 +160,7 @@ test("setup test/save endpoints return localized DB errors without persisting fa
         });
       }
       assert.equal(closed, 4, "failed version checks close every test connection");
-      mysql.createConnection = async () => { throw Object.assign(new Error("Host '172.27.0.2' is not allowed to connect to this MySQL server private-secret"), { code: "ER_HOST_NOT_PRIVILEGED", errno: 1130 }); };
+      mysql.createPool = () => { throw Object.assign(new Error("Host '172.27.0.2' is not allowed to connect to this MySQL server private-secret"), { code: "ER_HOST_NOT_PRIVILEGED", errno: 1130 }); };
       for (const call of methods) {
         await assert.rejects(call, error => {
           assert.equal(error.code, "BAD_REQUEST");
@@ -171,7 +173,7 @@ test("setup test/save endpoints return localized DB errors without persisting fa
       await caller.createAdmin({ email: "admin@example.com", password: "safe-password" });
       for (const call of methods) await assert.rejects(call, /SETUP_LOCKED/);
     } finally {
-      mysql.createConnection = originalCreateConnection;
+      mysql.createPool = originalCreatePool;
     }
   `);
 });

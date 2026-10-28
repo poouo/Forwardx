@@ -42,6 +42,48 @@ function resolveBash() {
 
 const bash = resolveBash();
 
+test("installers generate independent 256-bit JWT secrets without logging them and preserve configured secrets", { skip: !bash }, () => {
+  for (const installer of installers) {
+    const result = runHarness({ installer, endMarker: "write_env() {", body: `
+${section(installer.source, "write_env() {", installer.name === "local" ? "register_management_command() {" : "remove_existing_panel_containers() {")}
+unset JWT_SECRET
+write_env ghcr.io/test/panel:latest
+first="$(get_env_value JWT_SECRET)"
+[[ "$first" =~ ^[0-9a-f]{64}$ ]]
+${process.platform !== "win32" ? '[ "$(stat -c %a "$APP_DIR/.env")" = 600 ]' : ""}
+rm "$APP_DIR/.env"
+write_env ghcr.io/test/panel:latest
+second="$(get_env_value JWT_SECRET)"
+[[ "$second" =~ ^[0-9a-f]{64}$ ]]
+[ "$first" != "$second" ]
+${installer.name === "local" ? 'JWT_SECRET="$second"' : ""}
+write_env ghcr.io/test/panel:latest
+[ "$(get_env_value JWT_SECRET)" = "$second" ]
+` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "", "installation must not print the signing secret");
+  }
+});
+
+test("installers fail closed when secure randomness fails or returns malformed output", { skip: !bash }, () => {
+  for (const installer of installers) {
+    for (const mock of ['return 1', 'printf "short"', 'printf "%064d" 0; return 1']) {
+      const result = runHarness({ installer, endMarker: "write_env() {", body: `
+${section(installer.source, "write_env() {", installer.name === "local" ? "register_management_command() {" : "remove_existing_panel_containers() {")}
+unset JWT_SECRET
+printf "unchanged\\n" > "$APP_DIR/.env"
+openssl() { ${mock}; }
+if write_env ghcr.io/test/panel:latest; then exit 42; fi
+[ "$(cat "$APP_DIR/.env")" = unchanged ]
+` });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /cryptographically secure JWT secret/);
+      assert.equal(result.stdout, "");
+    }
+    assert.doesNotMatch(installer.source, /date \+%s%N\s*\|\s*sha256sum/);
+  }
+});
+
 function shellPath(value: string) {
   const normalized = value.replace(/\\/g, "/");
   const windowsDrive = normalized.match(/^([A-Za-z]):(\/.*)$/);

@@ -1042,7 +1042,7 @@ export const hostsRouter = router({
         }
         return ctx.user.role === "admin" ? host : compactHostForList(host);
       }),
-    create: protectedProcedure
+    create: adminProcedure
       .input(z.object({
         name: z.string().min(1).max(128),
         ip: hostAddressSchema,
@@ -1139,7 +1139,7 @@ export const hostsRouter = router({
         }
         return { success: true };
       }),
-    update: protectedProcedure
+    update: adminProcedure
       .input(z.object({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
@@ -1350,7 +1350,7 @@ export const hostsRouter = router({
         }
         return { success: true };
       }),
-    prepareDelete: protectedProcedure
+    prepareDelete: adminProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .mutation(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);
@@ -1358,7 +1358,7 @@ export const hostsRouter = router({
         if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
         return prepareHostDeletion(input.id);
       }),
-    deleteImpact: protectedProcedure
+    deleteImpact: adminProcedure
       .input(z.object({ id: z.number().int().positive() }))
       .query(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);
@@ -1366,7 +1366,7 @@ export const hostsRouter = router({
         if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
         return getHostDeletionImpact(input.id);
       }),
-    delete: protectedProcedure
+    delete: adminProcedure
       .input(z.object({ id: z.number().int().positive(), confirmOfflineCleanup: z.boolean().optional() }))
       .mutation(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);

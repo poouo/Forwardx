@@ -20,13 +20,22 @@ type Entry = {
 export function createBackgroundSummaryCache(options: {
   now?: () => number; refreshMs?: number; idleMs?: number; maxEntries?: number; maxBytes?: number;
   run?: <T>(load: () => Promise<T>) => Promise<T>;
+  maxBackgroundPending?: number;
+  slowRefreshMs?: number;
+  onSlowRefresh?: (key: string, elapsedMs: number) => void;
 } = {}) {
   const now = options.now ?? Date.now;
   const refreshMs = options.refreshMs ?? 60_000;
   const idleMs = options.idleMs ?? 15 * 60_000;
   const maxEntries = options.maxEntries ?? 5_000;
   const maxBytes = options.maxBytes ?? 32 * 1024 * 1024;
+  const maxBackgroundPending = Math.max(1, Math.floor(options.maxBackgroundPending ?? 2));
+  const slowRefreshMs = options.slowRefreshMs ?? 30_000;
   const entries = new Map<string, Entry>();
+  // These slots outlive a scheduling slice (and cache invalidation). Never
+  // release a slot just because we stopped waiting for an actual DB query.
+  const backgroundPending = new Map<string, { startedAt: number; reported: boolean }>();
+  let completed = 0, failures = 0;
   let bytes = 0;
   let sweeping = false;
   const remove = (key: string) => {
@@ -73,9 +82,16 @@ export function createBackgroundSummaryCache(options: {
     async refreshDue(budgetMs = 100) {
       if (sweeping) return { refreshed: 0, failed: 0 };
       sweeping = true;
-      let refreshed = 0, failed = 0;
       const started = performance.now();
+      const budget = Math.max(1, Number.isFinite(budgetMs) ? budgetMs : 100);
       try {
+        for (const [key, pending] of backgroundPending) {
+          const elapsed = performance.now() - pending.startedAt;
+          if (!pending.reported && elapsed >= slowRefreshMs) {
+            pending.reported = true;
+            options.onSlowRefresh?.(key, Math.round(elapsed));
+          }
+        }
         // Oldest computed first, so a busy user's reads cannot starve other users.
         const due: Array<[string, Entry]> = [];
         for (const [key, entry] of entries) {
@@ -84,12 +100,24 @@ export function createBackgroundSummaryCache(options: {
         }
         due.sort((a, b) => a[1].updatedAt - b[1].updatedAt);
         for (const [key, entry] of due) {
-          if (entries.get(key) !== entry) continue;
-          try { await refresh(key, entry); refreshed++; } catch { failed++; }
+          if (backgroundPending.size >= maxBackgroundPending || performance.now() - started >= budget) break;
+          if (entries.get(key) !== entry || entry.pending || backgroundPending.has(key)) continue;
+          backgroundPending.set(key, { startedAt: performance.now(), reported: false });
+          // Handle completion even after this slice returns. A late failure
+          // retains old data/backoff and is reported by the next slice.
+          const task = refresh(key, entry).then(() => { completed++; }, () => { failures++; })
+            .finally(() => { backgroundPending.delete(key); });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([task, new Promise<void>(resolve => {
+              timer = setTimeout(resolve, Math.max(1, budget - (performance.now() - started)));
+            })]);
+          } finally { clearTimeout(timer); }
           await yieldToRequests();
-          if (performance.now() - started >= budgetMs) break;
         }
       } finally { sweeping = false; }
+      const refreshed = completed, failed = failures;
+      completed = 0; failures = 0;
       return { refreshed, failed };
     },
     clear(userIds?: number[]) {
@@ -101,7 +129,16 @@ export function createBackgroundSummaryCache(options: {
   };
 }
 
-export const dashboardSummaries = createBackgroundSummaryCache({ run: displayQueries.run });
+function slowRefreshWarning(cache: string) {
+  return (key: string, elapsedMs: number) => {
+    // Keys are application-owned IDs/section names; never log query inputs or SQL values.
+    const [userId, section] = key.split(":");
+    console.warn(`[DashboardSummary] slow refresh cache=${cache} user=${Number(userId) || 0} section=${section} elapsedMs=${elapsedMs}; previous summary retained, pending query is not duplicated`);
+  };
+}
+export const dashboardSummaries = createBackgroundSummaryCache({ run: displayQueries.run,
+  onSlowRefresh: slowRefreshWarning("dashboard") });
 // Administrative reports have a separate, smaller budget; they cannot evict
 // ordinary users' home summaries when an admin explores many date ranges.
-export const operationsSummaries = createBackgroundSummaryCache({ maxEntries: 300, maxBytes: 8 * 1024 * 1024, run: displayQueries.run });
+export const operationsSummaries = createBackgroundSummaryCache({ maxEntries: 300, maxBytes: 8 * 1024 * 1024,
+  maxBackgroundPending: 1, run: displayQueries.run, onSlowRefresh: slowRefreshWarning("operations") });
