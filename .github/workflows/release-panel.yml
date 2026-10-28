@@ -80,6 +80,7 @@ jobs:
           pnpm test:resource-traffic
           pnpm test:security-boundaries
           pnpm test:selftest-dispatch
+          node --import tsx --test server/tunnelProbeReporting.test.ts
           pnpm test:server
 
       - name: Run Agent tests and vet

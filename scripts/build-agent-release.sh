@@ -88,7 +88,7 @@ build_fxp() {
 build_fxp amd64 forwardx-fxp-linux-amd64
 build_fxp arm64 forwardx-fxp-linux-arm64
 
-bash "$ROOT_DIR/scripts/build-runtime.sh"
+bash "$ROOT_DIR/scripts/fetch-runtime.sh"
 
 NOTICE_FILE="$ROOT_DIR/THIRD_PARTY_NOTICES.md"
 if [ ! -f "$NOTICE_FILE" ]; then

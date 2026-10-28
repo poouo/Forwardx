@@ -4,7 +4,7 @@
 
 ## [2.3.293] - 2026-10-28
 
-- Build the forwarding runtime from source with ForwardX naming; upgrade the Agent package to update existing nodes.
+- Distribute a locally source-built forwarding runtime with ForwardX naming and verified downloads; upgrade the Agent package to update existing nodes.
 - Check developer notices on GitHub every 30 minutes, with bilingual popups independent of panel upgrades.
 - Improve database network recovery, query backpressure and background summaries to reduce abnormal resource usage.
 - Fix MySQL MCP token display and revocation; strengthen management permissions and installer secret generation.

@@ -121,11 +121,13 @@ fwxm agent uninstall
 
 ### ForwardX 自编译转发运行时
 
-后续发行包中的 `forwardx-runtime` 从固定的 GOST 3.2.6 源码提交构建，不再直接分发上游预编译二进制。程序名和 `-V` 输出使用 ForwardX 标识（当前为 `forwardx-runtime 3.2.6-forwardx.1`），引擎类型、配置路径、协议及管理 API 保持兼容，不需要修改已有规则。
+后续发行包中的 `forwardx-runtime` 由维护者在本机从固定的 GOST 3.2.6 源码提交编译，上传到独立的 `runtime-v3.2.6-forwardx.1` Release。面板、Docker 和 Agent 发布包统一下载这批产物并校验固定 SHA-256，不再各自重新编译或分发上游预编译二进制。程序名和 `-V` 输出使用 ForwardX 标识（当前为 `forwardx-runtime 3.2.6-forwardx.1`），引擎类型、配置路径、协议及管理 API 保持兼容，不需要修改已有规则。
 
 新安装和升级只从 ForwardX Release 或面板获取这一构建；不会复制机器上已有的 `gost`，也不会在失败时静默下载上游原版。若新包不可用，保留已有运行时并明确警告，避免下载失败破坏现有转发；因此已有节点需在自编译资产发布后执行 Agent 升级，不能仅更新面板就认为节点已替换。替换二进制后仍需按维护计划重启运行时或重新应用规则，才能让现有进程使用新构建，可能短暂中断连接。
 
 可用 `/usr/local/bin/forwardx-runtime -V` 检查当前磁盘文件。Release 和面板运行包的 `dist/agent/` 提供 `RUNTIME_BUILD.txt`（源码提交、源码 SHA-256、Go 版本与产物哈希）和 `RUNTIME_LICENSE.txt`，完整声明见仓库 `THIRD_PARTY_NOTICES.md`。维护者可运行 `bash scripts/build-runtime.sh` 构建 Linux amd64/arm64，也可指定 `amd64` 或 `arm64`；需要 Go 1.24+、curl、tar 和 coreutils，Agent 机器无需安装 Go。
+
+维护发布时先本机编译，再上传两种架构的产物、构建信息和许可证；更新 `shared/runtimeBuild.ts` 的版本、独立 Release 标签和四项产物哈希后再发布面板。已发布运行时不覆盖替换，重新构建产生不同哈希时须递增运行时版本。`bash scripts/fetch-runtime.sh` 可验证发布下载路径，校验失败会中止打包并保留旧文件。
 
 源码构建使用稳定版本标识，不添加随机填充；同一源码和构建环境允许重复得到相同产物。构建会校验其 MD5 不等于已核验的对应上游 Linux 3.2.6 发行文件，完整性验证使用 SHA-256。自编译和更名**不保证安全软件不再告警**；若仍被归为代理风险工具，应核验哈希、来源和实际行为后向厂商申诉，不要关闭整个安全防护。
 

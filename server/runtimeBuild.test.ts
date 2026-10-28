@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { generateInstallScript } from "./agentInstallScripts";
-import { FORWARDX_RUNTIME_VERSION, FORWARDX_RUNTIME_SOURCE_COMMIT, FORWARDX_RUNTIME_SOURCE_SHA256 } from "../shared/runtimeBuild";
+import { FORWARDX_RUNTIME_VERSION, FORWARDX_RUNTIME_SOURCE_COMMIT, FORWARDX_RUNTIME_SOURCE_SHA256, FORWARDX_RUNTIME_RELEASE_TAG } from "../shared/runtimeBuild";
 
 const script = generateInstallScript("https://panel.example.com");
 function section(start: string, end: string) {
@@ -31,7 +32,13 @@ test("runtime builds use pinned source, checksums, transparent identity and the 
   assert.match(build, /cp "\$SOURCE_DIR\/LICENSE" "\$OUT_DIR\/RUNTIME_LICENSE\.txt"/);
   assert.match(build, /RUNTIME_BUILD\.txt/);
   assert.doesNotMatch(build + bundle, /gost_\$\{GOST_VERSION\}_linux_|download_gost_runtime|upx -|openssl rand/);
-  assert.match(bundle, /bash "\$ROOT_DIR\/scripts\/build-runtime\.sh"/);
+  assert.match(bundle, /bash "\$ROOT_DIR\/scripts\/fetch-runtime\.sh"/);
+  assert.doesNotMatch(bundle, /bash "\$ROOT_DIR\/scripts\/build-runtime\.sh"/);
+  assert.equal(FORWARDX_RUNTIME_RELEASE_TAG, `runtime-v${FORWARDX_RUNTIME_VERSION}`);
+  const fetch = fs.readFileSync("scripts/fetch-runtime.sh", "utf8");
+  assert.match(fetch, /github\.com\/poouo\/Forwardx\/releases\/download\/\$RELEASE_TAG/);
+  assert.match(fetch, /sha256sum -c -/);
+  assert.doesNotMatch(fetch, /go build|go-gost\/gost/);
   const release = fs.readFileSync(".github/workflows/release-agent.yml", "utf8");
   assert.match(release, /dist\/agent\/RUNTIME_LICENSE\.txt/);
   assert.match(release, /dist\/agent\/RUNTIME_BUILD\.txt/);
@@ -84,5 +91,61 @@ test("runtime installer rejects upstream and stale builds, atomically installs b
     assert.equal(already.status, 0, already.stderr);
     assert.match(already.stdout, /INSTALLED/);
     assert.equal(fs.readFileSync(path.join(directory, "downloads"), "utf8"), "");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("pinned runtime downloads verify every artifact before replacing files and fail closed", t => {
+  if (!bash) { t.skip("Bash unavailable"); return; }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-runtime-fetch-"));
+  try {
+    for (const child of ["scripts", "shared", "fixtures", "bin", "out"]) fs.mkdirSync(path.join(directory, child));
+    fs.copyFileSync("scripts/fetch-runtime.sh", path.join(directory, "scripts/fetch-runtime.sh"));
+    const assets = [
+      ["AMD64", "forwardx-runtime-linux-amd64"], ["ARM64", "forwardx-runtime-linux-arm64"],
+      ["BUILD", "RUNTIME_BUILD.txt"], ["LICENSE", "RUNTIME_LICENSE.txt"],
+    ];
+    let pins = `export const FORWARDX_RUNTIME_VERSION = "${FORWARDX_RUNTIME_VERSION}";\n`
+      + `export const FORWARDX_RUNTIME_RELEASE_TAG = "${FORWARDX_RUNTIME_RELEASE_TAG}";\n`;
+    for (const [key, name] of assets) {
+      const data = `fixture-${name}\n`;
+      fs.writeFileSync(path.join(directory, "fixtures", name), data);
+      pins += `export const FORWARDX_RUNTIME_${key}_SHA256 = "${createHash("sha256").update(data).digest("hex")}";\n`;
+    }
+    fs.writeFileSync(path.join(directory, "shared/runtimeBuild.ts"), pins);
+    fs.writeFileSync(path.join(directory, "bin/curl"), `#!/usr/bin/env bash
+set -euo pipefail
+url=""; dest=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    https://*) url="$1"; shift ;;
+    -o) dest="$2"; shift 2 ;;
+    --proto|--proto-redir|--retry|--connect-timeout|--max-time|--max-filesize) shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ "$url" == "https://github.com/poouo/Forwardx/releases/download/${FORWARDX_RUNTIME_RELEASE_TAG}/"* ]]
+file="$(basename "$url")"
+[ "$file" != "$FAIL_DOWNLOAD" ] || exit 22
+cp "$TEST_DIR/fixtures/$file" "$dest"
+`, { mode: 0o755 });
+    const run = (extra: Record<string, string> = {}, arch = "all") => spawnSync(bash, ["-s"], {
+      input: 'set -e\nif command -v cygpath >/dev/null 2>&1; then TEST_DIR="$(cygpath -u "$TEST_DIR")"; export TEST_DIR; fi\nexport PATH="$TEST_DIR/bin:$PATH"\nbash "$TEST_DIR/scripts/fetch-runtime.sh" "$TEST_ARCH"\n',
+      encoding: "utf8", timeout: 15000, env: { ...process.env, FAIL_DOWNLOAD: "", TEST_DIR: directory.replace(/\\/g, "/"),
+        FORWARDX_RUNTIME_OUT_DIR: path.join(directory, "out").replace(/\\/g, "/"), TEST_ARCH: arch, ...extra },
+    });
+    const good = run();
+    assert.equal(good.status, 0, good.stderr);
+    for (const [, name] of assets) assert.equal(fs.readFileSync(path.join(directory, "out", name), "utf8"), `fixture-${name}\n`);
+    // Keep the whole previous set intact even when only the LAST downloaded file is corrupt.
+    for (const [, name] of assets) fs.writeFileSync(path.join(directory, "out", name), "previous");
+    fs.appendFileSync(path.join(directory, "fixtures/RUNTIME_LICENSE.txt"), "tampered");
+    const corrupt = run();
+    assert.notEqual(corrupt.status, 0);
+    assert.match(corrupt.stderr, /checksum did NOT match/);
+    for (const [, name] of assets) assert.equal(fs.readFileSync(path.join(directory, "out", name), "utf8"), "previous");
+    assert.notEqual(run({ FAIL_DOWNLOAD: "forwardx-runtime-linux-arm64" }).status, 0);
+    assert.notEqual(run({}, "mips").status, 0);
+    assert.deepEqual(fs.readdirSync(path.join(directory, "out")).sort(), assets.map(([, name]) => name).sort(),
+      "failed downloads must leave no staging files");
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
