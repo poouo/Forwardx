@@ -24,7 +24,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.23.x"
+          go-version: "1.24.x"
           cache-dependency-path: |
             agent/go.mod
             forwardx-fxp/go.mod
@@ -77,6 +77,8 @@ jobs:
             dist/agent/forwardx-runtime-linux-arm64
             dist/agent/SHA256SUMS
             dist/agent/THIRD_PARTY_NOTICES.md
+            dist/agent/RUNTIME_LICENSE.txt
+            dist/agent/RUNTIME_BUILD.txt
           )
 
           for file in "${files[@]}"; do

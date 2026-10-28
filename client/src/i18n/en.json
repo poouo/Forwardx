@@ -1,4 +1,6 @@
 {
+  "查看更新": "View update",
+  "开发者公告独立于面板版本发布，请阅读并按需检查更新。": "Developer notices are published independently of your panel version. Please read and check for updates as needed.",
   "已定位": "Located",
   "待定位": "Unlocated",
   "TCP 连接": "TCP connections",

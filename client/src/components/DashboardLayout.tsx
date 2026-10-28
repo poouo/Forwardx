@@ -1,4 +1,4 @@
-import { getFormatLocale } from "@/i18n";
+import { getFormatLocale, getLanguage } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LanguageSelector from "@/components/LanguageSelector";
@@ -88,6 +88,7 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { getSidebarMenuLabel, isSidebarMenuVisible, normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
+import { DEVELOPER_ANNOUNCEMENT_INTERVAL_MS } from "@shared/developerAnnouncements";
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
 import PanelStartView from "./PanelStartView";
@@ -451,7 +452,10 @@ function DashboardLayoutContent({
   });
   const { data: upgradeAnnouncement, isFetched: upgradeAnnouncementFetched } = trpc.announcements.upgradePopup.useQuery(undefined, {
     enabled: !!user && isAdmin,
-    refetchOnWindowFocus: false,
+    staleTime: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,
+    refetchInterval: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     retry: false,
   });
   const { data: telegramStatus } = trpc.telegram.status.useQuery(undefined, {
@@ -625,18 +629,21 @@ function DashboardLayoutContent({
     }
     const currentVersion = normalizePanelVersion(publicInfo?.version);
     const userId = user?.id;
-    if (!userId || !currentVersion || !upgradeAnnouncementFetched) return;
+    if (!userId || !upgradeAnnouncementFetched) return;
+    const remote = upgradeAnnouncement?.source === "developer";
+    if (!remote && !currentVersion) return;
 
     const seenVersion = readLastSeenUpgradeAnnouncementVersion(userId);
-    if (seenVersion && comparePanelVersions(seenVersion, currentVersion) >= 0) {
+    if (!remote && seenVersion && comparePanelVersions(seenVersion, currentVersion) >= 0) {
       setShowUpgradeAnnouncement(false);
+      displayedUpgradeAnnouncementKeyRef.current = "";
       clearUpgradeAnnouncementDisplaySession(userId);
       utils.announcements.upgradePopup.setData(undefined, undefined);
       return;
     }
 
     if (upgradeAnnouncement?.id) {
-      const announcementKey = String(userId) + ":" + currentVersion + ":" + String(upgradeAnnouncement.id);
+      const announcementKey = String(userId) + ":" + (remote ? "developer" : currentVersion) + ":" + String(upgradeAnnouncement.id);
       if (displayedUpgradeAnnouncementKeyRef.current !== announcementKey) {
         displayedUpgradeAnnouncementKeyRef.current = announcementKey;
         const existingDisplay = readUpgradeAnnouncementDisplaySession(userId);
@@ -651,9 +658,14 @@ function DashboardLayoutContent({
       return;
     }
 
-    writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
+    setShowUpgradeAnnouncement(false);
+    // Clearing a remote popup after acknowledgement must not mark a pending
+    // local upgrade notice as read before the follow-up query returns it.
+    const wasDeveloperNotice = displayedUpgradeAnnouncementKeyRef.current.includes(":developer:");
+    displayedUpgradeAnnouncementKeyRef.current = "";
+    if (!wasDeveloperNotice) writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
     clearUpgradeAnnouncementDisplaySession(userId);
-  }, [isAdmin, publicInfo?.version, upgradeAnnouncement?.id, upgradeAnnouncementFetched, user?.id, utils.announcements.upgradePopup]);
+  }, [isAdmin, publicInfo?.version, upgradeAnnouncement?.id, upgradeAnnouncement?.source, upgradeAnnouncementFetched, user?.id, utils.announcements.upgradePopup]);
 
   useEffect(() => {
     if (!showUpgradeAnnouncement) return;
@@ -763,7 +775,11 @@ function DashboardLayoutContent({
   });
 
   const dismissUpgradeAnnouncement = trpc.announcements.dismiss.useMutation({
-    onMutate: () => {
+    onMutate: async () => {
+      await utils.announcements.upgradePopup.cancel();
+      // Remote notices are acknowledged only after the server saves the read
+      // marker. Never suppress one by the locally installed panel version.
+      if (upgradeAnnouncement?.source === "developer") return;
       if (user?.id && publicInfo?.version) {
         writeLastSeenUpgradeAnnouncementVersion(user.id, publicInfo.version);
         clearUpgradeAnnouncementDisplaySession(user.id);
@@ -773,9 +789,11 @@ function DashboardLayoutContent({
       displayedUpgradeAnnouncementKeyRef.current = "";
       utils.announcements.upgradePopup.setData(undefined, undefined);
     },
-    onSuccess: () => {
+    onSuccess: (_result, input) => {
       setShowUpgradeAnnouncement(false);
-      utils.announcements.upgradePopup.setData(undefined, undefined);
+      clearUpgradeAnnouncementDisplaySession(user?.id);
+      if (typeof input.id === "number") displayedUpgradeAnnouncementKeyRef.current = "";
+      utils.announcements.upgradePopup.setData(undefined, null);
     },
     onError: (error) => {
       toast.error(error.message || translateText("关闭升级公告失败"));
@@ -2226,14 +2244,17 @@ function DashboardLayoutContent({
         <DialogContent className="sm:max-w-lg [&>button]:hidden">
           <DialogTitle className="flex items-center gap-2">
             <Megaphone className="h-5 w-5" />
-            {upgradeAnnouncement?.title || translateText("升级公告")}
+            {(getLanguage() === "en" ? upgradeAnnouncement?.englishTitle || upgradeAnnouncement?.title : upgradeAnnouncement?.title) || translateText("升级公告")}
           </DialogTitle>
-          <DialogDescription>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</DialogDescription>
+          <DialogDescription>{upgradeAnnouncement?.source === "developer"
+            ? translateText("开发者公告独立于面板版本发布，请阅读并按需检查更新。")
+            : <>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</>}</DialogDescription>
           <div
             className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
-            dangerouslySetInnerHTML={{ __html: renderMixedHtml(upgradeAnnouncement?.content || "") }}
+            dangerouslySetInnerHTML={{ __html: renderMixedHtml((getLanguage() === "en" ? upgradeAnnouncement?.englishContent || upgradeAnnouncement?.content : upgradeAnnouncement?.content) || "") }}
           />
           <DialogFooter>
+            {upgradeAnnouncement?.releaseUrl && <Button variant="outline" asChild><a href={upgradeAnnouncement.releaseUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" />{translateText("查看更新")}</a></Button>}
             <Button
               onClick={() => upgradeAnnouncement?.id && dismissUpgradeAnnouncement.mutate({ id: upgradeAnnouncement.id })}
               disabled={upgradeAnnouncementCountdown > 0 || dismissUpgradeAnnouncement.isPending}

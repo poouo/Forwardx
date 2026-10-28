@@ -274,19 +274,21 @@ test("gost runtime upgrades validate a same-directory candidate before replaceme
   const commit = scriptSection(script, "commit_runtime_candidate() {", "nginx_self_check() {");
 
   assert.match(panel, /mktemp "\$\{RUNTIME_BIN\}\.candidate\.XXXXXX"/);
-  assert.match(panel, /download_panel_binary "\$URL" "\$STAGED_RUNTIME" "gost runtime"/);
+  assert.match(panel, /download_panel_binary "\$URL" "\$STAGED_RUNTIME" "ForwardX runtime"/);
   assert.match(panel, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
   assert.doesNotMatch(panel, /download_panel_binary "\$URL" "\$RUNTIME_BIN"/);
 
-  assert.match(github, /install -m 0755 "\$GOST_BIN" "\$STAGED_RUNTIME"/);
+  assert.match(github, /download_github_binary "\$URL" "\$STAGED_RUNTIME" "ForwardX runtime"/);
+  assert.match(github, /github\.com\/poouo\/Forwardx\/releases\/download/);
+  assert.doesNotMatch(github, /github\.com\/go-gost\/gost|gost\.tgz/);
   assert.match(github, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
   assert.doesNotMatch(github, /install -m 0755 "\$GOST_BIN" "\$RUNTIME_BIN"/);
 
   assert.match(commit, /runtime_self_check "\$CANDIDATE"/);
   assert.match(commit, /mv -f "\$CANDIDATE" "\$RUNTIME_BIN"/);
   assert.doesNotMatch(installer, /rm -f "\$RUNTIME_BIN"/);
-  assert.match(installer, /install -m 0755 "\$BIN" "\$STAGED_RUNTIME"/);
-  assert.match(installer, /commit_runtime_candidate "\$STAGED_RUNTIME"/);
+  assert.doesNotMatch(installer, /command -v gost|install -m 0755 "\$BIN"/);
+  assert.match(installer, /install_runtime_from_github/);
 });
 
 test("realm installer validates a staged candidate before replacing the existing binary", () => {

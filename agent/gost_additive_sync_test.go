@@ -174,7 +174,7 @@ func TestGostAPISocketRequiresUnixScheme(t *testing.T) {
 	}
 }
 
-// Opt-in real-runtime coverage. CI uses the same upstream GOST 3.2.6 binary
+// Opt-in real-runtime coverage. CI uses the source-built ForwardX runtime
 // bundled with the Agent. This proves two established TCP connections survive
 // adding a third rule and a subsequent port-conflict rollback, not just that
 // the generated command text looks correct.

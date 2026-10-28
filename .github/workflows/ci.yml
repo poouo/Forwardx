@@ -68,7 +68,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
+          go-version: "1.24.x"
           cache-dependency-path: |
             agent/go.mod
             forwardx-fxp/go.mod
@@ -82,6 +82,7 @@ jobs:
           pnpm check:versions
           pnpm test:release-notes
           pnpm test:ui
+          pnpm test:developer-announcements
           pnpm test:globe-ui
           pnpm test:list-settings
           pnpm test:resource-traffic
@@ -123,10 +124,10 @@ jobs:
 
       - name: Verify Agent and FXP
         run: |
-          gost_test_dir=$(mktemp -d)
-          curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz -o "$gost_test_dir/gost.tgz"
-          tar -xzf "$gost_test_dir/gost.tgz" -C "$gost_test_dir"
-          export FORWARDX_TEST_GOST_BINARY="$gost_test_dir/gost"
+          bash scripts/build-runtime.sh amd64
+          export FORWARDX_TEST_GOST_BINARY="$PWD/dist/agent/forwardx-runtime-linux-amd64"
+          "$FORWARDX_TEST_GOST_BINARY" -V
+          "$FORWARDX_TEST_GOST_BINARY" -V | grep -F 'forwardx-runtime 3.2.6-forwardx.1 ('
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
 
