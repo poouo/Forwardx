@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { sendUserNotification, getNotificationAnnouncementSubscribers } from "../notifications";
 import { sanitizeHtml } from "../../shared/htmlSanitizer";
 import { APP_VERSION } from "../../shared/versions";
+import { developerAnnouncementReadKey, developerAnnouncementReadKeySchema } from "../../shared/developerAnnouncements";
+import { getUnreadDeveloperAnnouncement, dismissDeveloperAnnouncement } from "../developerAnnouncements";
 
 const ANNOUNCEMENT_TYPES = ["normal", "popup", "upgrade_popup"] as const;
 
@@ -91,13 +94,25 @@ export const announcementsRouter = router({
 
   upgradePopup: protectedProcedure.query(async ({ ctx }) => {
     if (ctx.user.role !== "admin") return null;
-    return (await db.getUnreadUpgradeAnnouncement(ctx.user.id, APP_VERSION)) ?? null;
+    const developer = await getUnreadDeveloperAnnouncement(ctx.user.id, APP_VERSION);
+    if (developer) return {
+      id: developerAnnouncementReadKey(developer), source: "developer" as const,
+      title: developer.title["zh-CN"], englishTitle: developer.title.en,
+      content: sanitizeAnnouncementContent(developer.content["zh-CN"]), englishContent: sanitizeAnnouncementContent(developer.content.en),
+      targetVersion: developer.fixedVersion ?? null,
+      releaseUrl: developer.fixedVersion ? `https://github.com/poouo/Forwardx/releases/tag/v${developer.fixedVersion}` : null,
+    };
+    const local = await db.getUnreadUpgradeAnnouncement(ctx.user.id, APP_VERSION);
+    return local ? { ...local, source: "local" as const, englishTitle: null, englishContent: null, releaseUrl: null } : null;
   }),
 
   dismiss: protectedProcedure
-    .input(z.object({ id: z.number().int().positive() }))
+    .input(z.object({ id: z.union([z.number().int().positive(), developerAnnouncementReadKeySchema]) }))
     .mutation(async ({ input, ctx }) => {
-      await db.dismissAnnouncement(ctx.user.id, input.id);
+      if (typeof input.id === "string") {
+        if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN" });
+        await dismissDeveloperAnnouncement(ctx.user.id, input.id);
+      } else await db.dismissAnnouncement(ctx.user.id, input.id);
       return { success: true };
     }),
 

@@ -95,6 +95,8 @@ const criticalQueryPaths = new Set([
   "billing.me",
   "trafficBilling.status",
   "plans.mySubscriptions",
+  // Isolate the GitHub-backed query: a slow feed must not hold up a UI batch.
+  "announcements.upgradePopup",
 ]);
 
 const trpcFetch = (input: RequestInfo | URL, init?: RequestInit) => {

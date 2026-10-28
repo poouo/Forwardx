@@ -2,14 +2,15 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## Unreleased
+## [2.3.293] - 2026-10-28
 
-- Bound MySQL / PostgreSQL query response times and acquisition queues; discard timed-out clients to release pending work, covering transactions, probes and database switches with separate maintenance budgets and no retries of uncertain writes.
-- Fix MySQL MCP token lists showing column names and Invalid Date, including broken revocation; cover token lifecycle, authorization and HTTP initialization with regression tests.
-- Bound background summary scheduling slices and in-flight refreshes so a slow query cannot hold the scheduler indefinitely; retain cached data and real query slots, with one diagnostic per slow refresh.
-- Harden installer JWT secret generation with 256-bit cryptographic randomness, fail closed on random-source errors, restrict environment file permissions, and retain existing secrets during upgrades.
-- Enforce administrator-only host, Agent token and tunnel management. Reject historical ordinary-user Agent credentials and apply issuer validation to both raw-token and signed authentication.
-- Show IP-switch waiting reasons, safe error classifications and the earliest next request time. Configure the provider interval in minutes (60 by default), preserve it across services/restarts, and retry only confirmed non-executions after the interval.
+- Build the forwarding runtime from source with ForwardX naming; upgrade the Agent package to update existing nodes.
+- Check developer notices on GitHub every 30 minutes, with bilingual popups independent of panel upgrades.
+- Improve database network recovery, query backpressure and background summaries to reduce abnormal resource usage.
+- Fix MySQL MCP token display and revocation; strengthen management permissions and installer secret generation.
+- Clarify China health-check IP-switch waiting, errors and provider request intervals.
+- Remind historical Docker deployments to check for placeholder JWT secrets; see the developer notice and upgrade guide.
+- Versions: panel `2.3.293`, Android / iOS `2.4.11`, Agent `2.2.206`, ForwardX FXP runtime `2.2.122` (unchanged). The source-built forwarding runtime is `3.2.6-forwardx.1`; restarting it may briefly interrupt connections.
 
 ## [2.3.292] - 2026-10-26
 
