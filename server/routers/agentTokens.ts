@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
-import { protectedProcedure, router } from "../_core/trpc";
+import { adminProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { maskToken } from "./helpers";
 import { isHostStatusOnline } from "../hostStatusNotifier";
@@ -19,16 +19,15 @@ function ruleOwnerSummary(owners: Array<{ userId: number; username: string | nul
 }
 
 export const agentTokensRouter = router({
-  list: protectedProcedure.query(async ({ ctx }) => {
-    const isAdmin = ctx.user.role === "admin";
-    const tokens = await db.getAgentTokens(isAdmin ? undefined : ctx.user.id);
+  list: adminProcedure.query(async () => {
+    const tokens = await db.getAgentTokens();
     return tokens.map((token: any) => ({
       ...token,
       token: maskToken(token.token),
     }));
   }),
-  create: protectedProcedure
-    .input(z.object({ description: z.string().optional() }))
+  create: adminProcedure
+    .input(z.object({ description: z.string().max(200).optional() }))
     .mutation(async ({ ctx, input }) => {
       const token = nanoid(32);
       const id = await db.createAgentToken({
@@ -38,32 +37,26 @@ export const agentTokensRouter = router({
       });
       return { id, token };
     }),
-  update: protectedProcedure
+  update: adminProcedure
     .input(z.object({ id: z.number(), description: z.string().max(200).nullable().optional() }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input }) => {
       const token = await db.getAgentTokenById(input.id);
       if (!token) throw new Error("Token 不存在");
-      if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
-        throw new Error("无权修改该 Token");
-      }
       const description = input.description?.trim() || null;
       await db.updateAgentTokenDescription(input.id, description);
       return { success: true };
     }),
-  reorder: protectedProcedure
+  reorder: adminProcedure
     .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(2000) }))
-    .mutation(async ({ input, ctx }) => {
-      await db.reorderAgentTokens(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id);
+    .mutation(async ({ input }) => {
+      await db.reorderAgentTokens(input.ids);
       return { success: true };
     }),
-  delete: protectedProcedure
+  delete: adminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const token = await db.getAgentTokenById(input.id);
       if (!token) throw new Error("Token 不存在");
-      if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
-        throw new Error("无权删除该 Token");
-      }
       let releasedPendingCleanup = 0;
       const hostIds = new Set<number>();
       if (token.hostId) hostIds.add(Number(token.hostId));
@@ -92,17 +85,14 @@ export const agentTokensRouter = router({
       }
       return { success: true, releasedPendingCleanup, removedHosts };
     }),
-  getInstallToken: protectedProcedure
+  getInstallToken: adminProcedure
     .input(z.object({ id: z.number().optional(), token: z.string().optional() }))
-    .query(async ({ input, ctx }) => {
+    .query(async ({ input }) => {
       if (!input.id && !input.token) throw new Error("缺少 Token 参数");
       const token = input.id
         ? await db.getAgentTokenById(input.id)
         : await db.getAgentTokenByToken(input.token!);
       if (!token) throw new Error("Token 不存在");
-      if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
-        throw new Error("无权使用该 Token");
-      }
       const host = await db.getHostByAgentToken(token.token);
       return { token: token.token, boundHost: host ? { id: host.id, name: host.name, isOnline: isHostStatusOnline(host) } : null };
     }),

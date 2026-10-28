@@ -97,7 +97,7 @@ test("member removal synchronizes templates, preserves healthy siblings and safe
       const { hostsRouter } = await mod("server/routers/hosts.ts");
       const caller = hostsRouter.createCaller({ user: { id: 99, role: "user" }, req: { headers: {} }, res: {} });
       for (const action of ["prepareDelete", "deleteImpact", "delete"]) {
-        await assert.rejects(() => caller[action]({ id: 3 }), /无权操作/);
+        await assert.rejects(() => caller[action]({ id: 3 }), { code: "FORBIDDEN" });
       }
       assert.deepEqual(await runtime.queryRaw('SELECT "id" FROM "hosts" WHERE "id" = 3'), [{ id: 3 }]);
       await group(12, [member(4)], "entry");
@@ -312,10 +312,10 @@ test("disabled topology changes and historical tombstones release only obsolete 
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("deletion preview and mutation enforce host ownership and UI cannot force-delete actual dependencies", () => {
+test("deletion preview and mutation require administrators and UI cannot force-delete actual dependencies", () => {
   const source = fs.readFileSync("server/routers/hosts.ts", "utf8");
   for (const name of ["prepareDelete", "deleteImpact", "delete"]) {
-    const start = source.indexOf(`    ${name}: protectedProcedure`);
+    const start = source.indexOf(`    ${name}: adminProcedure`);
     assert.ok(start >= 0);
     const block = source.slice(start, source.indexOf("      }),", start));
     assert.match(block, /ctx.user.role !== "admin" && host.userId !== ctx.user.id/);

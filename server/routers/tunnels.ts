@@ -916,7 +916,7 @@ export const tunnelsRouter = router({
           () => db.getTunnelLatencySeries(input.tunnelId, { ...window, bucketSeconds: latencyChartBucketSeconds(window.hours) }),
         );
       }),
-    create: protectedProcedure
+    create: adminProcedure
       .input(z.object({
         name: z.string().min(1).max(128),
         entryGroupId: z.number().nullable().optional(),
@@ -1163,7 +1163,7 @@ export const tunnelsRouter = router({
           releaseHostPortReservations(heldReservations);
         }
       })),
-    update: protectedProcedure
+    update: adminProcedure
       .input(z.object({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
@@ -1760,7 +1760,7 @@ export const tunnelsRouter = router({
           releaseHostPortReservations(heldReservations);
         }
       }))),
-    deleteImpact: protectedProcedure
+    deleteImpact: adminProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.id);
@@ -1768,7 +1768,7 @@ export const tunnelsRouter = router({
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
         return getTunnelDeleteImpact(input.id);
       }),
-    delete: protectedProcedure
+    delete: adminProcedure
       .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
       .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
         const tunnel = await db.getTunnelById(input.id);

@@ -265,7 +265,7 @@ export async function monitorOverview(page = 0, ipPage = 0) {
     queryRaw<any>(`SELECT COUNT(*) AS ${q("total")}, SUM(CASE WHEN ${q("twoFactorEnabled")} = ${"TRUE"} THEN 1 ELSE 0 END) AS ${q("secured")} FROM ${q("users")} WHERE ${q("role")} = 'admin'`),
     getHosts(), import("./db").then(db => db.getAllSettings()),
     queryRaw<any>(`SELECT p.${q("serviceId")}, s.${q("name")}, s.${q("isEnabled")}, h.${q("name")} AS ${q("hostName")} FROM ${q("host_probe_health")} p INNER JOIN ${q("host_probe_services")} s ON s.${q("id")} = p.${q("serviceId")} INNER JOIN ${q("hosts")} h ON h.${q("id")} = p.${q("hostId")} ORDER BY p.${q("updatedAt")} DESC LIMIT 50`),
-    queryRaw<any>(`SELECT a.${q("id")}, a.${q("serviceId")}, a.${q("status")}, a.${q("newIp")}, a.${q("createdAt")}, a.${q("acknowledged")}, h.${q("name")} AS ${q("hostName")}, s.${q("name")} AS ${q("serviceName")} FROM ${q("host_ip_switch_attempts")} a LEFT JOIN ${q("hosts")} h ON h.${q("id")} = a.${q("hostId")} LEFT JOIN ${q("host_probe_services")} s ON s.${q("id")} = a.${q("serviceId")} WHERE a.${q("createdAt")} >= ? ORDER BY a.${q("id")} DESC LIMIT 20 OFFSET ${ipPage * 20}`, [now - 30 * 86400]),
+    queryRaw<any>(`SELECT a.${q("id")}, a.${q("serviceId")}, a.${q("status")}, a.${q("reason")}, a.${q("httpStatus")}, a.${q("newIp")}, a.${q("createdAt")}, a.${q("cooldownUntil")}, a.${q("acknowledged")}, h.${q("name")} AS ${q("hostName")}, s.${q("name")} AS ${q("serviceName")} FROM ${q("host_ip_switch_attempts")} a LEFT JOIN ${q("hosts")} h ON h.${q("id")} = a.${q("hostId")} LEFT JOIN ${q("host_probe_services")} s ON s.${q("id")} = a.${q("serviceId")} WHERE a.${q("createdAt")} >= ? ORDER BY a.${q("id")} DESC LIMIT 20 OFFSET ${ipPage * 20}`, [now - 30 * 86400]),
     queryRaw<any>(`SELECT COUNT(*) AS ${q("total")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("createdAt")} >= ?`, [now - 30 * 86400]),
     queryRaw<any>(`SELECT a.*, h.${q("name")} AS ${q("hostName")} FROM ${q("resource_alert_service_state")} a INNER JOIN ${q("hosts")} h ON h.${q("id")} = a.${q("hostId")} WHERE a.${q("phase")} IN ('active','recovering') ORDER BY a.${q("since")} DESC LIMIT 50`),
     configuredResourceAlertServices(),
@@ -281,6 +281,7 @@ export async function monitorOverview(page = 0, ipPage = 0) {
     const view = healthViews.get(Number(row.serviceId));
     return view?.enabled ? [{ serviceId: Number(row.serviceId), name: row.name, hostName: row.hostName,
       isEnabled: row.isEnabled === true || Number(row.isEnabled) === 1,
+      autoSwitch: view.autoSwitch, agentReady: view.agentReady, nextSwitchAt: view.nextSwitchAt,
       state: view.state, blockedAction: view.blockedAction }] : [];
   });
   const metrics = await getLatestHostMetricRows(hosts.map((host: any) => host.id));

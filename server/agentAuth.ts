@@ -88,7 +88,13 @@ export async function resolveAgentTokenFromAuthorization(
   if (!authHeader?.startsWith("Bearer ")) return null;
   const credential = authHeader.substring(7).trim();
   if (!credential) return null;
-  if (!credential.startsWith("v1.") && !credential.startsWith("v2.")) return credential;
+  if (!credential.startsWith("v1.") && !credential.startsWith("v2.")) {
+    // Encryption with a caller-chosen key is not authentication. Raw-token
+    // compatibility must obey the same issuer/revocation checks as signed auth.
+    if (await db.isKnownAgentAuthToken(credential)) return credential;
+    if (await db.isKnownAgentAuthToken(credential, { force: true })) return credential;
+    throw new Error("Invalid Agent auth proof");
+  }
   (req as any).agentSignedAuthAttempted = true;
   const verify = (tokens: string[]) => {
     const candidate = tokenCandidateForProof(credential, tokens);

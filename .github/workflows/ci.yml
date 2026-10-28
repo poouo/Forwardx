@@ -110,6 +110,7 @@ jobs:
           pnpm test:payments
           pnpm test:product-stock
           pnpm test:performance
+          pnpm test:database-network
           pnpm test:plugin-bbr
           pnpm exec tsc --noEmit
           pnpm build

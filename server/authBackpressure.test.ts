@@ -119,7 +119,7 @@ test("real auth survives pool errors and bursts; revocation and account checks r
       const {default:express}=await import("express");
       const {registerAgentHeartbeatRoute}=await import("./server/agentHeartbeatRoute.ts");
       const {databaseRequestErrorHandler}=await import("./server/databaseHealthRoutes.ts");
-      await runtime.executeRaw('INSERT INTO hosts (id,name,ip,userId,agentToken,isOnline,lastHeartbeat) VALUES (1,?,?,1,?,1,?)',["test","192.0.2.1","isolated-agent-token",Math.floor(Date.now()/1000)]);
+      await runtime.executeRaw('INSERT INTO hosts (id,name,ip,userId,agentToken,isOnline,lastHeartbeat) VALUES (1,?,?,2,?,1,?)',["test","192.0.2.1","isolated-agent-token",Math.floor(Date.now()/1000)]);
       const app=express(); app.use(express.json());
       // The production encrypted transport resolves this field before routing.
       app.use((req,_res,next)=>{req.agentToken=req.headers.authorization?.substring(7);next();});

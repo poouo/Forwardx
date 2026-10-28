@@ -57,16 +57,17 @@ test("only administrators may enable shutdown; allowance and threshold are valid
   await assert.rejects(admin.update({ id: 1, trafficShutdownEnabled: true, trafficLimit: 0 }), /套餐流量/);
   await assert.rejects(admin.update({ id: 1, trafficShutdownThresholdPercent: 101 }));
   await assert.rejects(admin.update({ id: 1, trafficShutdownThresholdPercent: 0 }));
-  const owned = await customer.create({ name: "owned", ip: "192.0.2.4", trafficLimit: 1000, trafficShutdownEnabled: true, trafficShutdownThresholdPercent: 5 });
+  await assert.rejects(customer.create({ name: "owned", ip: "192.0.2.4", trafficLimit: 1000, trafficShutdownEnabled: true, trafficShutdownThresholdPercent: 5 }), { code: "FORBIDDEN" });
+  const owned = await admin.create({ name: "owned", ip: "192.0.2.4", trafficLimit: 1000 });
   assert.equal((await hosts.getHostById(owned.id))?.trafficShutdownEnabled, false);
-  await customer.update({ id: owned.id, trafficShutdownEnabled: true });
+  await assert.rejects(customer.update({ id: owned.id, trafficShutdownEnabled: true }), { code: "FORBIDDEN" });
   assert.equal((await hosts.getHostById(owned.id))?.trafficShutdownEnabled, false);
   await admin.update({ id: owned.id, trafficLimit: 1000, trafficShutdownEnabled: true, trafficShutdownThresholdPercent: 80 });
-  await customer.update({ id: owned.id, trafficShutdownEnabled: false, trafficShutdownThresholdPercent: 1, name: "renamed" });
+  await assert.rejects(customer.update({ id: owned.id, trafficShutdownEnabled: false, trafficShutdownThresholdPercent: 1, name: "renamed" }), { code: "FORBIDDEN" });
   const saved = (await hosts.getHostById(owned.id))!;
   assert.equal(saved.trafficShutdownEnabled, true);
   assert.equal(saved.trafficShutdownThresholdPercent, 80);
-  await assert.rejects(router.createCaller(context(3, "user")).update({ id: owned.id, trafficShutdownEnabled: true }), /无权/);
+  await assert.rejects(router.createCaller(context(3, "user")).update({ id: owned.id, trafficShutdownEnabled: true }), { code: "FORBIDDEN" });
 });
 
 test("threshold uses the selected measurement mode and requires fresh real samples", async () => {

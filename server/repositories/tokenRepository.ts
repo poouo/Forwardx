@@ -1,5 +1,6 @@
 ﻿import { asc, desc, eq } from "drizzle-orm";
-import { agentTokens, hosts, InsertAgentToken } from "../../drizzle/schema";
+import { and } from "drizzle-orm";
+import { agentTokens, hosts, users, InsertAgentToken } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { inList, quoteIdentifier } from "../dbCompat";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
@@ -10,10 +11,11 @@ export const AGENT_AUTH_TOKEN_CACHE_TTL_MS = 60_000;
 type AgentAuthHostIdentity = { id: number; name: string; agentInstallationId: string };
 type AgentAuthTokenSnapshot = {
   tokens: string[];
+  tokenSet: Set<string>;
   hostIdentityByToken: Map<string, AgentAuthHostIdentity>;
 };
 
-let agentAuthTokenCache: (AgentAuthTokenSnapshot & { expiresAt: number }) | null = null;
+let agentAuthTokenCache: (AgentAuthTokenSnapshot & { expiresAt: number; loadedAt: number }) | null = null;
 let agentAuthTokenLoad: Promise<AgentAuthTokenSnapshot> | null = null;
 let agentAuthTokenGeneration = 0;
 
@@ -50,9 +52,14 @@ export function invalidateAgentAuthTokenCandidates() {
 
 async function loadAgentAuthTokenCandidates() {
   const db = await getDb();
-  if (!db) return { tokens: [], hostIdentityByToken: new Map<string, AgentAuthHostIdentity>() };
-  const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
-  const hostRows = await db.select({ id: hosts.id, name: hosts.name, token: hosts.agentToken, agentInstallationId: hosts.agentInstallationId }).from(hosts);
+  if (!db) return { tokens: [], tokenSet: new Set<string>(), hostIdentityByToken: new Map<string, AgentAuthHostIdentity>() };
+  // Ordinary accounts could formerly mint tokens. Reject those historical
+  // credentials as well as new requests, without deleting incident evidence.
+  const trustedIssuer = and(eq(users.role, "admin"), eq(users.accountEnabled, true));
+  const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens)
+    .innerJoin(users, eq(agentTokens.userId, users.id)).where(trustedIssuer);
+  const hostRows = await db.select({ id: hosts.id, name: hosts.name, token: hosts.agentToken, agentInstallationId: hosts.agentInstallationId }).from(hosts)
+    .innerJoin(users, eq(hosts.userId, users.id)).where(trustedIssuer);
   const tokens = Array.from(new Set([
     ...tokenRows.map((row: any) => row.token),
     ...hostRows.map((row: any) => row.token),
@@ -64,19 +71,21 @@ async function loadAgentAuthTokenCandidates() {
     if (!token || !Number.isInteger(id) || id <= 0) continue;
     hostIdentityByToken.set(token, { id, name: String(row?.name || ""), agentInstallationId: String(row?.agentInstallationId || "") });
   }
-  return { tokens, hostIdentityByToken };
+  return { tokens, tokenSet: new Set(tokens), hostIdentityByToken };
 }
 
 async function getAgentAuthTokenSnapshot(options: { force?: boolean } = {}) {
   const now = Date.now();
-  if (!options.force && agentAuthTokenCache && agentAuthTokenCache.expiresAt > now) {
+  // Invalid proofs must not force two full credential queries per request.
+  // Real local changes explicitly invalidate the snapshot and bypass this floor.
+  if (agentAuthTokenCache && agentAuthTokenCache.expiresAt > now && (!options.force || now - agentAuthTokenCache.loadedAt < 1000)) {
     return agentAuthTokenCache;
   }
   if (agentAuthTokenLoad) return agentAuthTokenLoad;
   const loadGeneration = agentAuthTokenGeneration;
   const load = loadAgentAuthTokenCandidates().then((snapshot) => {
     if (loadGeneration === agentAuthTokenGeneration) {
-      agentAuthTokenCache = { expiresAt: Date.now() + AGENT_AUTH_TOKEN_CACHE_TTL_MS, ...snapshot };
+      agentAuthTokenCache = { loadedAt: Date.now(), expiresAt: Date.now() + AGENT_AUTH_TOKEN_CACHE_TTL_MS, ...snapshot };
     }
     return snapshot;
   });
@@ -90,6 +99,10 @@ async function getAgentAuthTokenSnapshot(options: { force?: boolean } = {}) {
 
 export async function getAgentAuthTokenCandidates(options: { force?: boolean } = {}) {
   return (await getAgentAuthTokenSnapshot(options)).tokens;
+}
+
+export async function isKnownAgentAuthToken(token: string, options: { force?: boolean } = {}) {
+  return (await getAgentAuthTokenSnapshot(options)).tokenSet.has(token);
 }
 
 export async function getAgentAuthHostIdentity(tokenValue: unknown, options: { force?: boolean } = {}) {

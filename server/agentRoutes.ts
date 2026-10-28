@@ -424,6 +424,15 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
       return;
     }
 
+    // Tokens issued through the former ordinary-user endpoint must not be
+    // able to recreate deleted hosts. Existing installations are not deleted.
+    const issuer = await db.getUserById(agentToken.userId);
+    if (!issuer || issuer.role !== "admin" || issuer.accountEnabled === false) {
+      appendPanelLog("warn", `[AgentRegister] rejected untrusted token issuer user=${agentToken.userId}`);
+      res.status(403).json({ error: "Agent registration requires an enabled administrator-issued token" });
+      return;
+    }
+
     // 检查是否已有主机使用此 token
     const initialReportedAddress = mergeAgentReportedAddress(req.body);
     const nextOsInfo = normalizeAgentText(osInfo, 256);

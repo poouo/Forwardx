@@ -202,3 +202,11 @@ test("health configuration keeps verbose help collapsed and shows concise warnin
     }
   } finally { setLanguagePreference(previous); await initializeLanguage(); }
 });
+
+test("provider interval is editable in minutes and defaults to 60 without losing stored seconds", () => {
+  const draft = { ...createChinaHealthDraft(), enabled: true, notify: false };
+  assert.equal(draft.cooldownSeconds, 3600);
+  const html = renderToStaticMarkup(<HostChinaHealthSettings value={draft} onChange={() => {}} />);
+  assert.match(html, /<input type="number"[^>]*id="china-cooldownSeconds"[^>]*min="5"[^>]*max="1440"[^>]*value="60"/);
+  assert.equal(chinaHealthPayload({ ...draft, cooldownSeconds: 90 * 60 }).cooldownSeconds, 5400);
+});

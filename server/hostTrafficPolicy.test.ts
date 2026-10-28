@@ -114,7 +114,7 @@ test("SQLite quota state survives restart; resets/configuration/rollback retain 
     assert.deepEqual([...await policy.getTrafficExcludedHostIds()], [1]);
     const router = (await mod("server/routers/hosts.ts")).hostsRouter;
     const userCaller = router.createCaller({user:{id:1,role:"user",accountEnabled:true},req:{headers:{}},res:{}});
-    await userCaller.update({id:1,trafficFailoverEnabled:false,trafficFailoverThresholdPercent:100});
+    await assert.rejects(userCaller.update({id:1,trafficFailoverEnabled:false,trafficFailoverThresholdPercent:100}), {code:"FORBIDDEN"});
     assert.deepEqual([...await policy.getTrafficExcludedHostIds()], [1],"ordinary users cannot disable the admin traffic policy");
     const adminCaller = router.createCaller({user:{id:1,role:"admin",accountEnabled:true},req:{headers:{}},res:{}});
     await assert.rejects(adminCaller.update({id:1,trafficFailoverEnabled:true,trafficLimit:0}),/套餐流量/);

@@ -16,6 +16,7 @@ import { seamlessDatabaseOperation } from "./seamlessMigrationState";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 import { displayQueries } from "./displayQueryCache";
 import { retryTransactionConflicts, type TransactionAttemptState } from "./transactionRetry";
+import { guardDatabasePool } from "./databaseNetworkGuard";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 export const MYSQL_MIN_VERSION = "8.0.13";
@@ -512,6 +513,8 @@ function mysqlConnectionOptions(config: MysqlConfig): ConnectionOptions {
     password: config.password,
     database: config.database,
     connectTimeout: pool.connectTimeoutMillis,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10_000,
     timezone: "+00:00",
     dateStrings: false,
     flags: MYSQL_COMPATIBILITY_FLAGS,
@@ -543,6 +546,8 @@ function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
     min: pool.maxIdle,
     idleTimeoutMillis: pool.idleTimeoutMillis,
     connectionTimeoutMillis: pool.connectTimeoutMillis,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
     maxLifetimeSeconds: pool.maxLifetimeSeconds,
     // Let node-postgres use its default CA validation when TLS is enabled.
     // Passing rejectUnauthorized=false would allow a man-in-the-middle attack.
@@ -553,18 +558,17 @@ function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
 
 export async function testMysqlConnection(config: MysqlConfig) {
   const normalized = normalizeMysql(config);
-  const conn = await mysql.createConnection(mysqlConnectionOptions(normalized));
+  const pool = guardDatabasePool(mysql.createPool({ ...poolOptions(normalized), connectionLimit: 1, maxIdle: 1 }), "mysql", () => ({ ...getDatabasePoolSettings(), maxOpen: 1 }));
   try {
-    await conn.ping();
-    await assertSupportedMysqlServer((sqlText) => conn.query(sqlText));
-  } finally {
-    await conn.end();
-  }
+    await pool.query("SELECT 1");
+    await assertSupportedMysqlServer((sqlText) => pool.query(sqlText));
+  } finally { await pool.end(); }
 }
 
 export async function testPostgresqlConnection(config: PostgresqlConfig) {
   const normalized = normalizePostgresql(config);
-  const pool = new pg.Pool(pgPoolOptions(normalized));
+  const pool = guardDatabasePool(new pg.Pool(pgPoolOptions(normalized)), "postgresql", getDatabasePoolSettings);
+  pool.on("error", () => {});
   try {
     await pool.query("SELECT 1");
   } finally {
@@ -642,7 +646,7 @@ async function connectDatabaseOnce(config: DatabaseConfig | null) {
 
   if (config.type === "mysql") {
     const normalized = normalizeMysql(config.mysql);
-    _pool = mysql.createPool(poolOptions(normalized));
+    _pool = guardDatabasePool(mysql.createPool(poolOptions(normalized)), "mysql", getDatabasePoolSettings);
     await _pool.query("SELECT 1");
     await assertSupportedMysqlServer((sqlText) => _pool!.query(sqlText));
     _db = drizzleMysql(reportingDatabaseClient(_pool)) as Db;
@@ -653,7 +657,7 @@ async function connectDatabaseOnce(config: DatabaseConfig | null) {
 
   if (config.type === "postgresql") {
     const normalized = normalizePostgresql(config.postgresql);
-    _pgPool = new pg.Pool(pgPoolOptions(normalized));
+    _pgPool = guardDatabasePool(new pg.Pool(pgPoolOptions(normalized)), "postgresql", getDatabasePoolSettings);
     // node-postgres emits idle-client disconnects on the pool. Without an
     // error listener, stopping PostgreSQL can terminate the entire Node process.
     _pgPool.on("error", (error) => { databaseHealth.unavailable(error); });

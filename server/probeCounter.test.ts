@@ -144,8 +144,9 @@ test("SQLite cumulative probe statistics deduplicate retries, include suppressed
     assert.equal((await forwardGroupsRouter.createCaller(ctx(7)).probeStatistics({groupId:10,hours:24})).total, 63);
     // Real report endpoint: counters are authorized before storage, stable
     // health still stays gated, and a new epoch always gets its own baseline.
+    await insert("users", ["id", "username", "password", "role"], [1, "probe-admin", "unused", "admin"]);
     for (const id of [1,2]) await insert("hosts", ["id","name","ip","hostType","agentToken","userId"],
-      [id,"host-"+id,"127.0.0."+id,"slave","probe-token-"+id,7]);
+      [id,"host-"+id,"127.0.0."+id,"slave","probe-token-"+id,1]);
     await insert("forward_rules", ["id","hostId","name","forwardType","protocol","sourcePort","targetIp","targetPort","userId"], [50,1,"wire","realm","tcp",10050,"localhost",443,7]);
     const app = express();
     app.use(express.json());

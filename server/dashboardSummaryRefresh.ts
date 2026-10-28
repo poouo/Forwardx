@@ -14,8 +14,9 @@ export function startDashboardSummaryRefresh() {
       console.warn(`[DashboardSummary] ${result.failed + operations.failed} refreshes failed; previous summaries retained`);
     }
   }, { shouldRun: () => databaseHealth.snapshot().state === "healthy" });
-  // One-second scheduling tick, one-minute data cadence. Budgeted serial work
-  // yields between users instead of releasing a burst of Promise.all queries.
+  // One-second scheduling tick, one-minute data cadence. Each cache has a real
+  // bounded waiting slice; slow in-flight DB queries keep their own slots but
+  // cannot hold this scheduler (or the other cache) indefinitely.
   const timer = setInterval(() => { void run(); }, 1000);
   timer.unref();
   stop = () => { clearInterval(timer); stop = undefined; };

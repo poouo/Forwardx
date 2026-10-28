@@ -38,6 +38,8 @@ export type ChinaHealthState = {
   phase: "unknown" | "healthy" | "suspect" | "unhealthy" | "recovering";
   failures: number; successes: number; failureSince: number; lastSeen: number;
   incidentId: string; actionAttempted: boolean;
+  actionBlockedReason?: "agent_unavailable" | "unresolved" | "daily_limit" | "cooldown";
+  actionRetryAt?: number;
 };
 export function advanceChinaHealth(previous: ChinaHealthState | null, success: boolean, now: number, interval: number, config: HostChinaHealthConfig) {
   const state: ChinaHealthState = previous ? { ...previous } : { phase: "unknown", failures: 0, successes: 0, failureSince: 0, lastSeen: 0, incidentId: "", actionAttempted: false };
@@ -49,7 +51,10 @@ export function advanceChinaHealth(previous: ChinaHealthState | null, success: b
     state.failures = 0; state.failureSince = 0; state.successes++;
     if (state.phase === "unhealthy" || state.phase === "recovering") {
       state.phase = "recovering";
-      if (state.successes >= config.recoveryThreshold) { state.phase = "healthy"; event = "recovered"; state.incidentId = ""; state.actionAttempted = false; }
+      if (state.successes >= config.recoveryThreshold) {
+        state.phase = "healthy"; event = "recovered"; state.incidentId = ""; state.actionAttempted = false;
+        delete state.actionBlockedReason; delete state.actionRetryAt;
+      }
     } else state.phase = "healthy";
   } else {
     state.successes = 0; state.failures++;
@@ -65,3 +70,15 @@ export function advanceChinaHealth(previous: ChinaHealthState | null, success: b
 export function readJsonPath(value: unknown, path: string): unknown {
   return path.split(".").reduce((current: any, key) => current != null && typeof current === "object" && Object.hasOwn(current, key) ? current[key] : undefined, value);
 }
+
+export const ipSwitchReasonLabels: Record<string, string> = {
+  ok: "请求完成", invalid_request: "接口配置不合法", expired: "任务已过期", duplicate: "Agent 已处理过此任务",
+  state_unavailable: "Agent 无法保存防重复标记", claim_denied: "执行前配置或主机状态已变化",
+  request_failed: "商家接口连接失败或超时", http_status: "商家接口返回非 2xx 状态",
+  invalid_response: "商家返回的内容不是有效 JSON", success_mismatch: "商家返回值与成功条件不匹配",
+  invalid_ip: "商家返回的新 IP 无效", agent_unavailable: "Agent 暂不可用",
+};
+export const ipSwitchBlockedLabels: Record<string, string> = {
+  agent_unavailable: "等待 Agent 上报换 IP 能力", unresolved: "等待核对上次商家结果",
+  daily_limit: "已达 24h 请求上限", cooldown: "商家请求间隔中",
+};

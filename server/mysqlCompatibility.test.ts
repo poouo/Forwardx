@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import mysql, { type ConnectionOptions, type PoolOptions } from "mysql2/promise";
+import mysql, { type PoolOptions } from "mysql2/promise";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 
 const QUERY_ATTRIBUTES = 0x08000000;
@@ -24,24 +24,12 @@ test("setup checks, monitoring and runtime pools all use compatible MySQL option
   process.env.DATABASE_TYPE = "mysql";
   const runtime = await import("./dbRuntime");
   const { probeDatabase } = await import("./databaseHealthMonitor");
-  const connections: ConnectionOptions[] = [];
   const pools: PoolOptions[] = [];
   const createPool = mysql.createPool;
-  let ended = 0;
-  let destroyed = 0;
-  t.mock.method(mysql, "createConnection", async (options: ConnectionOptions) => {
-    connections.push(options);
-    return {
-      async ping() {},
-      async query() { return [[{ version: "8.0.24" }], []]; },
-      async end() { ended++; },
-      destroy() { destroyed++; },
-    };
-  });
   t.mock.method(mysql, "createPool", (options: PoolOptions) => {
     pools.push(options);
     const pool = createPool(options);
-    t.mock.method(pool, "query", async () => [[{ version: "8.0.24" }], []]);
+    t.mock.method(pool, "getConnection", async () => ({ query: async () => [[{ version: "8.0.24" }], []], release() {}, destroy() {} }));
     return pool;
   });
   assert.equal(runtime.getSchemaDialect(), "mysql");
@@ -54,12 +42,9 @@ test("setup checks, monitoring and runtime pools all use compatible MySQL option
       assert.equal((runtime.getPool() as any).pool.config.connectionConfig.clientFlags & QUERY_ATTRIBUTES, 0);
       await runtime.closeDatabase();
     }
-    assert.equal(connections.length, 4);
-    assert.equal(pools.length, 2);
-    assert.equal(ended, 2);
-    assert.equal(destroyed, 2);
-    const optionsWithTls = new Set([connections[2], connections[3], pools[1]]);
-    for (const options of [...connections, ...pools]) {
+    assert.equal(pools.length, 6);
+    const optionsWithTls = new Set(pools.slice(3));
+    for (const options of pools) {
       assert.equal(options.flags, MYSQL_COMPATIBILITY_FLAGS);
       assert.equal(options.password, config.password);
       assert.equal(options.multipleStatements, undefined, "do not enable SQL statement concatenation");

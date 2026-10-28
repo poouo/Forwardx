@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBackgroundSummaryCache } from "./backgroundSummaryCache";
+import { createRequestWorkPool } from "./requestWorkPool";
 
 test("summaries isolate users, coalesce cold requests and refresh only in background", async () => {
   let now = 0, calls = 0;
@@ -63,4 +64,73 @@ test("invalidation cannot resurrect pending work; LRU, byte and idle bounds appl
   assert.deepEqual(cache.size(), { entries: 0, bytes: 0 });
   await assert.rejects(cache.get("1:fail", async () => { throw new Error("cold failure"); }));
   assert.equal(cache.size().entries, 0);
+});
+
+test("a slow query cannot hold a scheduling slice or starve other users and report caches", async () => {
+  let now = 0, slowCalls = 0;
+  const pool = createRequestWorkPool({ concurrency: 3, maxQueued: 0, queueTimeoutMs: 50 });
+  const cache = createBackgroundSummaryCache({ now: () => now, refreshMs: 100, run: pool.run });
+  const reports = createBackgroundSummaryCache({ now: () => now, refreshMs: 100, run: pool.run });
+  await cache.get("1:slow", async () => "previous");
+  await cache.get("2:fast", async () => "previous");
+  await reports.get("1:overview", async () => "previous");
+  now = 101;
+  let release!: (value: string) => void;
+  await cache.get("1:slow", () => { slowCalls++; return new Promise<string>(resolve => { release = resolve; }); });
+  await cache.get("2:fast", async () => "fresh-user");
+  await reports.get("1:overview", async () => "fresh-report");
+  const first = await cache.refreshDue(5);
+  assert.deepEqual(first, { refreshed: 0, failed: 0 });
+  assert.equal(pool.stats().active, 1, "ending a scheduling slice must NOT release the running SQL slot");
+  assert.equal(await cache.get("1:slow", async () => "must-not-run"), "previous");
+  await cache.refreshDue();
+  await reports.refreshDue();
+  assert.equal(await cache.get("2:fast", async () => "unused"), "fresh-user");
+  assert.equal(await reports.get("1:overview", async () => "unused"), "fresh-report");
+  assert.equal(slowCalls, 1);
+  assert.equal(pool.stats().active, 1);
+  release("fresh-slow");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await cache.refreshDue(), { refreshed: 1, failed: 0 }, "late completion is counted on the next tick");
+  assert.equal(await cache.get("1:slow", async () => "unused"), "fresh-slow");
+  assert.equal(pool.stats().active, 0);
+});
+
+test("pending background work is bounded across invalidation, late failures back off and slow warnings are once per query", async () => {
+  let now = 0, calls = 0;
+  const warnings: string[] = [];
+  const cache = createBackgroundSummaryCache({ now: () => now, refreshMs: 100, maxBackgroundPending: 1,
+    slowRefreshMs: 0, onSlowRefresh: key => { warnings.push(key); } });
+  await cache.get("1:stats", async () => "previous");
+  let reject!: (error: Error) => void;
+  now = 101;
+  await cache.get("1:stats", () => { calls++; return new Promise<string>((_resolve, fail) => { reject = fail; }); });
+  await cache.refreshDue(5);
+  await cache.refreshDue(5);
+  await cache.refreshDue(5);
+  assert.deepEqual(warnings, ["1:stats"]);
+  assert.equal(calls, 1);
+  cache.clear([1]);
+  await cache.get("2:stats", async () => "previous-2");
+  now = 202;
+  await cache.get("2:stats", async () => { calls++; return "fresh-2"; });
+  await cache.refreshDue(5);
+  assert.equal(calls, 1, "invalidation must not permit more slow SQL queries to accumulate");
+  reject(new Error("delayed DB failure"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await cache.refreshDue(), { refreshed: 1, failed: 1 });
+  assert.equal(await cache.get("2:stats", async () => "unused"), "fresh-2");
+
+  let fail!: (error: Error) => void;
+  now += 101;
+  await cache.get("2:stats", () => { calls++; return new Promise<string>((_resolve, reject) => { fail = reject; }); });
+  await cache.refreshDue(5);
+  fail(new Error("offline"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await cache.refreshDue(), { refreshed: 0, failed: 1 });
+  assert.equal(await cache.get("2:stats", async () => "newer"), "fresh-2");
+  assert.deepEqual(await cache.refreshDue(), { refreshed: 0, failed: 0 });
+  now += 30_001;
+  assert.deepEqual(await cache.refreshDue(), { refreshed: 1, failed: 0 });
+  assert.equal(await cache.get("2:stats", async () => "unused"), "newer");
 });
