@@ -1,5 +1,6 @@
 import { t as translateText } from "@/i18n";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
+import { forwardGroupDdnsHostValue, normalizeForwardGroupRecordType } from "@shared/forwardGroupDdns";
 import {
   LINK_PROBE_FRESH_MS,
   LINK_PROBE_MAX_FUTURE_SKEW_MS,
@@ -176,27 +177,10 @@ function enabledMembers(group: any) {
   return (Array.isArray(group?.members) ? group.members : []).filter((member: any) => member?.isEnabled !== false);
 }
 
-function looksLikeIpv4(value: unknown) {
-  const parts = String(value || "").trim().split(".");
-  return parts.length === 4 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-}
-
-function looksLikeIpv6(value: unknown) {
-  const text = String(value || "").trim().replace(/^\[|\]$/g, "");
-  return text.includes(":") && /^[0-9a-f:.]+$/i.test(text);
-}
-
 function memberRecordAvailable(group: any, member: any, hostById: Map<number, any>, tunnelById: Map<number, any>) {
   const tunnel = Number(member?.tunnelId || 0) > 0 ? tunnelById.get(Number(member.tunnelId)) : null;
   const host = hostById.get(Number(member?.hostId || tunnel?.entryHostId || 0));
-  const manual = String(host?.entryIp || "").trim();
-  const recordType = String(group?.recordType || "A").toUpperCase();
-  if (recordType === "AAAA") return looksLikeIpv6(manual) || looksLikeIpv6(host?.ipv6) || looksLikeIpv6(host?.ip);
-  if (recordType === "CNAME") {
-    if (manual && !looksLikeIpv4(manual) && !looksLikeIpv6(manual)) return true;
-    return !!(host?.ddnsEnabled && String(host?.ddnsDomain || "").trim());
-  }
-  return looksLikeIpv4(manual) || looksLikeIpv4(host?.ipv4) || looksLikeIpv4(host?.ip);
+  return !!forwardGroupDdnsHostValue(host, normalizeForwardGroupRecordType(group?.recordType));
 }
 
 function tunnelRouteHostIds(tunnel: any): number[] {

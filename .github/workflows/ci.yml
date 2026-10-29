@@ -14,6 +14,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  postgresql-upgrade:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["12-alpine", "18-alpine"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: forwardx-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify PostgreSQL fresh install, upgrade and restart
+        env:
+          FORWARDX_TEST_POSTGRES_URL: postgresql://postgres:forwardx-ci-only@127.0.0.1:5432/postgres
+        run: node --import tsx --test server/postgresqlSchemaMigration.test.ts server/postgresqlUpgrade.integration.test.ts
   mysql-upgrade:
     runs-on: ubuntu-latest
     strategy:

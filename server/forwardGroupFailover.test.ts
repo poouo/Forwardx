@@ -4,6 +4,63 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { forwardGroupDdnsHostValue, forwardGroupDdnsRecordSets, normalizeForwardGroupRecordType } from "../shared/forwardGroupDdns";
+import { updateForwardGroupDdnsRecordValues } from "./forwardGroupDdns";
+
+test("group DDNS shares address validation and supports single-family members in dual-stack groups", () => {
+  assert.equal(normalizeForwardGroupRecordType("both"), "BOTH");
+  assert.equal(normalizeForwardGroupRecordType(undefined), "A");
+  const host = { entryIp: "[2001:db8::9]", ipv4: "192.0.2.1", ipv6: "2001:db8::1" };
+  assert.equal(forwardGroupDdnsHostValue(host, "BOTH"), "192.0.2.1,2001:db8::9");
+  assert.equal(forwardGroupDdnsHostValue({ ip: "[2001:db8::1]" }, "BOTH"), "2001:db8::1");
+  assert.equal(forwardGroupDdnsHostValue({ ipv4: "192.0.2.1" }, "BOTH"), "192.0.2.1");
+  assert.equal(forwardGroupDdnsHostValue({ ipv4: "invalid", ipv6: "invalid" }, "BOTH"), "");
+  assert.equal(forwardGroupDdnsHostValue({ entryIp: "entry.test" }, "BOTH"), "");
+  assert.equal(forwardGroupDdnsHostValue({ entryIp: "entry.test" }, "CNAME"), "entry.test");
+  assert.equal(forwardGroupDdnsHostValue({ ddnsEnabled: true, ddnsDomain: "legacy.test" }, "CNAME"), "legacy.test");
+});
+
+test("dual-stack record sets are deduplicated, correctly typed and include empty-family cleanup", () => {
+  assert.deepEqual(forwardGroupDdnsRecordSets("BOTH", ["192.0.2.1,2001:db8::1", "192.0.2.1", "2001:0db8::1", "bad"]), [
+    { recordType: "A", values: ["192.0.2.1"] },
+    { recordType: "AAAA", values: ["2001:db8::1"] },
+  ]);
+  assert.deepEqual(forwardGroupDdnsRecordSets("BOTH", ["192.0.2.1"]), [
+    { recordType: "A", values: ["192.0.2.1"] }, { recordType: "AAAA", values: [] },
+  ]);
+  assert.deepEqual(forwardGroupDdnsRecordSets("BOTH", []), [
+    { recordType: "A", values: [] }, { recordType: "AAAA", values: [] },
+  ]);
+  assert.deepEqual(forwardGroupDdnsRecordSets("AAAA", ["192.0.2.1", "2001:db8::1"]), [
+    { recordType: "AAAA", values: ["2001:db8::1"] },
+  ]);
+});
+
+test("a failed DDNS family does not suppress the other family and cannot report a complete sync", async () => {
+  const input = { domain: "dual.test", recordType: "BOTH", values: ["192.0.2.1,2001:db8::1"], groupId: 7, ttl: 120 };
+  for (const failType of ["A", "AAAA"]) {
+    const calls: any[] = [];
+    await assert.rejects(updateForwardGroupDdnsRecordValues(input, async record => {
+      calls.push(record);
+      if (record.recordType === failType) throw new Error("provider unavailable");
+    }), new RegExp(`${failType}: provider unavailable`));
+    assert.deepEqual(calls.map(record => [record.recordType, record.values]), [
+      ["A", ["192.0.2.1"]], ["AAAA", ["2001:db8::1"]],
+    ]);
+    assert.ok(calls.every(record => record.domain === "dual.test" && record.groupId === 7 && record.ttl === 120));
+  }
+  assert.deepEqual(input.values, ["192.0.2.1,2001:db8::1"], "input must not be mutated");
+});
+
+test("legacy single-family and CNAME updates still issue just one provider request", async () => {
+  for (const [recordType, value] of [["A", "192.0.2.1"], ["AAAA", "2001:db8::1"], ["CNAME", "legacy.test"]]) {
+    const calls: any[] = [];
+    await updateForwardGroupDdnsRecordValues({ domain: "edge.test", groupId: 7, recordType, values: [value] }, async record => { calls.push(record); });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].recordType, recordType);
+    assert.deepEqual(calls[0].values, [value]);
+  }
+});
 
 function runIsolatedScript(directory: string, databasePath: string, name: string, script: string) {
   const scriptPath = path.join(directory, `${name}.mjs`);
@@ -20,6 +77,124 @@ function runIsolatedScript(directory: string, databasePath: string, name: string
   });
   assert.equal(result.status, 0, result.error?.stack || result.stderr || result.stdout);
 }
+
+test("dual-stack group API, health filtering, empty AAAA cleanup and retries work against a real database", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-dual-ddns-"));
+  try {
+    runIsolatedScript(directory, path.join(directory, "dual.db"), "dual-ddns", String.raw`
+      import assert from "node:assert/strict";
+      import http from "node:http";
+      import path from "node:path";
+      import { pathToFileURL } from "node:url";
+      const load = file => import(pathToFileURL(path.join(process.cwd(), file)).href);
+      const runtime = await load("server/dbRuntime.ts");
+      const schema = await load("server/dbSchema.ts");
+      const requests = [];
+      let failAAAA = false;
+      const webhook = http.createServer((req, res) => {
+        let data = "";
+        req.setEncoding("utf8");
+        req.on("data", chunk => { data += chunk; });
+        req.on("end", () => {
+          const record = JSON.parse(data);
+          requests.push(record);
+          if (failAAAA && record.recordType === "AAAA") {
+            failAAAA = false;
+            res.writeHead(503); res.end("provider unavailable");
+          } else { res.writeHead(204); res.end(); }
+        });
+      });
+      do {
+        await new Promise(resolve => webhook.listen(0, "127.0.0.1", resolve));
+        if (webhook.address().port > 10080) break;
+        await new Promise(resolve => webhook.close(resolve));
+      } while (true);
+      try {
+        await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+        await schema.ensureDatabaseSchema();
+        const settings = await load("server/repositories/settingsRepository.ts");
+        await settings.setSettings({ ddnsEnabled: "true", ddnsProvider: "webhook", ddnsWebhookMethod: "POST",
+          ddnsWebhookUrl: "http://127.0.0.1:" + webhook.address().port + "/ddns" });
+        const groups = await load("server/repositories/forwardGroupRepository.ts");
+        const { forwardGroupsRouter } = await load("server/routers/forwardGroups.ts");
+        const caller = forwardGroupsRouter.createCaller({ user: { id: 1, role: "admin" }, req: { headers: {} }, res: {} });
+        const now = Math.floor(Date.now() / 1000);
+        const insert = async (table, columns, values) => {
+          const q = name => '"' + name + '"';
+          await runtime.executeRaw("INSERT INTO " + q(table) + " (" + columns.map(q).join(",") + ") VALUES (" + values.map(() => "?").join(",") + ")", values);
+        };
+        for (const [id, ipv4, ipv6] of [[1, "192.0.2.1", "2001:db8::1"], [2, "192.0.2.2", null], [3, null, "2001:db8::3"]]) {
+          await insert("hosts", ["id", "name", "ip", "ipv4", "ipv6", "userId", "isOnline", "lastHeartbeat"],
+            [id, "host-" + id, ipv4 || ipv6, ipv4, ipv6, 1, 1, now]);
+        }
+        const memberInput = ids => ids.map((hostId, priority) => ({ memberType: "host", hostId, priority, isEnabled: true }));
+        const { id: entryId } = await caller.create({ name: "dual-entry", groupMode: "entry", groupType: "host",
+          domain: "entry.test", recordType: "BOTH", members: memberInput([1, 2, 3]) });
+        assert.equal((await groups.getForwardGroupById(entryId)).recordType, "BOTH");
+        await runtime.executeRaw('UPDATE "forward_group_members" SET "healthStatus" = ?, "lastCheckedAt" = ?, "healthySince" = ? WHERE "groupId" = ?', ["healthy", now, now - 180, entryId]);
+        const records = domain => requests.filter(record => record.domain === domain).slice(-2).map(record => [record.recordType, record.values]);
+        const state = async id => (await runtime.queryRaw('SELECT * FROM "forward_groups" WHERE "id" = ?', [id]))[0];
+        await groups.runForwardGroupFailover(entryId);
+        assert.deepEqual(records("entry.test"), [["A", ["192.0.2.1", "192.0.2.2"]], ["AAAA", ["2001:db8::1", "2001:db8::3"]]]);
+        assert.match((await state(entryId)).lastMessage, /3 个入口/, "address count must not double the member count");
+        const unchangedCount = requests.length;
+        await groups.runForwardGroupFailover(entryId);
+        assert.equal(requests.length, unchangedCount, "unchanged groups must not keep rewriting DNS");
+
+        // Health exclusion removes both addresses of a dual-stack member.
+        await runtime.executeRaw('UPDATE "forward_group_members" SET "healthStatus" = ?, "failureSince" = ?, "lastCheckedAt" = ? WHERE "groupId" = ? AND "hostId" = 1', ["unhealthy", now - 180, now, entryId]);
+        await groups.runForwardGroupFailover(entryId);
+        assert.deepEqual(records("entry.test"), [["A", ["192.0.2.2"]], ["AAAA", ["2001:db8::3"]]]);
+        // Removing the last IPv6 member clears its old record, not the IPv4 RRset.
+        await runtime.executeRaw('UPDATE "forward_group_members" SET "isEnabled" = 0 WHERE "groupId" = ? AND "hostId" = 3', [entryId]);
+        await groups.runForwardGroupFailover(entryId);
+        assert.deepEqual(records("entry.test"), [["A", ["192.0.2.2"]], ["AAAA", []]]);
+        assert.equal(requests.at(-1).action, "delete");
+        // Recovery, partial failure, and scheduled retry converge both RRsets.
+        await runtime.executeRaw('UPDATE "forward_group_members" SET "healthStatus" = ?, "failureSince" = NULL, "healthySince" = ?, "lastCheckedAt" = ? WHERE "groupId" = ? AND "hostId" = 1', ["healthy", now - 180, now, entryId]);
+        failAAAA = true;
+        await assert.rejects(groups.runForwardGroupFailover(entryId), /provider unavailable/);
+        assert.equal((await state(entryId)).lastStatus, "error");
+        assert.equal((await state(entryId)).lastDdnsValue, "192.0.2.2", "partial sync must not commit complete state");
+        groups.scheduleForwardGroupFailover([entryId]);
+        const deadline = Date.now() + 5000;
+        while ((await state(entryId)).lastStatus !== "healthy" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.equal((await state(entryId)).lastStatus, "healthy");
+        assert.deepEqual(records("entry.test"), [["A", ["192.0.2.1", "192.0.2.2"]], ["AAAA", ["2001:db8::1"]]]);
+
+        const { id: failoverId } = await caller.create({ name: "dual-failover", groupMode: "failover", groupType: "host",
+          domain: "failover.test", recordType: "BOTH", failoverSeconds: 10, members: memberInput([1, 2]) });
+        assert.deepEqual(records("failover.test"), [["A", ["192.0.2.1"]], ["AAAA", ["2001:db8::1"]]]);
+        // Switching to a v4-only standby must not retain the old primary's AAAA.
+        await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ? WHERE "id" = 1', [now - 180]);
+        await groups.runForwardGroupFailover(failoverId);
+        assert.deepEqual(records("failover.test"), [["A", ["192.0.2.2"]], ["AAAA", []]]);
+        assert.equal((await state(failoverId)).lastDdnsValue, "192.0.2.2");
+        // Fallback preserves both families when all members become unhealthy.
+        await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 1, "lastHeartbeat" = ? WHERE "id" = 1', [now]);
+        await groups.runForwardGroupFailover(failoverId, { forcePriority: true });
+        await runtime.executeRaw('UPDATE "hosts" SET "isOnline" = 0, "lastHeartbeat" = ?', [now - 180]);
+        await groups.runForwardGroupFailover(failoverId, { forceSync: true });
+        assert.deepEqual(records("failover.test"), [["A", ["192.0.2.1"]], ["AAAA", ["2001:db8::1"]]]);
+        assert.equal((await state(failoverId)).lastStatus, "down");
+        // Quota-blocked fallback must retain both addresses of an allowed
+        // member, then delete both families when every member is excluded.
+        await runtime.executeRaw('UPDATE "forward_group_members" SET "healthStatus" = ?, "failureSince" = ?, "healthySince" = NULL WHERE "groupId" = ?', ["unhealthy", now - 180, entryId]);
+        await runtime.executeRaw('UPDATE "hosts" SET "trafficLimit" = 100, "trafficFailoverEnabled" = 1, "trafficFailoverExcluded" = 1 WHERE "id" = 2');
+        await groups.runForwardGroupFailover(entryId, { forceSync: true });
+        assert.deepEqual(records("entry.test"), [["A", ["192.0.2.1"]], ["AAAA", ["2001:db8::1"]]]);
+        await runtime.executeRaw('UPDATE "hosts" SET "trafficLimit" = 100, "trafficFailoverEnabled" = 1, "trafficFailoverExcluded" = 1 WHERE "id" = 1');
+        await groups.runForwardGroupFailover(entryId, { forceSync: true });
+        assert.deepEqual(records("entry.test"), [["A", []], ["AAAA", []]]);
+      } finally {
+        await runtime.closeDatabase().catch(() => undefined);
+        await new Promise(resolve => webhook.close(resolve));
+      }
+    `);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("forward group switches after its configured heartbeat failure window", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-group-failover-"));

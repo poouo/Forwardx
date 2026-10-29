@@ -42,6 +42,8 @@ test("provider schema supports private HTTP GET without allowing shell scripts o
   }
   assert.equal(readJsonPath({}, "__proto__.toString"), undefined);
   assert.equal(hostChinaHealthSchema.parse({}).autoSwitch, false);
+  assert.equal(hostChinaHealthSchema.parse({}).notify, true);
+  assert.equal(hostChinaHealthSchema.parse({ notifyUserId: 99999 }).notifyUserId, null);
   assert.equal(hostChinaHealthSchema.parse({}).cooldownSeconds, 60 * 60);
 });
 
@@ -55,6 +57,38 @@ test("queued timeouts distinguish undelivered tasks from ambiguous delivered cal
     const [response] = await Promise.all([result, new Promise(resolve => setTimeout(resolve, 70))]);
     assert.equal(response.outcome, delivered ? "uncertain" : "not_executed");
     assert.deepEqual(takeIpSwitchAgentTasks(hostId), []);
+  }
+});
+
+test("IP switch logs distinguish queueing from dispatch without exposing credentials", async (t) => {
+  const messages: string[] = [];
+  t.mock.method(console, "info", (...args: unknown[]) => messages.push(args.join(" ")));
+  const hostId = 77704, taskId = randomUUID();
+  const request = ipSwitchHookSchema.parse({
+    url: "https://merchant.example/private-path?token=url-secret", method: "POST",
+    headers: { Authorization: "header-secret" }, body: "body-secret", successMode: "http",
+  });
+  const input = { taskId, serviceId: 1, expectedIp: "1.1.1.1", request };
+  assert.throws(() => enqueueIpSwitchAgentTask(hostId, input), /agent_unavailable/);
+  assert.equal(messages.length, 0);
+  recordIpSwitchAgentCapability(hostId, true);
+  const response = enqueueIpSwitchAgentTask(hostId, input);
+  try {
+    assert.equal(messages.length, 1);
+    assert.match(messages[0], /stage=queued/);
+    assert.deepEqual(takeIpSwitchAgentTasks(hostId + 1), []);
+    assert.equal(takeIpSwitchAgentTasks(hostId).length, 1);
+    assert.deepEqual(takeIpSwitchAgentTasks(hostId), []);
+    assert.equal(messages.length, 2);
+    assert.match(messages[1], /stage=dispatched/);
+    for (const message of messages) {
+      assert.ok(message.includes(`host=${hostId} service=1 task=${taskId}`));
+      assert.doesNotMatch(message, /merchant\.example|private-path|url-secret|header-secret|body-secret/);
+    }
+  } finally {
+    completeIpSwitchAgentTask(hostId, { taskId, outcome: "not_executed", reason: "expired" });
+    await response;
+    recordIpSwitchAgentCapability(hostId, false);
   }
 });
 

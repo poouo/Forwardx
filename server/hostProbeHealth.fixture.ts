@@ -12,6 +12,7 @@ import { agentEncryptionMiddleware } from "./agentEncryptionMiddleware";
 import { encryptPayload, decryptPayload } from "./agentCrypto";
 import { panelCryptoNowMs } from "./panelClock";
 import { recordIpSwitchAgentCapability, hasQueuedIpSwitchAgentTasks, takeIpSwitchAgentTasks } from "./agentIpSwitchTasks";
+import { getAllSettings, setSettings } from "./repositories/settingsRepository";
 
 await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB! } });
 let http: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
@@ -203,6 +204,53 @@ try {
   assert.deepEqual(await agentPost(5, "/api/agent/ip-switch-result", { result: { taskId: task.taskId, outcome: "not_executed", reason: "claim_denied" } }), { success: true });
   await waiting;
   assert.equal((await getProbeHealthViews([fifth.id])).get(fifth.id).lastAction.status, "not_executed");
+
+  // Real recipient selection/delivery: only enabled, bound administrators,
+  // never a legacy selected user, a non-admin creator, or the host's owner.
+  for (const row of [
+    { id: 21, username: "health-admin", role: "admin", accountEnabled: true, telegramId: "1021" },
+    { id: 22, username: "disabled-admin", role: "admin", accountEnabled: false, telegramId: "1022" },
+    { id: 23, username: "unbound-admin", role: "admin", accountEnabled: true },
+  ]) await runtime.insertAndGetId("users", { password: "fixture-only", ...row });
+  await runtime.executeRaw("UPDATE users SET telegramId = ? WHERE id = ?", ["1001", 1]);
+  await runtime.executeRaw("UPDATE users SET telegramId = ? WHERE id = ?", ["1002", 2]);
+  await runtime.insertAndGetId("hosts", { id: 10, name: "User-owned host", ip: "1.1.1.1", agentToken: "test-token-10", userId: 2 });
+  const { notify: _notify, ...notificationHealth } = health;
+  const notificationService = await admin.createProbeService({ ...serviceInput, hostIds: [10], health: { ...notificationHealth, autoSwitch: false, notifyUserId: 99999 } });
+  assert.equal((await getProbeHealthViews([notificationService.id])).get(notificationService.id).notify, true);
+  assert.equal((await getProbeHealthViews([notificationService.id])).get(notificationService.id).notifyUserId, null);
+  const [notificationRow] = await runtime.queryRaw<any>("SELECT config FROM host_probe_health WHERE serviceId = ?", [notificationService.id]);
+  assert.equal(JSON.parse(notificationRow.config).notifyUserId, null);
+  await runtime.executeRaw("UPDATE host_probe_services SET userId = ? WHERE id = ?", [2, notificationService.id]);
+  await runtime.executeRaw("UPDATE host_probe_health SET config = ? WHERE serviceId = ?", [JSON.stringify({ ...JSON.parse(notificationRow.config), notifyUserId: 2 }), notificationService.id]);
+  assert.equal((await getProbeHealthViews([notificationService.id])).get(notificationService.id).notifyUserId, null);
+  const originalSettings = await getAllSettings(), originalFetch = globalThis.fetch;
+  const sentTo: string[] = [];
+  let failFirstAdmin = false;
+  try {
+    await setSettings({ notificationChannel: "telegram", telegramBotEnabled: "true", telegramBotToken: "health-test-token" });
+    globalThis.fetch = (async (input, options) => {
+      assert.equal(String(input), "https://api.telegram.org/bothealth-test-token/sendMessage");
+      const body = JSON.parse(String(options?.body));
+      sentTo.push(String(body.chat_id));
+      assert.match(body.text, /国内健康检测/);
+      return Response.json(failFirstAdmin && String(body.chat_id) === "1001" ? { ok: false, description: "test delivery failure" } : { ok: true, result: { message_id: 1 } });
+    }) as typeof fetch;
+    const notificationHost = (await db.getHostById(10))!, notificationReport = { ...report, serviceId: notificationService.id };
+    for (const offset of [0, 15, 30]) await observeProbeHealth(notificationHost, [notificationReport], base + offset);
+    assert.deepEqual([...sentTo].sort(), ["1001", "1021"]);
+    sentTo.length = 0; failFirstAdmin = true;
+    for (const offset of [45, 60]) await observeProbeHealth(notificationHost, [{ ...notificationReport, probeSuccesses: 3 }], base + offset);
+    assert.deepEqual([...sentTo].sort(), ["1001", "1021"], "one administrator's delivery failure does not block others");
+    sentTo.length = 0;
+    await admin.updateProbeService({ ...serviceInput, id: notificationService.id, hostIds: [10], health: { ...notificationHealth, autoSwitch: false, notify: false } });
+    for (const offset of [75, 90, 105]) await observeProbeHealth(notificationHost, [notificationReport], base + offset);
+    assert.deepEqual(sentTo, [], "the notification switch still disables delivery");
+    assert.equal((await getProbeHealthViews([notificationService.id])).get(notificationService.id).state.phase, "unhealthy");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await setSettings(Object.fromEntries(["notificationChannel", "telegramBotEnabled", "telegramBotToken"].map(key => [key, originalSettings[key] ?? null])));
+  }
 } finally {
   if (http) { http.closeIdleConnections(); await new Promise<void>(resolve => http!.close(() => resolve())); }
   await runtime.closeDatabase();

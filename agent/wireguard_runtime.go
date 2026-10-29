@@ -24,22 +24,23 @@ import (
 )
 
 const (
-	forwardXWireGuardVersion       = "v2"
-	wireGuardRuntimeWaitTimeout    = 12 * time.Second
-	wireGuardProxyDialTimeout      = 10 * time.Second
-	wireGuardUDPSessionIdleTimeout = 5 * time.Minute
-	wireGuardUDPIdlePollInterval   = 15 * time.Second
-	wireGuardUDPProxyQueueSize     = 64
-	wireGuardUDPProxyQueueBytes    = 512 * 1024
-	wireGuardUDPProxySoftSessions  = 512
-	wireGuardUDPProxyMaxSessions   = 1024
-	wireGuardUDPProxyReclaimAfter  = 30 * time.Second
-	wireGuardUDPProxyMaxQueueDelay = 25 * time.Millisecond
-	wireGuardUDPProxyBufferBytes   = 4 * 1024 * 1024
-	wireGuardUDPSessionBufferBytes = 256 * 1024
-	wireGuardRuntimeReleaseDelay   = time.Minute
-	wireGuardProbeReadyPoll        = 100 * time.Millisecond
-	wireGuardProbeRetryDelay       = 250 * time.Millisecond
+	forwardXWireGuardVersion        = "v2"
+	wireGuardRuntimeWaitTimeout     = 12 * time.Second
+	wireGuardEndpointResolveTimeout = 5 * time.Second
+	wireGuardProxyDialTimeout       = 10 * time.Second
+	wireGuardUDPSessionIdleTimeout  = 5 * time.Minute
+	wireGuardUDPIdlePollInterval    = 15 * time.Second
+	wireGuardUDPProxyQueueSize      = 64
+	wireGuardUDPProxyQueueBytes     = 512 * 1024
+	wireGuardUDPProxySoftSessions   = 512
+	wireGuardUDPProxyMaxSessions    = 1024
+	wireGuardUDPProxyReclaimAfter   = 30 * time.Second
+	wireGuardUDPProxyMaxQueueDelay  = 25 * time.Millisecond
+	wireGuardUDPProxyBufferBytes    = 4 * 1024 * 1024
+	wireGuardUDPSessionBufferBytes  = 256 * 1024
+	wireGuardRuntimeReleaseDelay    = time.Minute
+	wireGuardProbeReadyPoll         = 100 * time.Millisecond
+	wireGuardProbeRetryDelay        = 250 * time.Millisecond
 )
 
 type wireGuardPeerSpec struct {
@@ -349,8 +350,71 @@ func wireGuardDeviceUpdateConfig(previous, next wireGuardSpec, removedKeys []str
 	return "listen_port=" + strconv.Itoa(next.ListenPort) + "\n" + config
 }
 
+// WireGuard's IPC endpoint parser accepts numeric addresses, not DNS names.
+// Resolve on the Agent, keeping the desired spec/domain unchanged for later
+// generation-driven DDNS refreshes. Resolve every peer before applying anything
+// so a DNS failure cannot leave a working device partially reconfigured.
+func resolveWireGuardDeviceSpec(spec wireGuardSpec) (wireGuardSpec, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wireGuardEndpointResolveTimeout)
+	defer cancel()
+	return resolveWireGuardEndpoints(ctx, spec, net.DefaultResolver.LookupNetIP)
+}
+
+func resolveWireGuardEndpoints(ctx context.Context, spec wireGuardSpec, lookup func(context.Context, string, string) ([]netip.Addr, error)) (wireGuardSpec, error) {
+	resolved := spec
+	resolved.Peers = append([]wireGuardPeerSpec(nil), spec.Peers...)
+	cache := make(map[string]netip.Addr)
+	for index, peer := range resolved.Peers {
+		if peer.EndpointHost == "" {
+			continue // Inbound-only peer: learn its endpoint from authenticated traffic.
+		}
+		host := strings.TrimSpace(peer.EndpointHost)
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		}
+		address, err := netip.ParseAddr(host)
+		if err != nil {
+			key := strings.ToLower(host)
+			var found bool
+			address, found = cache[key]
+			if !found {
+				addresses, lookupErr := lookup(ctx, "ip", host)
+				if lookupErr == nil {
+					lookupErr = ctx.Err()
+				}
+				if lookupErr != nil {
+					return wireGuardSpec{}, fmt.Errorf("resolve wireguard peer %s endpoint %q: %w", peer.ID, peer.EndpointHost, lookupErr)
+				}
+				// Prefer IPv4 on dual-stack hosts, but support AAAA-only exits.
+				for _, candidate := range addresses {
+					if !candidate.IsValid() || candidate.IsUnspecified() || candidate.IsMulticast() {
+						continue
+					}
+					candidate = candidate.Unmap()
+					if !address.IsValid() || candidate.Is4() {
+						address = candidate
+					}
+					if candidate.Is4() {
+						break
+					}
+				}
+				if !address.IsValid() {
+					return wireGuardSpec{}, fmt.Errorf("resolve wireguard peer %s endpoint %q: no usable A/AAAA records", peer.ID, peer.EndpointHost)
+				}
+				cache[key] = address
+			}
+		}
+		resolved.Peers[index].EndpointHost = address.Unmap().String()
+	}
+	return resolved, nil
+}
+
 func newWireGuardRuntime(spec wireGuardSpec) (*wireGuardRuntime, error) {
 	normalized, err := normalizeWireGuardSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	deviceSpec, err := resolveWireGuardDeviceSpec(normalized)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +430,7 @@ func newWireGuardRuntime(spec wireGuardSpec) (*wireGuardRuntime, error) {
 		},
 	}
 	dev := device.NewDevice(tunDevice, conn.NewDefaultBind(), logger)
-	if err := dev.IpcSet(wireGuardDeviceConfig(normalized, true, nil)); err != nil {
+	if err := dev.IpcSet(wireGuardDeviceConfig(deviceSpec, true, nil)); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("configure wireguard: %w", err)
 	}
@@ -413,9 +477,13 @@ func (runtime *wireGuardRuntime) update(spec wireGuardSpec) error {
 	if runtime.signature == signature {
 		return nil
 	}
+	deviceSpec, err := resolveWireGuardDeviceSpec(normalized)
+	if err != nil {
+		return err
+	}
 	added, removed, updated, removedKeys := wireGuardPeerUpdateSummary(runtime.spec, normalized)
 	dnsRefresh := runtime.spec.Generation != normalized.Generation
-	if err := runtime.device.IpcSet(wireGuardDeviceUpdateConfig(runtime.spec, normalized, removedKeys)); err != nil {
+	if err := runtime.device.IpcSet(wireGuardDeviceUpdateConfig(runtime.spec, deviceSpec, removedKeys)); err != nil {
 		return fmt.Errorf("update wireguard: %w", err)
 	}
 	runtime.spec = normalized

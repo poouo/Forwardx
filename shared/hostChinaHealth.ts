@@ -22,7 +22,8 @@ export const ipSwitchHookSchema = z.object({
 export const hostChinaHealthSchema = z.object({
   enabled: z.boolean().default(false),
   notify: z.boolean().default(true),
-  notifyUserId: z.number().int().positive().nullable().default(null),
+  // Accept legacy saved/client fields, but notifications now target admins only.
+  notifyUserId: z.number().int().positive().nullable().default(null).transform(() => null),
   autoSwitch: z.boolean().default(false),
   failureThreshold: z.number().int().min(2).max(20).default(3),
   failureSeconds: z.number().int().min(30).max(3600).default(120),

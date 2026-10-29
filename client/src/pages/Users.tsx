@@ -2237,7 +2237,7 @@ function UsersContent() {
                       }}
                       placeholder="0"
                     />
-                    <span className="text-xs text-muted-foreground select-none whitespace-nowrap">Mbps</span>
+                    <span translate="no" className="notranslate text-xs text-muted-foreground select-none whitespace-nowrap">Mbps</span>
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">{translateText("填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新转发配置时生效。")}</p>

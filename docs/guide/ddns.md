@@ -251,6 +251,7 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 | --- | --- |
 | 只需要 IPv4 入口 | 选择 IPv4，会生成 A 记录 |
 | 只需要 IPv6 入口 | 选择 IPv6，会生成 AAAA 记录 |
+| 同时使用 IPv4 和 IPv6 | 选择 A + AAAA，同时维护两种记录 |
 
 如果服务商配置未启用，主机 DDNS 开关会不可用，需要先回到系统设置配置 DDNS 服务商。
 
@@ -270,9 +271,13 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 | --- | --- |
 | A | 成员机器需要有 IPv4 |
 | AAAA | 成员机器需要有 IPv6 |
-| CNAME | 成员机器需要配置 DDNS 域名 |
+| A + AAAA | 同时维护 IPv4 和 IPv6 记录；成员按实际可用地址参与 |
 
-如果选择 CNAME，ForwardX 会把入口域名指向成员机器配置好的 DDNS 域名。这样成员 IP 变化时，通常只需要更新成员自己的 DDNS，入口域名记录无需重新写入。
+入口组选择 **A + AAAA** 后，健康成员的 IPv4 写入 A，IPv6 写入 AAAA。只有一种地址的成员也可加入；某种地址不再有可用成员时，会清理该类型的旧记录。故障观察、恢复、流量超限剔除和更新重试沿用原有机制。
+
+转发组选择 **A + AAAA** 时，两种记录一起跟随当前活动成员切换，不会把 IPv4 和 IPv6 分配给不同的主备成员。
+
+新配置不再提供 CNAME；已有 CNAME 配置继续兼容，不会自动转换或删除服务商记录。手动改为 A / AAAA 前，请先清理同名 CNAME，以免 DNS 记录冲突。
 
 ## 故障切换建议 {#failover-tips}
 
@@ -309,5 +314,5 @@ ForwardX 展示入口地址时，优先级如下：
 | Cloudflare 找不到 Zone | Token 没有 Zone:Read 权限，或 Zone ID 未填写且自动识别失败 |
 | 权限不足 | API 密钥权限太小或绑定了错误域名 |
 | AAAA 不更新 | 成员机器没有可用 IPv6 |
-| CNAME 不更新 | 成员机器没有配置 DDNS 域名 |
+| 旧 CNAME 不更新 | 成员机器没有配置 DDNS 域名；新配置建议使用 A / AAAA |
 | 切换后域名未生效 | DNS 缓存未过期，等待 TTL 时间后重试 |

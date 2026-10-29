@@ -165,6 +165,7 @@ import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import {
   addHostNodeMeta,
+  addTunnelHostNodeMeta,
   addNodeMetaAliases,
   findHostByAddress,
   hostDisplayName,
@@ -4672,24 +4673,12 @@ function RulesContent() {
       return { nodeMeta: meta, sourceLabel: selfTestRule?.name || translateText("源节点"), targetLabel: selfTestRule?.name || translateText("目标"), plannedSegments: [] as LinkTestPlannedSegment[] };
     }
 
-    const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
     const routeGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const routeMember = routeGroup && !isForwardChainGroup(routeGroup) ? forwardGroupRouteMembers(routeGroup)[0] : null;
     const tunnelId = Number(rule.tunnelId || routeMember?.tunnelId || 0);
     const tunnel = tunnelId ? tunnelById.get(tunnelId) : null;
-    const tunnelHostById = new Map<number, any>();
-    if (tunnel) {
-      [
-        ...(Array.isArray((tunnel as any).hopHosts) ? (tunnel as any).hopHosts : []),
-        (tunnel as any).entryHost,
-        (tunnel as any).exitHost,
-        ...(Array.isArray((tunnel as any).loadBalanceExits) ? (tunnel as any).loadBalanceExits.map((exit: any) => exit?.host) : []),
-      ].forEach((host: any) => {
-        const id = Number(host?.id || 0);
-        if (id > 0) tunnelHostById.set(id, host);
-      });
-    }
-    const hostForRouteId = (hostId: number) => hostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
+    const hostById = addTunnelHostNodeMeta(meta, tunnel, hosts);
+    const hostForRouteId = (hostId: number) => hostById.get(Number(hostId));
     const chainGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const chainEntryGroup = chainGroup && isForwardChainGroup(chainGroup) && Number(chainGroup.entryGroupId || 0) > 0
       ? forwardGroupById.get(Number(chainGroup.entryGroupId))

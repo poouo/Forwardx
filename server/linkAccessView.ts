@@ -447,6 +447,10 @@ function filterTunnelEndpointHost(host: any) {
     ddnsDomain: host.ddnsDomain ?? null,
     ddnsIpVersion: host.ddnsIpVersion ?? "ipv4",
     ddnsRecordType: host.ddnsRecordType ?? "A",
+    geoCountryCode: host.geoCountryCode ?? null,
+    geoCountryName: host.geoCountryName ?? null,
+    geoRegion: host.geoRegion ?? null,
+    geoEmoji: host.geoEmoji ?? null,
     isOnline: !!host.isOnline,
     lastHeartbeat: host.lastHeartbeat ?? null,
   };

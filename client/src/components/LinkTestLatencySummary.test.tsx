@@ -4,8 +4,32 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { handoffManualTestResult, hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getLinkTestDetailEndpointIds, getLinkTestTotalLatency, LinkTestProbeView, parseLinkTestMessage } from "./LinkTestLatencySummary";
+import { addTunnelHostNodeMeta, type LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 
 const plannedSegments = [{ from: "入口节点", to: "出口节点" }];
+
+test("both multi-exit branches retain flags on their inbound and target segments", () => {
+  const meta: Record<string, LinkTestNodeMeta | undefined> = {};
+  const entry = { id: 30, name: "香港 30", geoCountryCode: "HK" };
+  const primary = { id: 44, name: "香港 01", geoCountryCode: "CA" };
+  const secondary = { id: 11, name: "香港 11", geoCountryCode: "SG" };
+  addTunnelHostNodeMeta(meta, { entryHostId: 30, exitHostId: 44, entryHost: entry, exitHost: primary,
+    loadBalanceExits: [{ hostId: 11, host: secondary }] }, []);
+  meta.Target = { label: "Target", countryCode: "JP" };
+  const details = [
+    { fromHostId: 30, toHostId: 44, routeLabel: "香港 30 -> 香港 01", success: true, latencyMs: 2 },
+    { fromHostId: 30, toHostId: 11, routeLabel: "香港 30 -> 香港 11", success: true, latencyMs: 2 },
+    { fromHostId: 44, routeLabel: "香港 01 -> Target", success: true, latencyMs: 26 },
+    { fromHostId: 11, routeLabel: "香港 11 -> Target", success: true, latencyMs: 18 },
+  ];
+  const html = renderToStaticMarkup(<LinkTestProbeView
+    parsed={parseLinkTestMessage(JSON.stringify({ kind: "forward-via-tunnel", details }))}
+    isSuccess isTesting={false} mobileStacked={false} nodeMeta={meta}
+  />);
+  // Each exit is shown once after the entry, and again before the target.
+  assert.equal(html.match(/alt="CA"/g)?.length, 2);
+  assert.equal(html.match(/alt="SG"/g)?.length, 2);
+});
 
 test("alternative paths render independent edges and honor the path-aware server total", () => {
   const parsed = parseLinkTestMessage(JSON.stringify({ kind: "tunnel-hop-summary", totalLatencyMs: 30, details: [

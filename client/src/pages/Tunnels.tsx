@@ -60,7 +60,7 @@ import { SortableDragHandle, SortableItem, SortableReorderContext, useOptimistic
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh, normalizeLatencyProbeCounts } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import { addHostNodeMeta, addTunnelHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { buildLinkAvailabilityIndex, type LinkAvailabilityResult } from "@/lib/linkAvailability";
 import { MAX_NGINX_PEM_FILES, MAX_NGINX_PEM_UPLOAD_BYTES, parseNginxPemFiles } from "@/lib/nginxPemFiles";
 import { pollingInterval } from "@/lib/polling";
@@ -1585,20 +1585,9 @@ function TunnelSelfTestDialog({
   const linkTestNodeData = useMemo(() => {
     const meta: Record<string, any> = {};
     const nodeTooltips: Record<string, ReactNode> = {};
-    const fullHostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
-    const tunnelHostById = new Map<number, any>();
-    [
-      ...(tunnel?.hopHosts || []),
-      tunnel?.entryHost,
-      tunnel?.exitHost,
-      ...(tunnel?.loadBalanceExitHosts || []),
-      ...(Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits.map((exit: any) => exit?.host) : []),
-    ].forEach((host: any) => {
-      const id = Number(host?.id || 0);
-      if (id > 0) tunnelHostById.set(id, host);
-    });
+    const hostById = addTunnelHostNodeMeta(meta, tunnel, hosts);
     const hopIds = getTunnelHopIds(tunnel);
-    const hostForId = (hostId: number) => fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
+    const hostForId = (hostId: number) => hostById.get(Number(hostId));
     const entryGroup = (entryGroups || []).find((group: any) => Number(group?.id || 0) === Number(tunnel?.entryGroupId || 0));
     const entryGroupMembers = enabledHostGroupMembers(entryGroup);
     const entryGroupMemberByHostId = new Map<number, any>();

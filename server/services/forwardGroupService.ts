@@ -1,6 +1,7 @@
 import * as db from "../db";
 import { notificationSettings } from "../notificationSettings";
 import { getDdnsSettings } from "../ddns";
+import { type ForwardGroupRecordType } from "../../shared/forwardGroupDdns";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { randomUUID } from "node:crypto";
@@ -45,7 +46,7 @@ export type ForwardGroupInput = {
   failoverStrategy?: "fallback" | "round_robin" | "random" | "ip_hash";
   failoverTargets?: Array<{ targetIp?: string; targetPort?: number }>;
   domain?: string | null;
-  recordType?: "A" | "AAAA" | "CNAME";
+  recordType?: ForwardGroupRecordType;
   failoverSeconds: number;
   recoverSeconds: number;
   rateLimitMbps?: number;

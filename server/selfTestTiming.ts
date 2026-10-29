@@ -1,3 +1,5 @@
+import { AsyncResource } from "node:async_hooks";
+
 export const SELF_TEST_TIMEOUT_SECONDS = 8;
 export const RUNTIME_SELF_TEST_TIMEOUT_SECONDS = 45;
 // Delivery retries may renew their lease, never the lifetime of the test.
@@ -82,19 +84,24 @@ export function startSelfTestSweepTimer(
   let running = false;
   let stopped = false;
 
+  // markActive() may run inside the transaction creating a self-test. Bind
+  // background work to the scheduler's context, not that caller's released
+  // transaction lease (or its request/audit identity).
+  const tick = AsyncResource.bind(async () => {
+    timer = null;
+    if (stopped || !activity.shouldSweep()) return;
+    running = true;
+    try {
+      await runSweep();
+    } finally {
+      running = false;
+      arm();
+    }
+  }, "ForwardXSelfTestSweep");
+
   const arm = () => {
     if (stopped || timer || running || !activity.shouldSweep()) return;
-    timer = timers.setTimeout(async () => {
-      timer = null;
-      if (stopped || !activity.shouldSweep()) return;
-      running = true;
-      try {
-        await runSweep();
-      } finally {
-        running = false;
-        arm();
-      }
-    }, intervalMs);
+    timer = timers.setTimeout(tick, intervalMs);
     timer?.unref?.();
   };
 

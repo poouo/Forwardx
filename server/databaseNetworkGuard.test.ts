@@ -4,7 +4,7 @@ import net from "node:net";
 import mysql from "mysql2/promise";
 import mysqlCore from "mysql2";
 import pg from "pg";
-import { guardDatabasePool, withDatabaseMaintenanceBudget } from "./databaseNetworkGuard";
+import { DatabaseLeaseClosedError, guardDatabasePool, withDatabaseMaintenanceBudget } from "./databaseNetworkGuard";
 import { createRequestWorkPool } from "./requestWorkPool";
 import { retryTransactionConflicts } from "./transactionRetry";
 import { isDatabaseBusyError } from "./databaseHealthState";
@@ -40,6 +40,37 @@ function mockPool(driver: "mysql" | "postgresql", query: (...args: any[]) => Pro
 }
 
 for (const driver of ["mysql", "postgresql"] as const) {
+  test(`${driver}: released leases reject locally without executing SQL or borrowing a replacement`, async () => {
+    const { pool, stats } = mockPool(driver, async () => "ok");
+    try {
+      const client = await (driver === "mysql" ? pool.getConnection() : pool.connect());
+      client.release();
+      for (const method of ["query", "execute", "commit", "rollback"]) {
+        await assert.rejects(client[method]("must not execute"), error => {
+          assert.ok(error instanceof DatabaseLeaseClosedError);
+          assert.equal(error.code, "DATABASE_LEASE_CLOSED");
+          return true;
+        });
+      }
+      assert.equal(stats().calls, 0);
+      assert.equal(await pool.query("fresh request"), "ok");
+      assert.deepEqual(stats(), { discarded: 0, released: 2, checkedOut: 0, calls: 1 });
+    } finally { await pool.end(); }
+  });
+
+  test(`${driver}: releasing a lease before driver dispatch cancels SQL with a local lifecycle error`, async () => {
+    const { pool, stats } = mockPool(driver, async () => "ok");
+    try {
+      const client = await (driver === "mysql" ? pool.getConnection() : pool.connect());
+      const pending = assert.rejects(client.query("uncertain write"), DatabaseLeaseClosedError);
+      client.release();
+      await pending;
+      assert.equal(stats().calls, 0);
+      assert.equal(stats().discarded, 1);
+      assert.equal(await pool.query("replacement"), "ok");
+    } finally { await pool.end(); }
+  });
+
   test(`${driver}: a stalled query destroys its own client before freeing request slots; subsequent reads recover`, async () => {
     let stalled = true;
     const { pool, stats } = mockPool(driver, async () => stalled ? never() : "ok");
@@ -135,7 +166,7 @@ for (const driver of ["mysql", "postgresql"] as const) {
     const client = await (driver === "mysql" ? pool.getConnection() : pool.connect());
     await delay(35);
     assert.equal(stats().discarded, 1);
-    await assert.rejects(client.query("after expiry"), /closed/);
+    await assert.rejects(client.query("after expiry"), DatabaseLeaseClosedError);
     const query = assert.rejects(pool.query("never responds"), /closed/);
     await delay(1);
     await pool.end();

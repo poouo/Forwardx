@@ -2247,7 +2247,7 @@ function DashboardLayoutContent({
             {(getLanguage() === "en" ? upgradeAnnouncement?.englishTitle || upgradeAnnouncement?.title : upgradeAnnouncement?.title) || translateText("升级公告")}
           </DialogTitle>
           <DialogDescription>{upgradeAnnouncement?.source === "developer"
-            ? translateText("开发者公告独立于面板版本发布，请阅读并按需检查更新。")
+            ? translateText("请留意以下重要通知。")
             : <>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</>}</DialogDescription>
           <div
             className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"

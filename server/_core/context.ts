@@ -21,6 +21,7 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { TRPCError } from "@trpc/server";
 import { databaseHealth, describeDatabaseError, isDatabaseBusyError } from "../databaseHealthState";
 import { DATABASE_UNAVAILABLE_MESSAGE, SERVICE_BUSY_MESSAGE } from "../../shared/databaseHealth";
+import { isDatabaseGuardRequestError } from "../databaseNetworkGuard";
 import { createRequestWorkPool } from "../requestWorkPool";
 
 export interface AuthSession {
@@ -189,7 +190,7 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
-    if (isDatabaseBusyError(error)) {
+    if (isDatabaseBusyError(error) || isDatabaseGuardRequestError(error)) {
       throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: SERVICE_BUSY_MESSAGE, cause: error });
     }
     if (describeDatabaseError(error) || databaseHealth.snapshot().state === "unavailable") {

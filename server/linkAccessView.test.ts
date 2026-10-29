@@ -88,6 +88,54 @@ test("direct tunnel permissions include tunnel topology hosts", () => {
   assert.equal(canUseForwardRuleResource({ forwardGroupId: 31 }, expanded), false);
 });
 
+test("tunnel APIs retain both exits' geo metadata for administrators and authorized users", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-tunnel-flags-"));
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    const runtime = await import("./server/dbRuntime.ts");
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await (await import("./server/dbSchema.ts")).ensureDatabaseSchema();
+      const now = Math.floor(Date.now() / 1000);
+      await runtime.insertAndGetId("users", { id: 1, username: "admin", password: "x", role: "admin" });
+      await runtime.insertAndGetId("users", { id: 2, username: "member", password: "x", role: "user" });
+      for (const [id, country] of [[30, "HK"], [44, "CA"], [11, "SG"]]) {
+        await runtime.insertAndGetId("hosts", { id, name: "host-" + id, userId: 1, ip: "192.0.2." + id,
+          agentToken: "private-token-" + id, isOnline: true, lastHeartbeat: now,
+          geoCountryCode: country, geoCountryName: country, geoRegion: "region-" + id });
+      }
+      await runtime.insertAndGetId("tunnels", { id: 10, name: "multi-exit", userId: 1, mode: "tls",
+        entryHostId: 30, exitHostId: 44, listenPort: 64182, loadBalanceEnabled: true, isEnabled: true });
+      await runtime.insertAndGetId("tunnel_exit_nodes", { tunnelId: 10, seq: 1, hostId: 11, listenPort: 64183, isEnabled: true });
+      await runtime.insertAndGetId("user_tunnel_permissions", { userId: 2, tunnelId: 10 });
+      const { tunnelsRouter } = await import("./server/routers/tunnels.ts");
+      const { databaseHealth } = await import("./server/databaseHealthState.ts");
+      databaseHealth.healthy();
+      for (const [id, role] of [[1, "admin"], [2, "user"]]) {
+        const caller = tunnelsRouter.createCaller({ user: { id, role }, req: { headers: {} }, res: {} });
+        const detail = await caller.getById({ id: 10 });
+        const options = await caller.options();
+        const page = await caller.listPage({ page: 1, pageSize: 12 });
+        for (const tunnel of [detail, options.find(row => row.id === 10), page.items.find(row => row.id === 10)]) {
+          assert.ok(tunnel, role);
+          assert.equal(tunnel.entryHost.geoCountryCode, "HK");
+          assert.equal(tunnel.exitHost.geoCountryCode, "CA");
+          assert.equal(tunnel.loadBalanceExits[0].host.geoCountryCode, "SG");
+          assert.equal(tunnel.loadBalanceExits[0].host.geoRegion, "region-11");
+          assert.doesNotMatch(JSON.stringify(tunnel), /private-token-/);
+        }
+      }
+    } finally { await runtime.closeDatabase(); }
+  `;
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, DATABASE_TYPE: "sqlite",
+        FORWARDX_TEST_DB: path.join(directory, "flags.db"), FORWARDX_LOG_DIR: directory }, encoding: "utf8", timeout: 60_000,
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("runtime gate disables revoked root resources without promoting expanded topology", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-link-runtime-gate-"));
   const databasePath = path.join(directory, "runtime-gate.db");
@@ -262,6 +310,10 @@ test("shared tunnel keeps its sanitized endpoint group for domain display", () =
             name: "visible",
             ddnsEnabled: true,
             ddnsDomain: "host.example.test",
+            geoCountryCode: "HK",
+            geoCountryName: "Hong Kong",
+            geoRegion: "Kowloon",
+            geoEmoji: "🇭🇰",
             portRangeStart: 10000,
             portRangeEnd: 20000,
             portAllowlist: "10000-20000",
@@ -276,6 +328,8 @@ test("shared tunnel keeps its sanitized endpoint group for domain display", () =
   assert.equal(filtered.entryGroup.domain, "entry.example.test");
   assert.deepEqual(filtered.entryGroup.members.map((member: any) => member.id), [301]);
   assert.equal(filtered.entryGroup.members[0].host.ddnsDomain, "host.example.test");
+  assert.equal(filtered.entryGroup.members[0].host.geoCountryCode, "HK");
+  assert.equal(filtered.entryGroup.members[0].host.geoRegion, "Kowloon");
   assert.equal(JSON.stringify(filtered.entryGroup).includes("hidden"), false);
   assert.equal(JSON.stringify(filtered.entryGroup).includes("portRange"), false);
   assert.equal(JSON.stringify(filtered.entryGroup).includes("portAllowlist"), false);
