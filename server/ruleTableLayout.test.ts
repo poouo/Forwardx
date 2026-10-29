@@ -98,15 +98,34 @@ test("host layout writes reject other accounts, anonymous callers and malformed 
 
 test("MySQL and PostgreSQL create and upgrade both layout fields without rewriting existing users", async () => {
   const { ensureDatabaseSchema, getDatabaseTableDefs } = await import("./dbSchema");
-  for (const kind of ["mysql", "postgresql"] as const) {
+  for (const [kind, scenario] of [
+    ["mysql", "fresh"], ["mysql", "upgrade"],
+    ["postgresql", "fresh"], ["postgresql", "upgrade"],
+  ] as const) {
     const queries: string[] = [];
+    const definitions = getDatabaseTableDefs();
+    const columns = new Map(scenario === "fresh" ? [] : definitions.map(table => [table.name,
+      new Set(table.columns.filter(column => !["ruleTableLayout", "hostTableLayout"].includes(column.name)).map(column => column.name)),
+    ]));
     const pool = {
       ...(kind === "mysql" ? { getConnection() { throw new Error("not used"); } } : {}),
-      async query(sql: string) {
+      async query(sql: string, params: any[] = []) {
         queries.push(sql);
         if (kind === "mysql" && sql.startsWith("SHOW COLUMNS")) {
           const table = sql.match(/`([^`]+)`/)![1];
-          return [getDatabaseTableDefs().find(def => def.name === table)!.columns.filter(column => !["ruleTableLayout", "hostTableLayout"].includes(column.name)).map(column => ({ Field: column.name, Type: column.type })), []];
+          return [definitions.find(def => def.name === table)!.columns.filter(column => columns.get(table)?.has(column.name)).map(column => ({ Field: column.name, Type: column.type })), []];
+        }
+        if (kind === "postgresql" && sql.includes("pg_catalog.pg_attribute")) {
+          return { rows: params[0].flatMap((table_name: string) =>
+            [...(columns.get(table_name) || [])].map(column_name => ({ table_name, column_name }))) };
+        }
+        const creation = sql.match(/^CREATE TABLE IF NOT EXISTS [`"]([^`"]+)[`"]/);
+        if (creation && !columns.has(creation[1])) {
+          columns.set(creation[1], new Set(definitions.find(table => table.name === creation[1])!.columns.map(column => column.name)));
+        }
+        const addition = sql.match(/^ALTER TABLE [`"]([^`"]+)[`"] ADD COLUMN (?:IF NOT EXISTS )?[`"]([^`"]+)[`"]/);
+        if (addition) {
+          columns.get(addition[1])!.add(addition[2]);
         }
         return kind === "mysql" ? [[], []] : { rows: [] };
       },
@@ -116,9 +135,15 @@ test("MySQL and PostgreSQL create and upgrade both layout fields without rewriti
     const quote = kind === "mysql" ? "`" : '"';
     for (const name of ["ruleTableLayout", "hostTableLayout"]) {
       const column = `${quote}${name}${quote} TEXT`;
-      assert.ok(queries.some(sql => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${quote}users${quote}`) && sql.includes(column)), `${kind} ${name} create`);
-      assert.ok(queries.some(sql => sql.startsWith(`ALTER TABLE ${quote}users${quote} ADD COLUMN ${column}`)), `${kind} ${name} upgrade`);
+      const create = queries.some(sql => sql.startsWith(`CREATE TABLE IF NOT EXISTS ${quote}users${quote}`) && sql.includes(column));
+      const upgrade = queries.some(sql => sql.startsWith(`ALTER TABLE ${quote}users${quote} ADD COLUMN ${kind === "postgresql" ? "IF NOT EXISTS " : ""}${column}`));
+      assert.equal(create, kind === "mysql" || scenario === "fresh", `${kind} ${scenario} ${name} create`);
+      assert.equal(upgrade, scenario === "upgrade", `${kind} ${scenario} ${name} upgrade`);
+      assert.ok(columns.get("users")?.has(name), `${kind} ${scenario} ${name} exists`);
     }
     assert.ok(!queries.some(sql => /UPDATE\s+[`"]?users[^;]*(?:ruleTableLayout|hostTableLayout)/i.test(sql)));
+    queries.length = 0;
+    await ensureDatabaseSchema(pool as any);
+    assert.ok(!queries.some(sql => /^ALTER TABLE/.test(sql) && /ruleTableLayout|hostTableLayout/.test(sql)), `${kind} ${scenario} restart preserves layouts`);
   }
 });
