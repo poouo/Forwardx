@@ -74,6 +74,42 @@ func TestWireGuardDNSRefreshDoesNotRemovePeers(t *testing.T) {
 	}
 }
 
+func TestWireGuardRuntimeAcceptsDomainEndpoint(t *testing.T) {
+	privateKey, publicKey := testWireGuardKeyPair(t)
+	_, peerPublicKey := testWireGuardKeyPair(t)
+	spec := wireGuardSpec{
+		TunnelID: 903, PrivateKey: privateKey, PublicKey: publicKey, Address: "100.100.3.1",
+		Peers: []wireGuardPeerSpec{{ID: "exit", PublicKey: peerPublicKey, Address: "100.100.3.2",
+			EndpointHost: "localhost", EndpointPort: testUDPPort(t), PersistentKeepalive: 25}},
+	}
+	runtime, err := newWireGuardRuntime(spec)
+	if err != nil {
+		t.Fatalf("domain endpoint must be resolved before WireGuard configuration: %v", err)
+	}
+	defer runtime.close()
+	if runtime.spec.Peers[0].EndpointHost != "localhost" {
+		t.Fatal("runtime lost the original domain needed for DNS refresh")
+	}
+	device := runtime.device
+	spec.Generation++
+	if err := runtime.update(spec); err != nil {
+		t.Fatalf("domain endpoint refresh failed: %v", err)
+	}
+	if runtime.device != device || runtime.closed {
+		t.Fatal("DNS refresh replaced the working WireGuard device")
+	}
+	previousSignature := runtime.signature
+	invalid := spec
+	invalid.Peers = append([]wireGuardPeerSpec(nil), spec.Peers...)
+	invalid.Peers[0].EndpointHost = "invalid\x00endpoint"
+	if err := runtime.update(invalid); err == nil || !strings.Contains(err.Error(), "resolve wireguard peer exit endpoint") {
+		t.Fatalf("DNS failure did not identify the failed peer: %v", err)
+	}
+	if runtime.signature != previousSignature || runtime.spec.Peers[0].EndpointHost != "localhost" || runtime.device != device || runtime.closed {
+		t.Fatal("failed endpoint resolution changed the existing runtime")
+	}
+}
+
 func setTestWireGuardRuntime(t *testing.T, tunnelID int, runtime *wireGuardRuntime) {
 	t.Helper()
 	wireGuardRuntimesMu.Lock()
@@ -1423,7 +1459,7 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		MTU:        1380,
 		Peers: []wireGuardPeerSpec{{
 			ID: "2", HostID: 2, PublicKey: rightPublic, Address: "100.100.0.2",
-			EndpointHost: "127.0.0.1", EndpointPort: rightWirePort, PersistentKeepalive: 25,
+			EndpointHost: "localhost", EndpointPort: rightWirePort, PersistentKeepalive: 25,
 		}},
 	})
 	if err != nil {

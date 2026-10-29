@@ -1,6 +1,8 @@
 {
   "查看更新": "View update",
-  "开发者公告独立于面板版本发布，请阅读并按需检查更新。": "Developer notices are published independently of your panel version. Please read and check for updates as needed.",
+  "IPv4 或 IPv6": "IPv4 or IPv6",
+  "CNAME（旧配置）": "CNAME (legacy)",
+  "请留意以下重要通知。": "Please review this important notice.",
   "已定位": "Located",
   "待定位": "Unlocated",
   "TCP 连接": "TCP connections",
@@ -4877,6 +4879,8 @@
   "换 IP 冷却时间（秒）": "IP switch cooldown (seconds)",
   "每 24 小时最多换 IP 次数": "Maximum IP switches per 24 hours",
   "通知用户": "Notify user",
+  "通知管理员": "Notify admins",
+  "通知发送给已绑定所选 Telegram / Discord 渠道的管理员；关闭后仍记录日志。": "Notify administrators linked to the selected Telegram / Discord channel. Logs are still recorded when notifications are off.",
   "主机所有者": "Host owner",
   "通知发送给所选用户和服务创建者，使用已配置的 Telegram / Discord 渠道；用户需要绑定对应账号。": "Notify the selected user and service creator through configured Telegram / Discord channels. Recipients must link their accounts.",
   "自动切换 IP": "Automatically switch IP",

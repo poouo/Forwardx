@@ -2,6 +2,14 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [2.3.294] - 2026-10-30
+
+- Fix false database alerts during link tests and improve database startup and health checks.
+- Add IPv4 + IPv6 DDNS for entry and failover groups; remove CNAME from new configurations.
+- Fix missing multi-exit flags and V2 tunnel connections to domain-based hosts.
+- Improve automatic IP-switch diagnostics and notify administrators by default for China health alerts.
+- Versions: panel `2.3.294`, Android / iOS `2.4.12`, Agent `2.2.207` (upgrade recommended), ForwardX FXP runtime `2.2.122` (unchanged).
+
 ## [2.3.293] - 2026-10-28
 
 - Distribute a locally source-built forwarding runtime with ForwardX naming and verified downloads; upgrade the Agent package to update existing nodes.

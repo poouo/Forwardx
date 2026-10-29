@@ -32,6 +32,7 @@ export function enqueueIpSwitchAgentTask(hostId: number, input: Omit<IpSwitchAge
     }, timeoutMs);
     timer.unref?.();
     pending.set(hostId, { taskId: input.taskId, serviceId: input.serviceId, expectedIp: input.expectedIp, task: { taskId: input.taskId, serviceId: input.serviceId, request: input.request, expiresAt }, expiresAt, delivered: false, claimStarted: false, claimed: false, resolve, timer });
+    console.info(`[ChinaHealth] host=${hostId} service=${input.serviceId} task=${input.taskId} stage=queued 换 IP 任务已排队，等待 Agent 领取；尚未请求商家接口`);
     pushAgentRefresh(hostId, "china-health-ip-switch");
   });
 }
@@ -46,6 +47,7 @@ export function takeIpSwitchAgentTasks(hostId: number) {
   const task = current.task;
   current.task = undefined;
   current.delivered = true;
+  console.info(`[ChinaHealth] host=${hostId} service=${current.serviceId} task=${current.taskId} stage=dispatched 换 IP 任务已下发，是否开始请求以 Agent 日志为准`);
   return [task];
 }
 export async function claimIpSwitchAgentTask(hostId: number, taskId: string, validate: (serviceId: number, taskId: string, expectedIp: string) => Promise<boolean>) {

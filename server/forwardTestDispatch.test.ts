@@ -5,6 +5,87 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+for (const driver of ["mysql", "postgresql"] as const) {
+  test(`${driver}: self-test activation cannot lend its transaction connection to the background sweep`, () => {
+    const script = String.raw`
+      import assert from "node:assert/strict";
+      import mysql from "mysql2/promise";
+      import pg from "pg";
+      const runtime = await import("./server/dbRuntime.ts");
+      const { databaseHealth } = await import("./server/databaseHealthState.ts");
+      const { selfTestSweepActivity, startSelfTestSweepTimer } = await import("./server/selfTestTiming.ts");
+      const { createForwardTest } = await import("./server/repositories/forwardTestRepository.ts");
+      const driver = process.env.DATABASE_TYPE;
+      const originalMysql = mysql.createPool;
+      const originalPg = pg.Pool.prototype.connect;
+      let checkouts = 0;
+      const checkout = async () => {
+        checkouts++;
+        const query = async argument => {
+          const sql = typeof argument === "string" ? argument : argument.text || argument.sql;
+          const rows = [{ id: 1, ok: 1, version: "8.0.24" }];
+          return driver === "mysql"
+            ? [/^INSERT/i.test(sql) ? { insertId: 1 } : rows, []]
+            : { rows, rowCount: 1 };
+        };
+        return { query, execute: query, beginTransaction: async () => {}, commit: async () => {},
+          rollback: async () => {}, release() {}, destroy() {} };
+      };
+      mysql.createPool = () => ({ getConnection: checkout, end: async () => {} });
+      pg.Pool.prototype.connect = checkout;
+      let stop = () => {};
+      let complete;
+      const swept = new Promise(resolve => { complete = resolve; });
+      let commitComplete;
+      const committed = new Promise(resolve => { commitComplete = resolve; });
+      const errors = [];
+      const inheritedTransactions = [];
+      let sweepCheckouts = 0;
+      try {
+        const credentials = { host: "127.0.0.1", port: 12345, user: "test", password: "test-only", database: "test" };
+        await runtime.connectDatabase({ type: driver, [driver]: credentials });
+        databaseHealth.healthy();
+        stop = startSelfTestSweepTimer(async () => {
+          await committed;
+          inheritedTransactions.push(runtime.isDatabaseTransactionActive());
+          const before = checkouts;
+          try { await runtime.queryRaw("SELECT sweep"); }
+          catch (error) { errors.push({ code: error.code, message: error.message }); }
+          sweepCheckouts += checkouts - before;
+          complete();
+        }, { intervalMs: 5 });
+        await runtime.withDatabaseTransaction(async () => {
+          assert.equal(runtime.isDatabaseTransactionActive(), true);
+          // The real repository wakes the sweep inside the self-test transaction.
+          await createForwardTest({ ruleId: 1, hostId: 1, userId: 1, status: "pending" });
+        });
+        commitComplete();
+        let deadline;
+        try {
+          await Promise.race([swept, new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error("sweep never ran")), 2000);
+          })]);
+        } finally { clearTimeout(deadline); }
+        stop();
+        assert.deepEqual(errors, [], "a committed self-test must not poison the sweep with a released lease");
+        assert.deepEqual(inheritedTransactions, [false]);
+        assert.equal(sweepCheckouts, 1, "background sweep must check out its own connection");
+        assert.equal(databaseHealth.snapshot().state, "healthy");
+      } finally {
+        stop();
+        await runtime.closeDatabase();
+        databaseHealth.healthy();
+        mysql.createPool = originalMysql;
+        pg.Pool.prototype.connect = originalPg;
+      }
+    `;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, DATABASE_TYPE: driver }, encoding: "utf8", timeout: 15_000,
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  });
+}
+
 test("forward self-test leases recover lost deliveries and give claimed work a fresh timeout", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-selftest-dispatch-"));
   const databasePath = path.join(directory, "dispatch.db");

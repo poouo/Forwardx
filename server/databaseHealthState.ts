@@ -1,4 +1,5 @@
 import type { DatabaseHealth } from "../shared/databaseHealth";
+import { DatabaseLeaseClosedError } from "./databaseNetworkGuard";
 
 // Never expose driver messages: they can contain passwords, SQL, parameters,
 // internal addresses or filesystem paths. Codes and explanations are allowlisted.
@@ -50,6 +51,9 @@ export function describeDatabaseError(error: unknown, initialization = false): N
     const item = pending.shift();
     if (!item || typeof item !== "object" || seen.has(item)) continue;
     seen.add(item);
+    // This connection was already released/discarded by our own guard, not
+    // reported broken by MySQL/PostgreSQL. Keep real sibling causes visible.
+    if (item instanceof DatabaseLeaseClosedError) continue;
     const value = item as { code?: unknown; errno?: unknown; message?: unknown; sqlMessage?: unknown; cause?: unknown; errors?: unknown[] };
     let code = String(value.code || mysqlErrorCodes[Number(value.errno)] || "").toUpperCase();
     const message = String(value.sqlMessage || value.message || "");
@@ -105,6 +109,10 @@ export class DatabaseHealthTracker {
     if (!initialization && isDatabaseBusyError(error)) return false;
     const reason = describeDatabaseError(error, initialization);
     if (!reason && !initialization && !force) return false;
+    // A single business query deadline is not proof that the entire database
+    // is down. Fail that request closed, but let independent probes confirm an
+    // outage before replacing every user's page. Startup errors remain fatal.
+    if (!initialization && !force && reason?.code === "ETIMEDOUT" && this.health.state === "healthy") return true;
     // A later network probe must not hide the original failed migration or
     // make it eligible for recurring retries after the network recovers.
     if (this.initializationBlocked) {

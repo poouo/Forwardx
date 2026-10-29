@@ -9,7 +9,7 @@ import { assertSafeOutboundHost } from "./ssrf";
 import * as db from "./db";
 import { requestIpSwitch, verifyIpSwitchResponse } from "./hostIpSwitchProvider";
 import { hostIngressAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
-import { sendUserNotification } from "./notifications";
+import { getNotificationAdminRecipients, sendUserNotification } from "./notifications";
 import { appendPanelLog } from "./_core/panelLogger";
 import { seamlessBackgroundPaused } from "./seamlessMigrationState";
 import { setBoundedMapValue } from "./boundedCache";
@@ -57,7 +57,6 @@ export async function saveProbeHealth(service: any, input?: HostChinaHealthConfi
   if (input === undefined && !existing) return;
   const config = hostChinaHealthSchema.parse(input ?? JSON.parse(existing.config));
   if (!existing && !config.enabled) return;
-  if (config.notifyUserId && !await db.getUserById(config.notifyUserId)) throw new Error("通知用户不存在");
   const hostId = Number(service.hostIds?.[0]);
   if (config.enabled) {
     if (service.method === "url") throw new Error("国内健康检测仅支持 Ping / TCPing");
@@ -79,10 +78,13 @@ const html = (value: unknown) => String(value).replace(/&/g, "&amp;").replace(/<
 async function notify(service: any, host: any, message: string, config: HostChinaHealthConfig) {
   appendPanelLog("info", `[ChinaHealth] host=${host.id} service=${service.id} ${message}`);
   if (!config.notify) return;
-  for (const userId of new Set([Number(service.userId), Number(config.notifyUserId || host.userId)].filter(Boolean))) {
-    const user = await db.getUserById(userId);
-    if (user) await sendUserNotification(user, `<b>国内健康检测 · ${html(host.name)}</b>\n${html(service.name)}\n${html(message)}`).catch(() => {
-      console.warn(`[ChinaHealth] notification failed host=${host.id} service=${service.id} user=${userId}`);
+  const recipients = await getNotificationAdminRecipients().catch(() => {
+    console.warn(`[ChinaHealth] notification recipients unavailable host=${host.id} service=${service.id}`);
+    return [];
+  });
+  for (const user of recipients) {
+    await sendUserNotification(user, `<b>国内健康检测 · ${html(host.name)}</b>\n${html(service.name)}\n${html(message)}`).catch(() => {
+      console.warn(`[ChinaHealth] notification failed host=${host.id} service=${service.id} user=${user.id}`);
     });
   }
 }

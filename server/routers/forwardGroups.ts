@@ -65,7 +65,7 @@ const baseSchema = z.object({
   failoverStrategy: failoverStrategySchema.optional(),
   failoverTargets: z.array(failoverTargetSchema).max(10).optional(),
   domain: z.string().max(255).nullable().optional(),
-  recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),
+  recordType: z.enum(["A", "AAAA", "BOTH", "CNAME"]).default("A"),
   failoverSeconds: z.number().int().min(10).max(3600).default(60),
   recoverSeconds: z.number().int().min(10).max(3600).default(120),
   rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),

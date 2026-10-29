@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -92,6 +96,40 @@ func mockIPSwitchClient(status int, body string) *http.Client {
 		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 }
+func TestIPSwitchLogsStartBeforeRequestWithoutCredentials(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "request-start-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = output
+	defer func() { os.Stdout = originalStdout; output.Close() }()
+	task := sampleIPSwitchTask()
+	task.Request.Method = "POST"
+	task.Request.Headers = map[string]string{"Authorization": "header-secret"}
+	task.Request.Body = "body-secret"
+	want := "IP switch task=" + task.TaskID + " service=1 stage=request_started"
+	client := &http.Client{Transport: ipSwitchRoundTrip(func(*http.Request) (*http.Response, error) {
+		logged, err := os.ReadFile(output.Name())
+		if err != nil || !strings.Contains(string(logged), want) {
+			t.Fatalf("request started before its log: %q, %v", logged, err)
+		}
+		return nil, errors.New("network error containing url-secret")
+	})}
+	result := executeIPSwitchRequest(task, client)
+	if result.Reason != "request_failed" {
+		t.Fatal(result)
+	}
+	logged, err := os.ReadFile(output.Name())
+	if err != nil || strings.Count(string(logged), want) != 1 {
+		t.Fatalf("expected one request-start log: %q, %v", logged, err)
+	}
+	for _, secret := range []string{"10.0.0.1", "token=secret", "header-secret", "body-secret", "url-secret"} {
+		if strings.Contains(string(logged), secret) {
+			t.Fatalf("credential leaked in request-start log: %s", secret)
+		}
+	}
+}
 func TestIPSwitchResponseValidation(t *testing.T) {
 	task := sampleIPSwitchTask()
 	if result := executeIPSwitchRequest(task, mockIPSwitchClient(204, "")); result.Outcome != "accepted" {
@@ -159,5 +197,252 @@ func TestIPSwitchNoRedirectsOrUnboundedWait(t *testing.T) {
 	started := time.Now()
 	if executeIPSwitchRequest(task, client).Reason != "request_failed" || time.Since(started) > time.Second {
 		t.Fatal("request did not time out")
+	}
+}
+
+func captureIPSwitchLogs(t *testing.T, run func()) string {
+	t.Helper()
+	output, err := os.CreateTemp(t.TempDir(), "ip-switch-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = output
+	defer func() { os.Stdout = original; output.Close() }()
+	run()
+	logged, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(logged)
+	for _, secret := range []string{"token=secret", "header-secret", "body-secret", "error-secret", "response-secret", "private-secret-path"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("sensitive content leaked in logs: %s", secret)
+		}
+	}
+	return text
+}
+
+func TestIPSwitchErrorCategoriesAreSafe(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"dns", &net.DNSError{Err: "error-secret", Name: "error-secret"}, "dns_failed"},
+		{"dns-timeout", &net.DNSError{IsTimeout: true}, "dns_timeout"},
+		{"blocked", &ipSwitchTransportError{reason: "destination_blocked"}, "destination_blocked"},
+		{"connect", &net.OpError{Op: "dial", Err: errors.New("error-secret")}, "connect_failed"},
+		{"refused", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, "connection_refused"},
+		{"reset", syscall.ECONNRESET, "connection_reset"},
+		{"unreachable", syscall.ENETUNREACH, "network_unreachable"},
+		{"timeout", context.DeadlineExceeded, "timeout"},
+		{"canceled", context.Canceled, "canceled"},
+		{"tls-cert", &tls.CertificateVerificationError{Err: errors.New("error-secret")}, "tls_certificate_invalid"},
+		{"tls-protocol", tls.RecordHeaderError{Msg: "error-secret"}, "tls_protocol_error"},
+		{"disk-full", syscall.ENOSPC, "disk_full"},
+		{"read-only", syscall.EROFS, "read_only_filesystem"},
+		{"permission", os.ErrPermission, "permission_denied"},
+		{"unknown", errors.New("error-secret"), "request_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := &url.Error{Op: "Get", URL: "http://private-secret-path/?token=secret", Err: tc.err}
+			if got := ipSwitchErrorCategory(wrapped); got != tc.want {
+				t.Fatalf("category=%s want=%s", got, tc.want)
+			}
+			logged := captureIPSwitchLogs(t, func() {
+				result := executeIPSwitchRequest(sampleIPSwitchTask(), &http.Client{Transport: ipSwitchRoundTrip(func(*http.Request) (*http.Response, error) {
+					return nil, wrapped
+				})})
+				if result.Outcome != "uncertain" || result.Reason != "request_failed" {
+					t.Fatal("diagnostics changed request outcome")
+				}
+			})
+			if !strings.Contains(logged, "stage=request_finished") || !strings.Contains(logged, "diagnostic="+tc.want) {
+				t.Fatalf("missing network diagnostic: %s", logged)
+			}
+		})
+	}
+}
+
+func TestIPSwitchResponseDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, contentType, body, diagnostic, format, outcome string
+		status                                                     int
+	}{
+		{"html-not-json", "json", "text/html; charset=utf-8", "<html>response-secret</html>", "response_not_json", "html", "uncertain", 200},
+		{"html-sniffed", "json", "", "<!DOCTYPE html><html>response-secret</html>", "response_not_json", "html", "uncertain", 200},
+		{"http-html-accepted", "http", "text/html", "<html>response-secret</html>", "http_accepted_not_verified", "html", "accepted", 200},
+		{"redirect", "http", "text/html", "response-secret", "redirect_not_followed", "html", "uncertain", 302},
+		{"http-error", "http", "text/plain", "response-secret", "http_non_2xx", "text", "uncertain", 403},
+		{"mismatch", "json", "application/json", `{"success":false,"secret":"response-secret"}`, "success_condition_mismatch", "json", "uncertain", 200},
+		{"oversize", "json", "application/json", strings.Repeat("x", 65537), "response_too_large", "json", "uncertain", 200},
+		{"invalid-ip", "json", "application/json", `{"success":true,"ip":"127.0.0.1"}`, "new_ip_invalid", "json", "uncertain", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := sampleIPSwitchTask()
+			task.Request.SuccessMode = tc.mode
+			task.Request.SuccessPath, task.Request.SuccessValue = "success", true
+			if tc.name == "invalid-ip" {
+				task.Request.IPPath = "ip"
+			}
+			logged := captureIPSwitchLogs(t, func() {
+				client := &http.Client{Transport: ipSwitchRoundTrip(func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": []string{tc.contentType}}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+				})}
+				if result := executeIPSwitchRequest(task, client); result.Outcome != tc.outcome {
+					t.Fatal("diagnostics changed response outcome")
+				}
+			})
+			for _, want := range []string{"stage=response_received", "stage=request_finished", "diagnostic=" + tc.diagnostic, "responseFormat=" + tc.format, "durationMs="} {
+				if !strings.Contains(logged, want) {
+					t.Fatalf("missing %s in %s", want, logged)
+				}
+			}
+		})
+	}
+}
+
+func TestIPSwitchPreflightDiagnosticsDoNotDispatchRequests(t *testing.T) {
+	for _, name := range []string{"invalid", "expired", "clock-skew", "storage", "denied", "duplicate", "expired-after-claim"} {
+		t.Run(name, func(t *testing.T) {
+			task, directory, now, executeCalls := sampleIPSwitchTask(), t.TempDir(), int64(1000), 0
+			diagnostic := ""
+			claim := func() bool { return true }
+			switch name {
+			case "invalid":
+				task.TaskID = "error-secret\nstage=request_started"
+				diagnostic = "invalid_task_or_config"
+			case "expired":
+				now, diagnostic = 2000, "task_expired_or_clock_skew"
+			case "clock-skew":
+				now, diagnostic = 1, "task_expired_or_clock_skew"
+			case "storage":
+				directory = filepath.Join(directory, "private-secret-path")
+				if err := os.WriteFile(directory, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				diagnostic = "state_directory_create_failed"
+			case "denied":
+				claim = func() bool { return false }
+				diagnostic = "panel_claim_not_granted"
+			case "duplicate":
+				if err := os.WriteFile(filepath.Join(directory, task.TaskID), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				diagnostic = "duplicate_task_blocked"
+			case "expired-after-claim":
+				claim = func() bool { now = 2000; return true }
+				diagnostic = "task_expired_after_claim"
+			}
+			logged := captureIPSwitchLogs(t, func() {
+				runIPSwitchTask(task, directory, func() int64 { return now }, claim, func(ipSwitchTask) ipSwitchResult {
+					executeCalls++
+					return ipSwitchResult{}
+				})
+			})
+			if executeCalls != 0 || strings.Contains(logged, "stage=request_started") || !strings.Contains(logged, "stage=execution_skipped") || !strings.Contains(logged, "diagnostic="+diagnostic) {
+				t.Fatalf("incorrect preflight diagnostic: %s", logged)
+			}
+		})
+	}
+}
+
+func TestIPSwitchResultReportDiagnostics(t *testing.T) {
+	for _, name := range []string{"accepted", "rejected", "failed"} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			logged := captureIPSwitchLogs(t, func() {
+				reportIPSwitchResult(sampleIPSwitchTask(), ipSwitchResult{Outcome: "accepted", Reason: "ok"}, func(_ ipSwitchResult, ack *ipSwitchReportAck) error {
+					calls++
+					ack.Success = name == "accepted"
+					if name == "failed" {
+						return &url.Error{URL: "http://private-secret-path/", Err: context.DeadlineExceeded}
+					}
+					return nil
+				})
+			})
+			stage := map[string]string{"accepted": "result_reported", "rejected": "result_report_rejected", "failed": "result_report_failed"}[name]
+			if calls != 1 || !strings.Contains(logged, "stage="+stage) || strings.Contains(logged, "stage=request_started") {
+				t.Fatalf("incorrect reporting diagnostic: %s", logged)
+			}
+		})
+	}
+}
+
+func TestIPSwitchRealHTTPWriteDiagnostic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html>response-secret</html>")
+	}))
+	defer server.Close()
+	task := sampleIPSwitchTask()
+	task.Request.URL = server.URL + "/private-secret-path?token=secret"
+	logged := captureIPSwitchLogs(t, func() {
+		if result := executeIPSwitchRequest(task, server.Client()); result.Outcome != "accepted" {
+			t.Fatal(result)
+		}
+	})
+	for _, stage := range []string{"stage=request_started", "stage=request_written error=none", "stage=response_received", "stage=request_finished"} {
+		if !strings.Contains(logged, stage) {
+			t.Fatalf("missing HTTP stage %s: %s", stage, logged)
+		}
+	}
+}
+
+func TestIPSwitchRealTLSDiagnostics(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	for _, trusted := range []bool{true, false} {
+		task := sampleIPSwitchTask()
+		task.Request.URL = server.URL + "/private-secret-path?token=secret"
+		client := server.Client()
+		want := "stage=tls_finished error=none"
+		if !trusted {
+			client = &http.Client{Transport: &http.Transport{}}
+			want = "stage=tls_finished error=tls_certificate_invalid"
+		}
+		logged := captureIPSwitchLogs(t, func() {
+			result := executeIPSwitchRequest(task, client)
+			if (result.Outcome == "accepted") != trusted {
+				t.Fatal("unexpected TLS request result")
+			}
+		})
+		client.CloseIdleConnections()
+		if !strings.Contains(logged, want) {
+			t.Fatalf("missing TLS diagnostic: %s", logged)
+		}
+	}
+}
+
+type ipSwitchFailedBody struct{}
+
+func (ipSwitchFailedBody) Read([]byte) (int, error) { return 0, context.DeadlineExceeded }
+
+func TestIPSwitchReadAndBuildFailureDiagnostics(t *testing.T) {
+	task := sampleIPSwitchTask()
+	task.Request.SuccessMode = "json"
+	client := &http.Client{Transport: ipSwitchRoundTrip(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(ipSwitchFailedBody{})}, nil
+	})}
+	logged := captureIPSwitchLogs(t, func() {
+		if result := executeIPSwitchRequest(task, client); result.Reason != "invalid_response" {
+			t.Fatal(result)
+		}
+	})
+	if !strings.Contains(logged, "diagnostic=response_read_timeout") {
+		t.Fatalf("missing body read failure diagnostic: %s", logged)
+	}
+	task.Request.URL = "://private-secret-path"
+	logged = captureIPSwitchLogs(t, func() {
+		if result := executeIPSwitchRequest(task, client); result.Outcome != "not_executed" {
+			t.Fatal(result)
+		}
+	})
+	if strings.Contains(logged, "stage=request_started") || !strings.Contains(logged, "diagnostic=request_build_failed") {
+		t.Fatalf("incorrect request build diagnostic: %s", logged)
 	}
 }

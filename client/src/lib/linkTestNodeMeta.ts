@@ -119,6 +119,45 @@ export function addHostNodeMeta(
   ], meta);
 }
 
+/** Register every visible tunnel endpoint, not just the primary plotted path. */
+export function addTunnelHostNodeMeta(
+  metaMap: Record<string, LinkTestNodeMeta | undefined>,
+  tunnel: any | null | undefined,
+  hosts: any[] | undefined,
+) {
+  const hostById = new Map<number, any>((hosts || []).map(host => [Number(host.id), host]));
+  if (!tunnel) return hostById;
+  const members = [...(tunnel.entryGroup?.members || []), ...(tunnel.exitGroup?.members || [])];
+  const extraExits = Array.isArray(tunnel.loadBalanceExits) ? tunnel.loadBalanceExits : [];
+  const summaries = [
+    ...(tunnel.hopHosts || []), tunnel.entryHost, tunnel.exitHost,
+    ...(tunnel.loadBalanceExitHosts || []), ...extraExits.map((exit: any) => exit?.host),
+    ...members.map((member: any) => member?.host),
+  ];
+  for (const summary of summaries) {
+    const id = Number(summary?.id || 0);
+    if (id <= 0) continue;
+    const full = hostById.get(id);
+    const merged = { ...summary, ...full };
+    // A sparse/older host-options response must not erase available flags.
+    for (const field of ["geoCountryCode", "geoCountryName", "geoRegion", "geoEmoji"]) {
+      merged[field] = String(full?.[field] || "").trim() || summary[field] || null;
+    }
+    hostById.set(id, merged);
+  }
+  const endpointIds = new Set<number>([
+    Number(tunnel.entryHostId), Number(tunnel.exitHostId),
+    ...(tunnel.hopHostIds || []), ...(tunnel.hops || []).map((hop: any) => hop.hostId),
+    ...summaries.map((host: any) => Number(host?.id)),
+    ...extraExits.map((exit: any) => Number(exit?.hostId)),
+    ...members.map((member: any) => Number(member?.hostId)),
+  ]);
+  endpointIds.forEach(id => {
+    if (id > 0) addHostNodeMeta(metaMap, hostById.get(id));
+  });
+  return hostById;
+}
+
 export function findHostByAddress(hosts: any[] | undefined, address: unknown) {
   const key = normalizeLinkTestNodeKey(String(address || "").replace(/^\[/, "").replace(/\]$/, ""));
   if (!key) return null;

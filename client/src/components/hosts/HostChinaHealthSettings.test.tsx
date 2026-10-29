@@ -16,6 +16,24 @@ test("editing health settings preserves saved credentials without returning them
   assert.throws(() => chinaHealthPayload({ ...draft, replaceHook: true, hookUrl: "http://10.0.0.1/", hookHeaders: "not json" }));
 });
 
+test("China health notifications default to administrators without a recipient selector in either language", async () => {
+  const previous = getLanguagePreference();
+  try {
+    for (const language of ["zh-CN", "en"] as const) {
+      setLanguagePreference(language); await initializeLanguage();
+      const draft = createChinaHealthDraft({ enabled: true, notifyUserId: 2 });
+      assert.equal(draft.notify, true);
+      assert.equal(chinaHealthPayload(draft).notifyUserId, null, "legacy user targets are ignored");
+      const html = renderToStaticMarkup(<HostChinaHealthSettings value={draft} onChange={() => {}} />);
+      assert.ok(html.includes(language === "en" ? "Notify admins" : "通知管理员"));
+      assert.doesNotMatch(html, /role="combobox"|Notify user|Host owner|通知用户|主机所有者/);
+      if (language === "en") assert.doesNotMatch(html, /\p{Script=Han}/u);
+    }
+    const source = readFileSync("client/src/components/hosts/HostChinaHealthSettings.tsx", "utf8");
+    assert.doesNotMatch(source, /UserSelect|notifyUserId/);
+  } finally { setLanguagePreference(previous); await initializeLanguage(); }
+});
+
 test("top-level probe mode constrains China checks without clearing the provider draft", () => {
   const form = { name: "Test service", hostScope: "all" as const, hostIds: [1, 2], intervalSeconds: 600, health: { ...createChinaHealthDraft(), hookConfigured: true, hookUrl: "http://10.0.0.1/changeip", autoSwitch: true } };
   assert.equal(form.health.enabled, false, "new services default to standard probes");

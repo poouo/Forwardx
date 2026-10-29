@@ -91,6 +91,7 @@ import {
   YAxis,
 } from "recharts";
 import { MAX_FORWARD_GROUP_MEMBERS } from "@shared/forwardGroup";
+import { forwardGroupDdnsHostValue, type ForwardGroupRecordType } from "@shared/forwardGroupDdns";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { addHostNodeMeta, addNodeMetaAliases, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import {
@@ -144,7 +145,7 @@ type GroupForm = {
   failoverStrategy: FailoverStrategy;
   failoverTargetsText: string;
   domain: string;
-  recordType: "A" | "AAAA" | "CNAME";
+  recordType: ForwardGroupRecordType;
   failoverSeconds: string;
   recoverSeconds: string;
   rateLimitMbps: string;
@@ -258,36 +259,8 @@ function isValidIpv6Address(value: unknown) {
   }
 }
 
-function looksLikeIpv4(value: unknown) {
-  const text = unwrapBracketedHost(value);
-  const parts = text.split(".");
-  return parts.length === 4 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-}
-
-function looksLikeIpv6(value: unknown) {
-  const text = unwrapBracketedHost(value);
-  return text.includes(":") && /^[0-9a-fA-F:.]+$/.test(text);
-}
-
-function looksLikeIp(value: unknown) {
-  return looksLikeIpv4(value) || looksLikeIpv6(value);
-}
-
-function forwardGroupRecordValueForHost(host: any, recordType: GroupForm["recordType"]) {
-  const manual = String(host?.entryIp || "").trim();
-  if (recordType === "AAAA") {
-    if (looksLikeIpv6(manual)) return unwrapBracketedHost(manual);
-    return unwrapBracketedHost(host?.ipv6 || (looksLikeIpv6(host?.ip) ? host?.ip : ""));
-  }
-  if (recordType === "CNAME") {
-    if (manual && !looksLikeIp(manual)) return manual;
-    return host?.ddnsEnabled ? String(host?.ddnsDomain || "").trim() : "";
-  }
-  if (looksLikeIpv4(manual)) return manual;
-  return String(host?.ipv4 || (looksLikeIpv4(host?.ip) ? host?.ip : "") || "").trim();
-}
-
 function forwardGroupRecordRequirement(recordType: GroupForm["recordType"]) {
+  if (recordType === "BOTH") return translateText("IPv4 或 IPv6");
   if (recordType === "AAAA") return "IPv6";
   if (recordType === "CNAME") return translateText("入口域名或 DDNS 域名");
   return "IPv4";
@@ -1441,11 +1414,11 @@ export function ForwardGroupsContent({
         .filter((member) => {
           if (member.memberType === "host") {
             const host = hostById.get(Number(member.hostId || 0));
-            return !forwardGroupRecordValueForHost(host, form.recordType);
+            return !forwardGroupDdnsHostValue(host, form.recordType);
           }
           const tunnel = tunnelById.get(Number(member.tunnelId || 0));
           const host = hostById.get(Number(tunnel?.entryHostId || 0));
-          return !forwardGroupRecordValueForHost(host, form.recordType);
+          return !forwardGroupDdnsHostValue(host, form.recordType);
         })
         .map((member) => memberLabel(member));
       if (missingRecordMembers.length > 0) {
@@ -2245,7 +2218,7 @@ export function ForwardGroupsContent({
 
             {(form.groupMode === "failover" || form.groupMode === "entry") && (
               <>
-                <div className={"grid gap-3 " + (form.groupMode === "entry" ? "sm:grid-cols-[minmax(0,1fr)_120px_140px]" : "sm:grid-cols-[minmax(0,1fr)_120px]")}>
+                <div className={"grid gap-3 " + (form.groupMode === "entry" ? "md:grid-cols-[minmax(0,1fr)_160px_140px]" : "sm:grid-cols-[minmax(0,1fr)_160px]")}>
                   <div className="space-y-2">
                     <Label>{form.groupMode === "entry" ? translateText("入口域名") : translateText("DDNS 域名")}</Label>
                     <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder={translateText("例如 app.example.com")} />
@@ -2255,9 +2228,10 @@ export function ForwardGroupsContent({
                     <Select value={form.recordType} onValueChange={(v) => setForm({ ...form, recordType: v as GroupForm["recordType"] })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="A">A</SelectItem>
-                        <SelectItem value="AAAA">AAAA</SelectItem>
-                        <SelectItem value="CNAME">CNAME</SelectItem>
+                        <SelectItem value="A">IPv4 / A</SelectItem>
+                        <SelectItem value="AAAA">IPv6 / AAAA</SelectItem>
+                        <SelectItem value="BOTH">A + AAAA</SelectItem>
+                        {form.recordType === "CNAME" && <SelectItem value="CNAME">{translateText("CNAME（旧配置）")}</SelectItem>}
                       </SelectContent>
                     </Select>
                     {isPortMode && <div className="text-xs text-muted-foreground" role="status">
@@ -2424,7 +2398,7 @@ export function ForwardGroupsContent({
                         onChange={(event) => setForm({ ...form, rateLimitMbps: event.target.value })}
                         placeholder="0"
                       />
-                      <span className="flex h-full shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground">Mbps</span>
+                      <span translate="no" className="notranslate flex h-full shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground">Mbps</span>
                     </div>
                   </div>
                   <div className="space-y-2">

@@ -72,3 +72,11 @@ test("reuses the existing popup with half-hour polling and acknowledges remote r
   assert.match(text, /englishTitle/); assert.match(text, /englishContent/);
   assert.match(text, /target="_blank" rel="noopener noreferrer"/);
 });
+
+test("developer popup description addresses users without explaining release mechanics", () => {
+  assert.ok(text.includes('translateText("请留意以下重要通知。")'));
+  assert.ok(!text.includes("开发者公告独立于面板版本发布"));
+  const english = JSON.parse(fs.readFileSync("client/src/i18n/en.json", "utf8"));
+  assert.equal(english["请留意以下重要通知。"], "Please review this important notice.");
+  assert.ok(!Object.hasOwn(english, "开发者公告独立于面板版本发布，请阅读并按需检查更新。"));
+});

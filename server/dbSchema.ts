@@ -744,29 +744,67 @@ function indexName(prefix: string, table: string, cols: string[]) {
 }
 
 async function ensurePostgresqlSchema(pool: pg.Pool) {
+  // Resolve through the same search_path as unqualified DDL, including quoted,
+  // case-sensitive names. Inspect once instead of using duplicate-column
+  // exceptions as a normal startup path (roughly a thousand failed ALTERs).
+  const names = tables.map(table => table.name);
+  const readColumns = async (tableNames: string[]) => (await pool.query<{ table_name: string; column_name: string }>(
+    `SELECT t.table_name, a.attname AS column_name
+     FROM unnest($1::text[]) AS t(table_name)
+     JOIN pg_catalog.pg_attribute a ON a.attrelid = pg_catalog.to_regclass(pg_catalog.quote_ident(t.table_name))
+     WHERE a.attnum > 0 AND NOT a.attisdropped`, [tableNames],
+  )).rows;
+  const existingColumns = new Map<string, Set<string>>();
+  for (const row of await readColumns(names)) {
+    if (!existingColumns.has(row.table_name)) existingColumns.set(row.table_name, new Set());
+    existingColumns.get(row.table_name)!.add(row.column_name);
+  }
+  const existingIndexes = new Map<string, Set<string>>();
+  const indexes = await pool.query<{ table_name: string; index_name: string }>(
+    `SELECT t.table_name, c.relname AS index_name
+     FROM unnest($1::text[]) AS t(table_name)
+     JOIN pg_catalog.pg_index i ON i.indrelid = pg_catalog.to_regclass(pg_catalog.quote_ident(t.table_name))
+     JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid`, [names],
+  );
+  for (const row of indexes.rows) {
+    if (!existingIndexes.has(row.table_name)) existingIndexes.set(row.table_name, new Set());
+    existingIndexes.get(row.table_name)!.add(row.index_name);
+  }
+  let addedTables = 0, addedColumns = 0, addedIndexes = 0;
   for (const table of tables) {
-    const columns = table.columns.map((column) => columnSql("postgresql", column)).filter(Boolean);
-    const unique = (table.unique || []).map((cols) => `UNIQUE (${cols.map((col) => quote("postgresql", col)).join(", ")})`);
-    await pool.query(
-      `CREATE TABLE IF NOT EXISTS ${quote("postgresql", table.name)} (${[...columns, ...unique].join(", ")})`,
-    );
+    if (!existingColumns.has(table.name)) {
+      const columns = table.columns.map((column) => columnSql("postgresql", column)).filter(Boolean);
+      const unique = (table.unique || []).map((cols) => `UNIQUE (${cols.map((col) => quote("postgresql", col)).join(", ")})`);
+      await pool.query(`CREATE TABLE IF NOT EXISTS ${quote("postgresql", table.name)} (${[...columns, ...unique].join(", ")})`);
+      // Another instance may have created an older shape since inspection.
+      existingColumns.set(table.name, new Set((await readColumns([table.name])).map(row => row.column_name)));
+      addedTables++;
+    }
     for (const column of table.columns) {
-      if (column.type === "id") continue;
-      await pool.query(`ALTER TABLE ${quote("postgresql", table.name)} ADD COLUMN ${columnSql("postgresql", column, true)}`).catch(() => undefined);
+      if (column.type === "id" || existingColumns.get(table.name)!.has(column.name)) continue;
+      // IF NOT EXISTS handles a concurrent upgrade; permission, lock, data and
+      // storage failures must abort initialization instead of being swallowed.
+      await pool.query(`ALTER TABLE ${quote("postgresql", table.name)} ADD COLUMN IF NOT EXISTS ${columnSql("postgresql", column, true)}`);
+      existingColumns.get(table.name)!.add(column.name);
+      addedColumns++;
     }
-    for (const cols of table.indexes || []) {
-      const name = quote("postgresql", indexName("idx", table.name, cols));
-      await pool.query(`CREATE INDEX IF NOT EXISTS ${name} ON ${quote("postgresql", table.name)} (${cols.map((col) => quote("postgresql", col)).join(", ")})`).catch(() => undefined);
-    }
-    for (const cols of table.unique || []) {
-      const name = quote("postgresql", indexName("uniq", table.name, cols));
-      await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON ${quote("postgresql", table.name)} (${cols.map((col) => quote("postgresql", col)).join(", ")})`).catch(() => undefined);
+    for (const [prefix, groups] of [["idx", table.indexes || []], ["uniq", table.unique || []]] as const) {
+      for (const cols of groups) {
+        const name = indexName(prefix, table.name, cols);
+        if (existingIndexes.get(table.name)?.has(name)) continue;
+        await pool.query(`CREATE ${prefix === "uniq" ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${quote("postgresql", name)} ON ${quote("postgresql", table.name)} (${cols.map((col) => quote("postgresql", col)).join(", ")})`);
+        addedIndexes++;
+      }
     }
   }
-  for (const [key, value] of seedSettings) {
+  if (addedTables || addedColumns || addedIndexes) {
+    console.info(`[DatabaseSchema] PostgreSQL schema updated tables=${addedTables} columns=${addedColumns} indexes=${addedIndexes}`);
+  }
+  if (seedSettings.length) {
+    const values = seedSettings.map((_, index) => `($${index * 2 + 1}, $${index * 2 + 2}, EXTRACT(EPOCH FROM NOW())::INT)`).join(", ");
     await pool.query(
-      'INSERT INTO system_settings ("key", value, "updatedAt") VALUES ($1, $2, EXTRACT(EPOCH FROM NOW())::INT) ON CONFLICT ("key") DO NOTHING',
-      [key, value],
+      `INSERT INTO system_settings ("key", value, "updatedAt") VALUES ${values} ON CONFLICT ("key") DO NOTHING`,
+      seedSettings.flatMap(([key, value]) => [key, value]),
     );
   }
   const sidebarRows = await pool.query('SELECT value FROM system_settings WHERE "key" = $1', ["sidebarMenu"]);

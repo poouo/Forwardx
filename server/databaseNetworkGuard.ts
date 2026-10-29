@@ -26,6 +26,41 @@ export class DatabaseNetworkTimeoutError extends Error {
   }
 }
 
+// A local lease lifecycle error is not a driver-reported database disconnect.
+// Never give it PROTOCOL_CONNECTION_LOST: doing so poisons global DB health.
+export class DatabaseLeaseClosedError extends Error {
+  readonly code = "DATABASE_LEASE_CLOSED";
+  constructor() {
+    super("Database connection lease is closed");
+    this.name = "DatabaseLeaseClosedError";
+  }
+}
+
+/** Only our database-operation deadlines, not timeouts from external APIs. */
+export function isDatabaseNetworkTimeoutError(error: unknown): boolean {
+  return containsDatabaseGuardError(error, item => item instanceof DatabaseNetworkTimeoutError);
+}
+
+/** Fail only this request, with a safe message and without replaying writes. */
+export function isDatabaseGuardRequestError(error: unknown): boolean {
+  return containsDatabaseGuardError(error, item => item instanceof DatabaseNetworkTimeoutError || item instanceof DatabaseLeaseClosedError);
+}
+
+function containsDatabaseGuardError(error: unknown, matches: (item: object) => boolean): boolean {
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  for (let count = 0; pending.length && count < 16; count++) {
+    const item = pending.shift();
+    if (!item || typeof item !== "object" || seen.has(item)) continue;
+    if (matches(item)) return true;
+    seen.add(item);
+    const value = item as { cause?: unknown; errors?: unknown[] };
+    pending.push(value.cause);
+    if (Array.isArray(value.errors)) pending.push(...value.errors.slice(0, 8));
+  }
+  return false;
+}
+
 function busyError() {
   return Object.assign(new Error("Database connection wait limit reached"), { code: "POOL_ENQUEUELIMIT" });
 }
@@ -76,7 +111,7 @@ function guardedLease(client: any, driver: Driver, done: () => void, options: Gu
       destroyConnection(client, driver);
     }
     // Clear the physical connection before freeing admission/query slots.
-    for (const reject of pending) reject(error || new Error("Database lease released"));
+    for (const reject of pending) reject(error || new DatabaseLeaseClosedError());
     pending.clear();
     done();
   };
@@ -95,7 +130,7 @@ function guardedLease(client: any, driver: Driver, done: () => void, options: Gu
       if (typeof value !== "function") return value;
       if (!["query", "execute", "beginTransaction", "commit", "rollback", "ping", "reset"].includes(String(key))) return value.bind(target);
       return (...args: any[]) => {
-        if (closed) return Promise.reject(Object.assign(new Error("Database connection is closed"), { code: "PROTOCOL_CONNECTION_LOST" }));
+        if (closed) return Promise.reject(new DatabaseLeaseClosedError());
         clearTimeout(idleTimer);
         const sql = typeof args[0] === "string" ? args[0] : args[0]?.sql || args[0]?.text || "";
         const ddl = /^\s*(CREATE|ALTER|DROP|ANALYZE|VACUUM|REINDEX)\b/i.test(sql);
@@ -116,7 +151,7 @@ function guardedLease(client: any, driver: Driver, done: () => void, options: Gu
           // Attach both handlers even after cancellation: late driver failures
           // must not become unhandled rejections. Never retry uncertain writes.
           Promise.resolve().then(() => {
-            if (closed) throw new Error("Database connection is closed");
+            if (closed) throw new DatabaseLeaseClosedError();
             return Reflect.apply(value, target, args);
           }).then(result => settle(null, result), error => {
             if (brokenConnection(error)) dispose(error);

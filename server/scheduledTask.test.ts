@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createNonOverlappingScheduledTask } from "./scheduledTask";
 import {
   FORWARD_TUNNEL_LATENCY_WAIT_MS,
@@ -123,6 +124,39 @@ test("self-test timeout sweep timers exist only during active windows", async ()
   assert.equal(pendingTimers.size, 1);
   stop();
   assert.equal(pendingTimers.size, 0);
+});
+
+test("self-test sweeps retain scheduler context across request-triggered activation and reactivation", async () => {
+  const context = new AsyncLocalStorage<string>();
+  let now = 10_000;
+  const activity = new SelfTestSweepActivity(() => now, false);
+  const pending = new Map<object, () => void | Promise<void>>();
+  const seen: Array<string | undefined> = [];
+  const stop = context.run("scheduler", () => startSelfTestSweepTimer(() => { seen.push(context.getStore()); }, {
+    activity,
+    timers: {
+      setTimeout(callback) { const handle = {}; pending.set(handle, callback); return handle; },
+      clearTimeout(handle) { pending.delete(handle); },
+    },
+  }));
+  const fire = async () => {
+    const next = pending.entries().next().value; assert.ok(next);
+    pending.delete(next[0]);
+    // Even a callback invoked from another request must not borrow its scope.
+    await context.run("unrelated-request", next[1]);
+  };
+  try {
+    for (const request of ["tunnel-test-transaction", "rule-test-transaction"]) {
+      context.run(request, () => activity.markActive());
+      assert.equal(pending.size, 1);
+      await fire();
+      assert.equal(pending.size, 1);
+      now += SELF_TEST_SWEEP_ACTIVE_WINDOW_MS;
+      await fire();
+      assert.equal(pending.size, 0);
+    }
+    assert.deepEqual(seen, ["scheduler", "scheduler"]);
+  } finally { stop(); }
 });
 
 test("scheduled tasks skip overlapping ticks and resume after completion", async () => {

@@ -47,6 +47,7 @@ test("real auth survives pool errors and bursts; revocation and account checks r
     const { databaseHealth } = await import("./server/databaseHealthState.ts");
     const { protectedProcedure, publicProcedure, router } = await import("./server/_core/trpc.ts");
     const { SERVICE_BUSY_MESSAGE } = await import("./shared/databaseHealth.ts");
+    const { DatabaseLeaseClosedError } = await import("./server/databaseNetworkGuard.ts");
     const { COOKIE_NAME } = await import("./shared/const.ts");
     let sqlite, prepare, injected, reads = 0, injectedSql = /from "users"/i;
     try {
@@ -75,12 +76,13 @@ test("real auth survives pool errors and bursts; revocation and account checks r
       });
       assert.equal((await request()).ctx.user.id,1);
       assert.equal(reads,1,"a verified request uses one joined read, not two reads");
-      for (const injectedError of [new Error("Queue limit reached."),new Error("wrapped",{cause:new Error("Queue limit reached.")}),new Error("unexpected query failure")]) {
+      for (const injectedError of [new Error("Queue limit reached."),new Error("wrapped",{cause:new Error("Queue limit reached.")}),new DatabaseLeaseClosedError(),new Error("unexpected query failure")]) {
         injected=injectedError;
         for (const bearer of [false,true]) {
           const result=await request(token,bearer);
           assert.equal(result.cleared,false);
           assert.ok(["SERVICE_UNAVAILABLE","INTERNAL_SERVER_ERROR"].includes(result.error.code));
+          if (injectedError instanceof DatabaseLeaseClosedError) assert.equal(result.error.message,SERVICE_BUSY_MESSAGE);
           assert.equal(result.ctx,undefined,"never authorize from stale data on failure");
           assert.equal(databaseHealth.snapshot().state,"healthy");
         }

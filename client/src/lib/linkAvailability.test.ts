@@ -8,6 +8,21 @@ import {
 
 const now = Date.UTC(2026, 6, 16, 12, 0, 0);
 
+test("dual-stack group availability includes IPv6-only and IPv4-only members", () => {
+  for (const groupMode of ["entry", "failover"]) {
+    const state = buildLinkAvailabilityIndex({
+      hosts: [{ id: 1, isOnline: true, ipv6: "2001:db8::1" }, { id: 2, isOnline: true, ipv4: "192.0.2.2" }],
+      groups: [{ id: 70, groupMode, domain: "dual.test", recordType: "BOTH", isEnabled: true, members: [
+        { id: 701, hostId: 1, memberType: "host", isEnabled: true },
+        { id: 702, hostId: 2, memberType: "host", isEnabled: true },
+      ] }],
+      tunnels: [], now,
+    }).groupAvailabilityById.get(70)!;
+    assert.equal(state.available, true);
+    assert.deepEqual([...state.usableMemberIds], [701, 702]);
+  }
+});
+
 test("direct port entry groups remain usable when one entry is offline and honor the dependency switch", () => {
   const hosts = [{ id: 1, isOnline: true }, { id: 2, isOnline: false }];
   const entry = { id: 70, groupMode: "entry", domain: "entry.test", isEnabled: true, members: [] };

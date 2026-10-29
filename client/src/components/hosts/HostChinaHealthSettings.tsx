@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import UserSelect from "@/components/UserSelect";
 import { defaultHostChinaHealth, hostChinaHealthSchema, type HostChinaHealthConfig } from "@shared/hostChinaHealth";
 
 export type ChinaHealthDraft = Omit<HostChinaHealthConfig, "hook"> & {
@@ -83,8 +82,7 @@ export default function HostChinaHealthSettings({ value, onChange }: { value: Ch
         ["recoveryThreshold", "恢复次数", 2, 20], ["cooldownSeconds", "商家换 IP 间隔（分钟）", 5, 1440],
         ["maxSwitchesPerDay", "24h 换 IP 上限", 1, 10],
       ] as const).map(([key, label, min, max]) => <div className="space-y-1" key={key}><Label className="text-xs" htmlFor={`china-${key}`}>{t(label)}</Label><Input className="h-9 sm:h-8" id={`china-${key}`} type="number" min={min} max={max} value={key === "cooldownSeconds" ? value[key] / 60 : value[key]} onChange={event => patch({ [key]: key === "cooldownSeconds" ? Math.round(Number(event.target.value) * 60) : Number(event.target.value) })} /></div>)}</div>
-      <Label className="flex items-center justify-between gap-3">{t("通知用户")}<Switch checked={value.notify} onCheckedChange={notify => patch({ notify })} /></Label>
-      {value.notify && <UserSelect className="h-9 sm:h-8" value={value.notifyUserId ? String(value.notifyUserId) : "owner"} specialOptions={[{ value: "owner", label: t("主机所有者") }]} onValueChange={id => patch({ notifyUserId: id === "owner" ? null : Number(id) })} />}
+      <Label className="flex items-center justify-between gap-3">{t("通知管理员")}<Switch checked={value.notify} onCheckedChange={notify => patch({ notify })} /></Label>
       <Label className="flex items-center justify-between gap-3">{t("自动切换 IP")}<Switch checked={value.autoSwitch} onCheckedChange={autoSwitch => patch({ autoSwitch })} /></Label>
       {value.autoSwitch && <p className="text-xs text-muted-foreground">{t("可能收费或重启；已接收或结果不明的请求不自动重试。")}</p>}
       {value.hookConfigured && <Label className="flex items-center justify-between gap-3 text-xs">{t("替换已存接口")}<Switch checked={value.replaceHook} onCheckedChange={replaceHook => patch({ replaceHook })} /></Label>}
@@ -104,7 +102,7 @@ export default function HostChinaHealthSettings({ value, onChange }: { value: Ch
         <summary className="cursor-pointer select-none hover:text-foreground">{t("使用说明")}</summary>
         <div className="mt-2 space-y-2 leading-relaxed">
           <p>{t("从选定主机探测国内固定公网 IP。连续失败后自动执行已启用的后续操作，无需人工回复；探测失败仅表示疑似连通异常，不能确认被墙。")}</p>
-          <p>{t("通知发送给所选用户和服务创建者，使用已配置的 Telegram / Discord 渠道；用户需要绑定对应账号。")}</p>
+          <p>{t("通知发送给已绑定所选 Telegram / Discord 渠道的管理员；关闭后仍记录日志。")}</p>
           {(value.autoSwitch || value.replaceHook) && <>
             <p>{t("由被检测主机的 Agent 请求，支持商家内网 HTTP / HTTPS 管理接口。HTTP 仅建议用于可信内网，公网请使用 HTTPS。需要升级支持此功能的 Agent。")}</p>
             <p className="break-all">{t("可用变量：{{hostId}}、{{serviceId}}、{{ip}}、{{incidentId}}。凭据加密保存且不回显，仅通过加密任务交给对应 Agent；保存不会调用接口。")}</p>

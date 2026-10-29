@@ -126,7 +126,7 @@ Agent 配置文件位于 `/etc/forwardx/agent/config.json`，日志目录位于 
 
 ### 通知与商家接口
 
-- 「通知用户」默认开启，可指定接收用户；默认通知主机所有者，同时通知服务创建者。使用已配置的 Telegram / Discord 通道，接收人需绑定账号。
+- 「通知管理员」默认开启，自动通知已绑定当前 Telegram / Discord 通道的启用管理员，无需选择接收用户。关闭后仍记录日志；旧配置中的自定义接收用户不再生效。
 - 「自动切换 IP」默认关闭。启用前核实商家费用、重启影响和接口是否允许从该主机访问。
 - 必须同步更新目标主机的 Agent；不支持该功能或近期没有有效心跳时，面板提示不可用，不会改由面板代发请求。
 
@@ -157,7 +157,22 @@ http://10.0.0.1/api/changeip?token=你的商家令牌
 
 如果收到异常通知却没有换 IP 通知，先核对服务是否启用了「自动切换 IP」并配置了接口，再到「运维看板 → 状态与告警记录」查看：国内健康检测页会展示 Agent 能力、等待商家间隔、每日上限或上次未知结果等原因，以及下次最早请求时间；IP 更换记录会展示接口配置错误、任务过期、连接失败、HTTP 状态、成功字段不匹配或新 IP 无效等分类。仅有 HTTP 2xx 不代表商家实际换 IP 成功。
 
-Agent 日志搜索 `IP switch task=`，可看到固定的结果分类和 HTTP 状态；面板日志搜索 `[ChinaHealth]`。日志不记录接口令牌、请求体或商家原始响应。接口凭据加密保存、编辑时不回显；只更改检测参数会保留原凭据，替换接口需重新填写完整配置。数据库迁移合并不自动移植这类自动操作配置；更换 JWT 密钥后也需重新填写接口，避免误用旧凭据。
+Agent 日志搜索 `IP switch task=`，面板日志搜索 `[ChinaHealth]`，使用相同的 `task` ID 关联一次任务。升级 Agent 后，可按以下阶段定位：
+
+| Agent 日志 `stage` | 含义 |
+| --- | --- |
+| `received` | 已收到任务，附剩余有效秒数 |
+| `claim_started` / `claim_finished` | 向面板校验是否允许执行；检查 `allowed` 和 `error` |
+| `execution_skipped` | 本次未请求商家接口；检查过期、去重、状态文件或校验失败原因 |
+| `request_started` | 开始 HTTP 请求，附方法、成功判断模式和超时秒数 |
+| `tls_finished` / `request_written` | TLS 握手或本地请求写入结果；写入成功不等于商家执行成功 |
+| `response_received` / `request_finished` | HTTP 状态、响应类型、校验结果及耗时 |
+| `result_reported` | 面板明确接收了结果 |
+| `result_report_failed` / `result_report_rejected` | 回传失败或面板未接收结果，不会因此重新请求商家接口 |
+
+例如 `diagnostic=response_not_json responseFormat=html` 表示要求 JSON 校验，但接口返回了 HTML；`redirect_not_followed` 表示接口要求跳转，Agent 为避免重复操作不会自动跟随；`dns_failed`、`connection_refused`、`timeout`、`tls_certificate_invalid` 分别指向解析、连接、超时或证书故障。`http_accepted_not_verified` 只代表 HTTP 2xx，不证明实际换 IP。结果不明时先核对商家记录，不要反复手动访问可能收费的接口。
+
+日志不记录接口地址、令牌、请求体或商家原始响应。接口凭据加密保存、编辑时不回显；只更改检测参数会保留原凭据，替换接口需重新填写完整配置。数据库迁移合并不自动移植这类自动操作配置；更换 JWT 密钥后也需重新填写接口，避免误用旧凭据。
 
 ## NAT 主机与可用端口
 

@@ -10,6 +10,7 @@ import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { rulesForHost, serviceDefinitions } from "./agent-workload.mjs";
+import { instrumentPoolConnections } from "./database-instrumentation";
 
 const directory = process.env.FORWARDX_AGENT_BENCH_DIR!;
 const kind = process.env.DATABASE_TYPE || "sqlite";
@@ -167,17 +168,9 @@ if (kind === "sqlite") {
       return statement;
     };
   });
-} else if (kind === "mysql") {
-  const pool: any = runtime.getPool();
-  wrapClient(pool);
-  const original = pool.getConnection.bind(pool);
-  pool.getConnection = async () => wrapClient(await original());
 } else {
-  const pool: any = runtime.getPostgresPool();
-  wrapClient(pool);
-  // Do not wrap pg's callback-style internal connect path used by pool.query.
-  const original = pool.connect.bind(pool);
-  pool.connect = (...args: any[]) => args.length ? original(...args) : original().then(wrapClient);
+  instrumentPoolConnections(kind === "mysql" ? runtime.getPool() : runtime.getPostgresPool(),
+    kind as "mysql" | "postgresql", wrapClient);
 }
 const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
 let cpuStart = process.cpuUsage(), wallStart = performance.now(), eluStart = performance.eventLoopUtilization();

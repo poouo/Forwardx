@@ -7,6 +7,7 @@ import { runWithConfigAuditContext } from "../configAudit";
 import { databaseHealth, isDatabaseBusyError } from "../databaseHealthState";
 import { DATABASE_UNAVAILABLE_MESSAGE, SERVICE_BUSY_MESSAGE } from "../../shared/databaseHealth";
 import { displayQueries } from "../displayQueryCache";
+import { isDatabaseGuardRequestError } from "../databaseNetworkGuard";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -24,7 +25,7 @@ const databaseSafeProcedure = t.procedure.use(async ({ next, type, ctx, path }) 
   let result;
   try { result = await next(); }
   finally { if (invalidatesDisplay) displayQueries.invalidate(ctx.user!); }
-  if (!result.ok && isDatabaseBusyError(result.error)) {
+  if (!result.ok && (isDatabaseBusyError(result.error) || isDatabaseGuardRequestError(result.error))) {
     throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: SERVICE_BUSY_MESSAGE, cause: result.error });
   }
   if (!result.ok && databaseHealth.snapshot().state === "unavailable") {
