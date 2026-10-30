@@ -1,6 +1,7 @@
 import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
 import { updateMultiDeviceLoginSettingCache } from "./context";
 import { z } from "zod";
+import { ADMIN_VISIT_CHECK_INTERVAL_MS } from "../../shared/visitChecks";
 import { AUTH_CAPTCHA_PROVIDERS, normalizeAuthCaptchaProvider } from "../../shared/authCaptcha";
 import * as db from "../db";
 import { ENV } from "../env";
@@ -1087,7 +1088,7 @@ async function getLatestUpdateInfoCached(force = false): Promise<UpdateInfo> {
   }
   if (!force && lastUpdateInfo) {
     const checkedAt = new Date(lastUpdateInfo.checkedAt).getTime();
-    if (Number.isFinite(checkedAt) && Date.now() - checkedAt < UPDATE_CHECK_COOLDOWN_MS) {
+    if (Number.isFinite(checkedAt) && Date.now() - checkedAt < ADMIN_VISIT_CHECK_INTERVAL_MS) {
       return lastUpdateInfo;
     }
   }

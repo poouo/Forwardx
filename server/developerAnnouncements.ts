@@ -57,7 +57,7 @@ export function createDeveloperAnnouncementCache(options: {
       throw lastError;
     } catch {
       // Do not log proxy URLs, SQL details or one stack trace per browser poll.
-      (options.warn ?? console.warn)("[Announcement] Developer feed unavailable; retaining recent cache and retrying in 30 minutes");
+      (options.warn ?? console.warn)("[Announcement] Developer feed unavailable; retaining recent cache; next administrator visit may retry after 30 minutes");
       return available();
     } finally { nextCheck = now() + DEVELOPER_ANNOUNCEMENT_INTERVAL_MS; }
   }

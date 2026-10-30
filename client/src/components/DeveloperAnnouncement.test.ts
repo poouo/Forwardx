@@ -60,9 +60,28 @@ test("withdrawn or expired notices close the popup and clear its display identit
   assert.equal(result.versionWritten, "", "remote acknowledgement must not suppress pending local notices");
   assert.equal(key.current, "");
 });
-test("reuses the existing popup with half-hour polling and acknowledges remote reads only on success", () => {
+test("remote metadata checks are visit-triggered with no interval polling", () => {
   assert.equal(DEVELOPER_ANNOUNCEMENT_INTERVAL_MS, 1_800_000);
-  assert.match(text, /announcements\.upgradePopup\.useQuery\(undefined, \{[\s\S]*?staleTime: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,[\s\S]*?refetchInterval: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,[\s\S]*?refetchIntervalInBackground: false/);
+  for (const path of ["announcements.upgradePopup", "system.checkUpdate"]) {
+    const start = text.indexOf(`trpc.${path}.useQuery(undefined, {`);
+    assert.ok(start >= 0);
+    const options = text.slice(start, text.indexOf("\n  });", start));
+    assert.match(options, /enabled:.*isAdmin.*pageVisible/);
+    assert.match(options, /staleTime: (?:DEVELOPER_ANNOUNCEMENT|ADMIN_VISIT_CHECK)_INTERVAL_MS/);
+    assert.match(options, /refetchInterval: false/);
+    assert.match(options, /refetchOnWindowFocus: true/);
+    assert.match(options, /refetchOnReconnect: false/);
+    assert.match(options, /retry: false/);
+  }
+  assert.match(text, /if \(!isAdmin \|\| !pageVisible\) return;/);
+  assert.match(text, /utils\.announcements\.upgradePopup\.fetch\(undefined, \{ staleTime: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS/);
+  assert.match(text, /utils\.system\.checkUpdate\.fetch\(undefined, \{ staleTime: ADMIN_VISIT_CHECK_INTERVAL_MS/);
+  assert.match(text, /\}, \[location, isAdmin, user\?\.id, pageVisible/);
+  const scheduler = fs.readFileSync("server/scheduler.ts", "utf8");
+  assert.doesNotMatch(scheduler, /checkPanelUpdateTask|runUpdateAutoCheck|UPDATE_AUTO_CHECK_INTERVAL_MS|repeatAfter\(updateCheck/);
+});
+
+test("reuses the existing popup and acknowledges remote reads only on success", () => {
   assert.match(text, /if \(upgradeAnnouncement\?\.source === "developer"\) return;/);
   assert.match(text, /await utils\.announcements\.upgradePopup\.cancel\(\)/);
   assert.match(text, /utils\.announcements\.upgradePopup\.setData\(undefined, null\)/);

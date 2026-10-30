@@ -89,6 +89,7 @@ import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { getSidebarMenuLabel, isSidebarMenuVisible, normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
 import { DEVELOPER_ANNOUNCEMENT_INTERVAL_MS } from "@shared/developerAnnouncements";
+import { ADMIN_VISIT_CHECK_INTERVAL_MS } from "@shared/visitChecks";
 import { buildPanelInstallerCommand } from "@shared/githubAccelerator";
 import { ForwardXLogo } from "@/components/ForwardXLogo";
 import PanelStartView from "./PanelStartView";
@@ -132,7 +133,6 @@ const adminMenuItems: SidebarNavItem[] = [
 const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
 const PANEL_UPGRADE_NOTICE_DISMISSED_KEY = "forwardx.panel.upgrade.dismissedVersion";
 const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
-const UPDATE_AUTO_CHECK_REFETCH_MS = 6 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
 const POPUP_ANNOUNCEMENT_SESSION_KEY = "forwardx.popupAnnouncement.seen";
 const UPGRADE_ANNOUNCEMENT_VERSION_KEY = "forwardx.upgradeAnnouncement.lastSeenVersion";
@@ -433,12 +433,19 @@ function DashboardLayoutContent({
   });
   const updateAutoCheckReady = !isAdmin || !!publicInfo;
   const updateAutoCheckEnabled = publicInfo?.updateAutoCheckEnabled !== false;
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
+  useEffect(() => {
+    const onVisibility = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
   const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
-    enabled: isAdmin && !deferBackgroundQueries && updateAutoCheckReady && updateAutoCheckEnabled,
-    refetchInterval: updateAutoCheckEnabled ? UPDATE_AUTO_CHECK_REFETCH_MS : false,
-    refetchOnWindowFocus: false,
+    enabled: isAdmin && pageVisible && !deferBackgroundQueries && updateAutoCheckReady && updateAutoCheckEnabled,
+    refetchInterval: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: false,
     retry: false,
-    staleTime: 60 * 1000,
+    staleTime: ADMIN_VISIT_CHECK_INTERVAL_MS,
   });
   const { data: storeStatus, isFetched: storeStatusFetched } = trpc.plans.storeStatus.useQuery(undefined, {
     enabled: !!user && !isAdmin,
@@ -451,13 +458,22 @@ function DashboardLayoutContent({
     retry: false,
   });
   const { data: upgradeAnnouncement, isFetched: upgradeAnnouncementFetched } = trpc.announcements.upgradePopup.useQuery(undefined, {
-    enabled: !!user && isAdmin,
+    enabled: !!user && isAdmin && pageVisible,
     staleTime: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,
-    refetchInterval: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS,
-    refetchIntervalInBackground: false,
+    refetchInterval: false,
     refetchOnWindowFocus: true,
+    refetchOnReconnect: false,
     retry: false,
   });
+  // Navigation is another visit. A staleTime-aware fetch reuses fresh query data
+  // and coalesces simultaneous mount/focus/navigation requests. No idle timer.
+  useEffect(() => {
+    if (!isAdmin || !pageVisible) return;
+    void utils.announcements.upgradePopup.fetch(undefined, { staleTime: DEVELOPER_ANNOUNCEMENT_INTERVAL_MS, retry: false }).catch(() => {});
+    if (!deferBackgroundQueries && updateAutoCheckReady && updateAutoCheckEnabled) {
+      void utils.system.checkUpdate.fetch(undefined, { staleTime: ADMIN_VISIT_CHECK_INTERVAL_MS, retry: false }).catch(() => {});
+    }
+  }, [location, isAdmin, user?.id, pageVisible, deferBackgroundQueries, updateAutoCheckReady, updateAutoCheckEnabled, utils]);
   const { data: telegramStatus } = trpc.telegram.status.useQuery(undefined, {
     enabled: !!user,
     refetchInterval: (query) => {

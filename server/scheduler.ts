@@ -23,7 +23,6 @@ import { runHistoryMaintenance } from "./historyMaintenance";
 import { cleanMonitorHistory } from "./operationsMonitor";
 import { cleanProbeHealthHistory } from "./hostProbeHealth";
 import { reconcileHostDdnsRecords } from "./hostDdns";
-import { checkPanelUpdateTask } from "./_core/systemRouter";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
 import { databaseHealth } from "./databaseHealthState";
 import { runOperationsDailyReport } from "./operationsDailyReport";
@@ -50,8 +49,6 @@ type TimedOutForwardTest = {
 function timeoutSecondsForForwardTest(test: TimedOutForwardTest) {
   return selfTestTimeoutSeconds(parseSelfTestMeta(test.requestMessage ?? test.message));
 }
-
-const UPDATE_AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let hostStatusPrimePromise: Promise<void> | null = null;
 
@@ -617,14 +614,6 @@ async function primeForwardGroupLivenessWithRetry() {
   }
 }
 
-async function runUpdateAutoCheck() {
-  try {
-    await checkPanelUpdateTask(false);
-  } catch (error: any) {
-    console.warn("[Scheduler] Update auto-check error:", error?.message || error);
-  }
-}
-
 function hostTrafficUsageBytes(traffic: any, mode: unknown) {
   const bytesIn = Number(traffic?.bytesIn || 0);
   const bytesOut = Number(traffic?.bytesOut || 0);
@@ -698,9 +687,6 @@ export function startScheduler() {
     await runEmailReminders();
     await runTelegramReminders();
   }, { slowTaskMs: 15_000 });
-  const updateCheck = createNonOverlappingScheduledTask("panel update check", async () => {
-    await runUpdateAutoCheck();
-  }, { slowTaskMs: 15_000 });
   const databasePoolSizing = createNonOverlappingScheduledTask("database pool sizing", async () => {
     await db.refreshDatabasePoolSettings();
   });
@@ -754,7 +740,7 @@ export function startScheduler() {
   repeatAfter(paymentMaintenance, 60 * 1000, 35_000);
   repeatAfter(operationsDailyReport, 60_000, 40_000);
   repeatAfter(reminderSweep, 6 * 60 * 60 * 1000, 30_000);
-  repeatAfter(updateCheck, UPDATE_AUTO_CHECK_INTERVAL_MS, 45_000);
+  // Remote version/announcement checks are visit-triggered, not scheduled.
   // Short, paced passes catch up old backlogs without a single hourly burst.
   repeatAfter(historyCleanup, 5 * 60_000, 2 * 60_000);
 
