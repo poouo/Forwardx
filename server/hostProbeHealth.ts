@@ -29,6 +29,13 @@ function decryptHook(value: string): IpSwitchHook {
   decipher.setAuthTag(Buffer.from(tag, "base64"));
   return hostChinaHealthSchema.parse({ hook: JSON.parse(Buffer.concat([decipher.update(Buffer.from(body, "base64")), decipher.final()]).toString("utf8")) }).hook!;
 }
+/** Sensitive detail: only call from the administrator's explicit edit request. */
+export async function getProbeHealthHook(serviceId: number) {
+  const [row] = await queryRaw<any>(`SELECT ${q("hookCiphertext")} FROM ${q("host_probe_health")} WHERE ${q("serviceId")} = ?`, [serviceId]);
+  if (!row?.hookCiphertext) return null;
+  try { return decryptHook(row.hookCiphertext); }
+  catch { throw new Error("无法读取已保存的换 IP 参数，请重新配置接口"); }
+}
 function parseState(value: string | null): ChinaHealthState | null { try { return value ? JSON.parse(value) : null; } catch { return null; } }
 export const probeHealthLock = (id: number) => `probe-health-service:${id}`;
 export async function getProbeHealthViews(ids: number[]) {
@@ -92,6 +99,11 @@ type Dependencies = { request: typeof requestIpSwitch; notify: typeof notify; re
 const dependencies: Dependencies = { request: requestIpSwitch, notify, refresh: refreshHostAddressRuntime, ready: ipSwitchAgentReady };
 async function performSwitch(row: any, service: any, host: any, state: ChinaHealthState, config: HostChinaHealthConfig, now: number, deps: Dependencies) {
   return withKeyedTaskLock(`probe-health-ip-switch:${host.id}`, async () => {
+    // Authentication deliberately supplies only an ID/name, not mutable addresses.
+    // Hydrate lazily on the action path, never on every healthy Agent report.
+    const snapshot = await db.getHostById(host.id);
+    const expectedIp = hostIngressAddress(host) || hostIngressAddress(snapshot);
+    if (snapshot) host = snapshot;
     let attemptId: number;
     let blockedMessage = "";
     const allowed = await withKeyedTaskLock(probeHealthLock(service.id), async () => {
@@ -122,7 +134,8 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       if (nextAt > now) return defer("cooldown", `自动换 IP 等待中：商家请求间隔尚未结束，剩余 ${Math.ceil((nextAt - now) / 60)} 分钟`, nextAt);
       if (Number(limits?.count || 0) >= config.maxSwitchesPerDay) return defer("daily_limit", "自动换 IP 等待中：已达到最近 24 小时请求上限", Number(limits.firstAt) + 86400);
       const freshHost = await db.getHostById(host.id);
-      if (!freshHost || hostIngressAddress(freshHost) !== hostIngressAddress(host)) return false;
+      if (!freshHost || !expectedIp) return defer("host_address_unavailable", "自动换 IP 等待中：主机不存在或入口地址为空，尚未请求商家接口");
+      if (hostIngressAddress(freshHost) !== expectedIp) return defer("host_address_changed", "自动换 IP 等待中：主机地址已变更，等待下一次探测，尚未请求商家接口");
       // Persist intent BEFORE any request: a crash or timeout must not silently retry a paid action.
       attemptId = await insertAndGetId("host_ip_switch_attempts", { hostId: host.id, serviceId: service.id, incidentId: state.incidentId, status: "pending", createdAt: now, cooldownUntil: now + config.cooldownSeconds });
       state.actionAttempted = true;
@@ -140,7 +153,7 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       let hook: IpSwitchHook;
       try { hook = decryptHook(row.hookCiphertext); }
       catch { throw new IpSwitchNotDispatchedError("invalid_request"); }
-      const response = await deps.request(hook, { hostId: host.id, serviceId: service.id, ip: hostIngressAddress(host), incidentId: state.incidentId });
+      const response = await deps.request(hook, { hostId: host.id, serviceId: service.id, ip: expectedIp, incidentId: state.incidentId });
       reason = response.reason; httpStatus = response.httpStatus ?? null;
       if (response.outcome === "not_executed") {
         status = "not_executed"; message = `Agent 未执行换 IP 请求：${ipSwitchReasonMessage(response.reason)}；后续仍遵循商家请求间隔`;
@@ -149,12 +162,12 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       if (response.outcome === "uncertain") {
         message = `换 IP 请求结果未确认：${ipSwitchReasonMessage(response.reason)}${httpStatus ? `（HTTP ${httpStatus}）` : ""}；已停止自动重试，请核对商家结果`;
       }
-      newIp = await verifyIpSwitchResponse(hook, response, hostIngressAddress(host));
+      newIp = await verifyIpSwitchResponse(hook, response, expectedIp);
       status = response.outcome === "accepted" ? "accepted" : "succeeded";
       message = response.outcome === "accepted" ? "商家接口已接收请求（HTTP 2xx），实际换 IP 结果以后续探测或商家状态为准" : "商家接口确认换 IP 请求成功，等待后续探测恢复";
       if (newIp && hook.updateAddress !== "none") {
         const current = await db.getHostById(host.id);
-        if (current && hostIngressAddress(current) === hostIngressAddress(host)) {
+        if (current && hostIngressAddress(current) === expectedIp) {
           status = "sync_failed"; message = "商家接口已成功，但面板地址或关联链路同步失败，请检查配置";
           await db.updateHost(host.id, { entryIp: newIp, ...(hook.updateAddress === "entry_and_tunnel" ? { tunnelEntryIp: newIp } : {}) });
           await deps.refresh(host.id, current, "china-health-ip-switch");

@@ -2,6 +2,11 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Fix automatic IP switching silently stopping when compact Agent identities omit host addresses; retain execution-time validation and report missing or changed addresses. No Agent update is required for this fix.
+- Automatically load saved IP switch parameters in the administrator's service editor and keep them visible for editing. Lists remain credential-free; viewing or saving never calls the provider API.
+
 ## [2.3.294] - 2026-10-30
 
 - Fix false database alerts during link tests and improve database startup and health checks.

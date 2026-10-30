@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import * as runtime from "./dbRuntime";
 import * as db from "./db";
 import { ensureDatabaseSchema } from "./dbSchema";
@@ -19,7 +20,7 @@ let http: ReturnType<ReturnType<typeof express>["listen"]> | undefined;
 try {
   await ensureDatabaseSchema();
   for (const id of [1, 2]) await runtime.insertAndGetId("users", { id, username: `user-${id}`, password: "test", name: `User ${id}`, role: id === 1 ? "admin" : "user" });
-  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) await runtime.insertAndGetId("hosts", { id, name: `Host ${id}`, ip: "1.1.1.1", agentToken: `test-token-${id}`, userId: 1 });
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]) await runtime.insertAndGetId("hosts", { id, name: `Host ${id}`, ip: id === 14 ? "" : "1.1.1.1", ...(id === 11 || id === 12 ? { entryIp: "8.8.8.8" } : {}), agentToken: `test-token-${id}`, userId: 1 });
   const caller = (id: number, role: string) => hostsRouter.createCaller({ user: { id, role }, req: { headers: {}, socket: {} }, res: {}, authSession: null, authFailureReason: null } as any);
   const admin = caller(1, "admin"), user = caller(2, "user");
   const hook = ipSwitchHookSchema.parse({ url: "http://10.0.0.1/api/changeip?token=private-provider-secret", successMode: "http" });
@@ -33,15 +34,32 @@ try {
   const view = (await admin.probeServices()).find((item: any) => item.id === id)!.health;
   assert.equal(view.hookConfigured, true); assert.doesNotMatch(JSON.stringify(view), /private-provider-secret|hookCiphertext|10\.0\.0\.1/);
   assert.deepEqual(await user.probeServices(), []);
+  await assert.rejects(user.probeServiceIpSwitchHook({ serviceId: id }), (error: any) => error.code === "FORBIDDEN");
+  await assert.rejects(admin.probeServiceIpSwitchHook({ serviceId: 99999 }), (error: any) => error.code === "NOT_FOUND");
+  const oldFetch = globalThis.fetch;
+  let providerReads = 0;
+  try {
+    globalThis.fetch = async () => { providerReads++; throw new Error("Viewing/saving must not send requests"); };
+    assert.deepEqual(await admin.probeServiceIpSwitchHook({ serviceId: id }), hook);
+    const editedHook = { ...hook, method: "POST" as const, headers: { Authorization: "Bearer edited-secret" }, body: "edited-body-secret", timeoutSeconds: 30 };
+    await admin.updateProbeService({ ...serviceInput, id, health: { ...health, hook: editedHook } });
+    assert.deepEqual(await admin.probeServiceIpSwitchHook({ serviceId: id }), editedHook);
+    assert.doesNotMatch(JSON.stringify(await admin.probeServices()), /private-provider-secret|edited-secret|edited-body-secret|hookCiphertext/);
+    await admin.updateProbeService({ ...serviceInput, id });
+    assert.equal(providerReads, 0);
+  } finally { globalThis.fetch = oldFetch; }
   // An unrelated update (e.g. pause) must preserve saved provider credentials.
   await admin.updateProbeService({ ...serviceInput, id, health: undefined });
-  assert.equal((await runtime.queryRaw<any>("SELECT hookCiphertext FROM host_probe_health WHERE serviceId = ?", [id]))[0].hookCiphertext, stored.hookCiphertext);
+  assert.deepEqual(await admin.probeServiceIpSwitchHook({ serviceId: id }), hook);
   await assert.rejects(admin.createProbeService({ ...serviceInput, hostIds: [1, 2] }), /一台特定/);
   await assert.rejects(admin.createProbeService({ ...serviceInput, targetIp: "localhost" }), /固定公网 IP/);
   const base = Math.floor(Date.now() / 1000), host = (await db.getHostById(1))!;
+  // Production TCPing auth supplies only this identity, without ANY address.
+  const compactHost = { id: host.id, name: host.name, agentInstallationId: "" };
   let calls = 0, notices = 0, ready = false;
   const deps = { ready: () => ready, notify: async () => { notices++; }, request: async (_hook: any, context: any) => {
     calls++;
+    assert.equal(context.ip, hostIngressAddress(host));
     assert.equal(await validateIpSwitchClaim(1, id, context.incidentId, hostIngressAddress(host)), true);
     assert.equal(await validateIpSwitchClaim(2, id, context.incidentId, hostIngressAddress(host)), false);
     assert.equal(await validateIpSwitchClaim(1, id, context.incidentId, "8.8.8.8"), false);
@@ -52,12 +70,12 @@ try {
   await observeProbeHealth(host, [{ ...report, targetIp: "8.8.8.8" }, { ...report, method: "ping" }], base, deps);
   await observeProbeHealth(host, [{ ...report, probeSuccesses: -1 }], base, deps);
   assert.equal((await getProbeHealthViews([id])).get(id).state, null);
-  for (const offset of [0, 15, 30]) await observeProbeHealth(host, [report], base + offset, deps);
+  for (const offset of [0, 15, 30]) await observeProbeHealth(compactHost, [report], base + offset, deps);
   assert.equal((await getProbeHealthViews([id])).get(id).state.phase, "unhealthy"); assert.equal(calls, 0);
   assert.equal((await getProbeHealthViews([id])).get(id).state.actionBlockedReason, "agent_unavailable");
   ready = true;
   // No human reply or approval: a capable Agent immediately receives the action.
-  await observeProbeHealth(host, [report], base + 45, deps);
+  await observeProbeHealth(compactHost, [report], base + 45, deps);
   assert.equal(calls, 1); assert.equal((await getProbeHealthViews([id])).get(id).lastAction.status, "accepted");
   await observeProbeHealth(host, [report, report], base + 60, deps); assert.equal(calls, 1);
   for (const offset of [75, 90]) await observeProbeHealth(host, [{ ...report, probeSuccesses: 3 }], base + offset, deps);
@@ -90,7 +108,7 @@ try {
   // Provider success followed by runtime sync failure must not be shown as fully synced.
   const third = await admin.createProbeService({ ...serviceInput, hostIds: [3], health: { ...health, hook: { ...hook, ipPath: "ip", updateAddress: "entry" } } });
   const host3 = (await db.getHostById(3))!, report3 = { ...report, serviceId: third.id };
-  for (const offset of [0, 15, 30]) await observeProbeHealth(host3, [report3], base + offset, { ...deps,
+  for (const offset of [0, 15, 30]) await observeProbeHealth({ id: host3.id, name: host3.name }, [report3], base + offset, { ...deps,
     request: async (_hook, context) => ({ taskId: context.incidentId, outcome: "accepted", reason: "ok", newIp: "8.8.4.4" }),
     refresh: async () => { throw new Error("runtime_sync_failed"); },
   });
@@ -164,6 +182,11 @@ try {
   // Invalid saved ciphertext fails before dispatch, not as an ambiguous paid call.
   const corrupt = await admin.createProbeService({ ...serviceInput, hostIds: [9] });
   await runtime.executeRaw("UPDATE host_probe_health SET hookCiphertext = ? WHERE serviceId = ?", ["invalid-saved-ciphertext", corrupt.id]);
+  await assert.rejects(admin.probeServiceIpSwitchHook({ serviceId: corrupt.id }), (error: any) => {
+    assert.equal(error.message, "无法读取已保存的换 IP 参数，请重新配置接口");
+    assert.doesNotMatch(error.message, /ciphertext|decrypt|private-provider-secret/);
+    return true;
+  });
   const host9 = (await db.getHostById(9))!;
   let corruptCalls = 0;
   for (const offset of [0, 15, 30]) await observeProbeHealth(host9, [{ ...report, serviceId: corrupt.id }], base + offset, {
@@ -188,6 +211,47 @@ try {
     assert.equal(response.status, 200);
     return decryptPayload(await response.json(), token);
   };
+  // Regression through the real TCPing route/auth cache, not a fabricated full host.
+  for (const hostId of [11, 12]) {
+    const httpService = await admin.createProbeService({ ...serviceInput, hostIds: [hostId], health: { ...health, hook: { ...hook, url: hook.url + "&ip={{ip}}" } } });
+    const now = Math.floor(Date.now() / 1000);
+    await runtime.executeRaw("UPDATE host_probe_health SET state = ? WHERE serviceId = ?", [JSON.stringify({ phase: "unhealthy", failures: 3, successes: 0, failureSince: now - 60, lastSeen: now - 15, incidentId: randomUUID(), actionAttempted: false }), httpService.id]);
+    recordIpSwitchAgentCapability(hostId, true);
+    await agentPost(hostId, "/api/agent/tcping", { force: true, services: [{ ...report, serviceId: httpService.id, isTimeout: true, latencyMs: 0 }] });
+    const expires = Date.now() + 3000;
+    while (!hasQueuedIpSwitchAgentTasks(hostId) && Date.now() < expires) await new Promise(resolve => setTimeout(resolve, 5));
+    const [httpTask] = takeIpSwitchAgentTasks(hostId);
+    assert.ok(httpTask, "a compact authenticated identity must trigger an automatic task");
+    assert.equal(new URL(httpTask.request.url).searchParams.get("ip"), "8.8.8.8", "use the actual ingress address, not the default IP or an empty string");
+    if (hostId === 12) await db.updateHost(hostId, { entryIp: "8.8.4.4" });
+    assert.deepEqual(await agentPost(hostId, "/api/agent/ip-switch-claim", { taskId: httpTask.taskId }), { allowed: hostId === 11 });
+    await agentPost(hostId, "/api/agent/ip-switch-result", { result: { taskId: httpTask.taskId, outcome: "not_executed", reason: hostId === 11 ? "expired" : "claim_denied" } });
+    const finished = Date.now() + 3000;
+    while ((await getProbeHealthViews([httpService.id])).get(httpService.id).lastAction?.status === "pending" && Date.now() < finished) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal((await getProbeHealthViews([httpService.id])).get(httpService.id).lastAction.status, "not_executed");
+    recordIpSwitchAgentCapability(hostId, false);
+  }
+  // Keep the original stale-address guard, and expose why dispatch was skipped.
+  for (const hostId of [13, 14]) {
+    const guardedService = await admin.createProbeService({ ...serviceInput, hostIds: [hostId] });
+    const originalHost = (await db.getHostById(hostId))!;
+    if (hostId === 13) await db.updateHost(hostId, { entryIp: "8.8.4.4" });
+    let guardedCalls = 0, blockedNotices = 0;
+    const guardedDeps = { ready: () => true, notify: async () => { blockedNotices++; }, request: async (_hook: any, context: any) => {
+      guardedCalls++; assert.equal(context.ip, "8.8.4.4");
+      return { taskId: context.incidentId, outcome: "accepted" as const, reason: "ok" as const };
+    } };
+    const guardedReport = { ...report, serviceId: guardedService.id };
+    for (const offset of [0, 15, 30, 45]) await observeProbeHealth(originalHost, [guardedReport], base + offset, guardedDeps);
+    assert.equal(guardedCalls, 0);
+    assert.equal(blockedNotices, 2, "one unhealthy notice and one deduplicated waiting reason");
+    const guardView = (await getProbeHealthViews([guardedService.id])).get(guardedService.id);
+    assert.equal(guardView.state.actionBlockedReason, hostId === 13 ? "host_address_changed" : "host_address_unavailable");
+    assert.equal(guardView.lastAction, null);
+    if (hostId === 14) await db.updateHost(hostId, { entryIp: "8.8.4.4" });
+    await observeProbeHealth({ id: hostId, name: originalHost.name }, [guardedReport], base + 60, guardedDeps);
+    assert.equal(guardedCalls, 1);
+  }
   assert.equal((await fetch(url + "/api/agent/ip-switch-result", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
   const fifth = await admin.createProbeService({ ...serviceInput, hostIds: [5] });
   const host5 = (await db.getHostById(5))!, report5 = { ...report, serviceId: fifth.id };

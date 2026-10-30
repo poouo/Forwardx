@@ -26,7 +26,7 @@ import { billingCalendarParts } from "@shared/billingTime";
 import { normalizeAgentProbeCounts } from "@shared/agentDtos";
 import { deleteHostWithImpact, getHostDeletionImpact, prepareHostDeletion } from "../hostDeletion";
 import { hostChinaHealthSchema } from "../../shared/hostChinaHealth";
-import { getProbeHealthViews, saveProbeHealth, acknowledgeIpSwitch, probeHealthLock } from "../hostProbeHealth";
+import { getProbeHealthViews, getProbeHealthHook, saveProbeHealth, acknowledgeIpSwitch, probeHealthLock } from "../hostProbeHealth";
 import { withDatabaseTransaction } from "../dbRuntime";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeHostIp, hostAddressOptions, normalizeHostDdnsIpVersion } from "../../shared/hostAddresses";
@@ -912,6 +912,14 @@ export const hostsRouter = router({
         health: health.get(Number(service.id)) || null,
       }));
     }),
+    // Mutation avoids retaining provider secrets in the browser's polling/query cache.
+    probeServiceIpSwitchHook: adminProcedure
+      .input(z.object({ serviceId: z.number().int().positive() }))
+      .mutation(async ({ input, ctx }) => {
+        ctx.res.setHeader?.("Cache-Control", "no-store");
+        if (!await db.getHostProbeServiceById(input.serviceId)) throw new TRPCError({ code: "NOT_FOUND", message: "服务不存在" });
+        return getProbeHealthHook(input.serviceId);
+      }),
     availabilityHistory: protectedProcedure
       .input(z.object({ hostId: z.number().int().positive(), ...latencyHistoryWindowInput }))
       .query(async ({ input, ctx }) => {

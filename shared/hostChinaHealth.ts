@@ -39,7 +39,7 @@ export type ChinaHealthState = {
   phase: "unknown" | "healthy" | "suspect" | "unhealthy" | "recovering";
   failures: number; successes: number; failureSince: number; lastSeen: number;
   incidentId: string; actionAttempted: boolean;
-  actionBlockedReason?: "agent_unavailable" | "unresolved" | "daily_limit" | "cooldown";
+  actionBlockedReason?: "agent_unavailable" | "unresolved" | "daily_limit" | "cooldown" | "host_address_unavailable" | "host_address_changed";
   actionRetryAt?: number;
 };
 export function advanceChinaHealth(previous: ChinaHealthState | null, success: boolean, now: number, interval: number, config: HostChinaHealthConfig) {
@@ -82,4 +82,5 @@ export const ipSwitchReasonLabels: Record<string, string> = {
 export const ipSwitchBlockedLabels: Record<string, string> = {
   agent_unavailable: "等待 Agent 上报换 IP 能力", unresolved: "等待核对上次商家结果",
   daily_limit: "已达 24h 请求上限", cooldown: "商家请求间隔中",
+  host_address_unavailable: "主机入口地址不可用", host_address_changed: "主机地址已变更，等待探测",
 };
