@@ -5536,7 +5536,7 @@ function SystemInfoSection() {
               <div className="col-span-full flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 @min-[38rem]/panel-upgrade:col-span-1">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{translateText("自动检查更新")}</p>
-                  <p className="text-xs text-muted-foreground">{translateText("开启后定期检查面板和 Agent 更新。")}</p>
+                  <p className="text-xs text-muted-foreground">{translateText("访问后台时检查面板和 Agent 更新，30 分钟内复用结果。")}</p>
                 </div>
                 <OptimisticSwitch
                   className="shrink-0"

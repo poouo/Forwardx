@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { ADMIN_VISIT_CHECK_INTERVAL_MS } from "./visitChecks";
 
-export const DEVELOPER_ANNOUNCEMENT_INTERVAL_MS = 30 * 60_000;
+export const DEVELOPER_ANNOUNCEMENT_INTERVAL_MS = ADMIN_VISIT_CHECK_INTERVAL_MS;
 const version = z.string().regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}$/);
 const localized = (max: number) => z.object({ "zh-CN": z.string().trim().min(1).max(max), en: z.string().trim().min(1).max(max) }).strict();
 export const developerAnnouncementSchema = z.object({

@@ -69,6 +69,21 @@ test("30-minute shared refresh coalesces browsers and never returns mutable cach
   now++; await cache.get(); assert.equal(calls, 2);
 });
 
+test("elapsed time alone never fetches announcements; a later visit refreshes once", async () => {
+  let now = 1000, calls = 0;
+  const cache = createDeveloperAnnouncementCache({ now: () => now, fetcher: async () => { calls++; return response(); } });
+  assert.equal(calls, 0, "starting the panel does not fetch GitHub");
+  now += INTERVAL * 4;
+  assert.equal(calls, 0, "no visits means no initial request");
+  await cache.get(); assert.equal(calls, 1);
+  now += INTERVAL - 1;
+  await cache.get(); assert.equal(calls, 1);
+  now += INTERVAL * 10;
+  await Promise.resolve(); assert.equal(calls, 1, "idle panels do not refresh expired cache");
+  await Promise.all(Array.from({ length: 20 }, () => cache.get()));
+  assert.equal(calls, 2);
+});
+
 test("GitHub outages retain a bounded-age cache, back off and honor successful withdrawals", async () => {
   let now = 1000, fail = false, removed = false, calls = 0, warnings = 0;
   const cache = createDeveloperAnnouncementCache({ now: () => now, warn: () => warnings++, fetcher: async () => {
@@ -103,7 +118,7 @@ test("feed reads bound headers and streamed bodies and reject non-JSON/error pay
   assert.equal((await readDeveloperAnnouncementFeed(response())).length, 1);
 });
 
-test("existing popup route polls remote notices, persists per-admin reads and keeps local popups compatible", async () => {
+test("existing popup route lazily reads remote notices, persists per-admin reads and keeps local popups compatible", async () => {
   const { announcementsRouter } = await import("./routers/announcements");
   const repository = await import("./repositories/announcementRepository");
   const settings = await import("./repositories/settingsRepository");

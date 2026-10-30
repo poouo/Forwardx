@@ -1647,7 +1647,7 @@
   "开启并填写地址后，GitHub 真实地址会拼接在加速地址后面。": "After opening and filling out the address, GitHub's real address will collide behind the acceleration address.",
   "开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。": "Upon opening, the corresponding IP changes reported by Agent are automatically updated to the DNS server in the system settings.",
   "开启后保存套餐会同步已购买用户的生效权益；关闭后仅影响后续新购或新分配。": "Upon opening, save plan to synchronize the effective rights and interests of the purchased users; after closing, only subsequent new purchases or distributions will be affected.",
-  "开启后定期检查面板和 Agent 更新。": "Check regularly for panels and Agent updates after opening.",
+  "访问后台时检查面板和 Agent 更新，30 分钟内复用结果。": "Check panel and Agent updates when visiting the admin area; reuse results for 30 minutes.",
   "开启后该成员可参与转发组切换": "The member can participate in the forwarding group switch after opening",
   "开启后该隧道将重新下发并恢复转发": "When it opens, the tunnel will be reissued and retransmitted.",
   "开启后将恢复此前由该资源受控关闭的规则": "Once opened, the rule that was previously controlled for closure of the resource will be restored",

@@ -25,7 +25,9 @@ test("short numbers stay paired while date/time fields wrap when their container
   assert.equal((html.match(/type="time"/g) || []).length, 2);
   const health = renderToStaticMarkup(<HostChinaHealthSettings value={{ ...createChinaHealthDraft(), enabled: true, notify: false }} onChange={() => {}} />);
   assert.match(health, /grid min-w-0 grid-cols-2 gap-2\.5/);
-  assert.equal((health.match(/type="number"/g) || []).length, 5);
+  const thresholds = health.slice(0, health.indexOf("<fieldset"));
+  assert.equal((thresholds.match(/type="number"/g) || []).length, 5);
+  assert.match(health, /id="china-hook-timeout"[^>]*min="5" max="30"/);
 });
 
 test("shutdown thresholds move below the header in narrow cards and inline in wide cards", () => {
