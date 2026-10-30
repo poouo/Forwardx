@@ -2,18 +2,52 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import HostChinaHealthSettings, { chinaHealthPayload, createChinaHealthDraft, ChinaHealthStatus, applyHostProbeServiceMode, HostProbeServiceModeTabs } from "./HostChinaHealthSettings";
+import HostChinaHealthSettings, { chinaHealthPayload, createChinaHealthDraft, applyChinaHealthHook, ChinaHealthStatus, applyHostProbeServiceMode, HostProbeServiceModeTabs } from "./HostChinaHealthSettings";
+import { ipSwitchHookSchema } from "@shared/hostChinaHealth";
 import { getLanguagePreference, initializeLanguage, setLanguagePreference, t } from "../../i18n";
 import { ResourceAlertFields, ResourceAlertHostPicker } from "./HostResourceAlertSettings";
 import { defaultResourceAlertService, defaultResourceAlertPolicy } from "@shared/operationsMonitor";
 
-test("editing health settings preserves saved credentials without returning them to the browser", () => {
+test("list data cannot populate secrets; unloaded credentials are preserved on save", () => {
   const draft = createChinaHealthDraft({ enabled: true, autoSwitch: true, hookConfigured: true, hook: { url: "secret" }, extra: "ignored" });
   assert.equal(draft.hookUrl, ""); assert.equal(draft.hookMethod, "GET");
   assert.equal(chinaHealthPayload(draft).hook, undefined);
-  const replaced = chinaHealthPayload({ ...draft, replaceHook: true, hookUrl: "http://10.0.0.1/api/changeip?token=test", successMode: "http" });
+  const replaced = chinaHealthPayload({ ...draft, hookLoaded: true, hookUrl: "http://10.0.0.1/api/changeip?token=test", successMode: "http" });
   assert.equal(replaced.hook?.method, "GET"); assert.equal(replaced.hook?.successMode, "http");
-  assert.throws(() => chinaHealthPayload({ ...draft, replaceHook: true, hookUrl: "http://10.0.0.1/", hookHeaders: "not json" }));
+  assert.throws(() => chinaHealthPayload({ ...draft, hookLoaded: true, hookUrl: "http://10.0.0.1/", hookHeaders: "not json" }));
+});
+
+test("saved provider fields round-trip completely, including JSON scalar types and timeout", () => {
+  for (const successValue of [true, false, 0, 1, "true", "1", "", "ok"]) {
+    const hook = ipSwitchHookSchema.parse({ url: "https://provider.example/change?key=secret&ip={{ip}}", method: "POST", headers: { Authorization: "Bearer secret" }, body: '{"id":"{{hostId}}"}', successMode: "json", successPath: "data.ok", successValue, ipPath: "data.ip", updateAddress: "entry_and_tunnel", timeoutSeconds: 30 });
+    const draft = applyChinaHealthHook(createChinaHealthDraft({ enabled: true, hookConfigured: true }), hook);
+    assert.deepEqual(chinaHealthPayload(draft).hook, hook);
+    assert.equal(draft.hookLoaded, true);
+    const edited = chinaHealthPayload({ ...draft, hookUrl: "http://10.0.0.1/new", hookTimeoutSeconds: 20 });
+    assert.equal(edited.hook?.url, "http://10.0.0.1/new");
+    assert.equal(edited.hook?.timeoutSeconds, 20);
+    assert.equal(chinaHealthPayload({ ...draft, enabled: false }).hook?.url, hook.url);
+  }
+});
+
+test("provider configuration is always visible, with no replacement switch", () => {
+  for (const autoSwitch of [false, true]) {
+    const value = applyChinaHealthHook(createChinaHealthDraft({ enabled: true, autoSwitch, hookConfigured: true }), ipSwitchHookSchema.parse({ url: "http://10.0.0.1/change?token=saved", successMode: "http" }));
+    const html = renderToStaticMarkup(<HostChinaHealthSettings value={value} onChange={() => {}} />);
+    assert.match(html, /id="china-hook-url"/);
+    assert.match(html, /value="http:\/\/10.0.0.1\/change\?token=saved"/);
+    assert.doesNotMatch(html, /Replace saved API|替换已存接口/);
+    const loading = renderToStaticMarkup(<HostChinaHealthSettings value={value} onChange={() => {}} hookLoading />);
+    assert.match(loading, /<fieldset disabled=""/);
+    const error = renderToStaticMarkup(<HostChinaHealthSettings value={value} onChange={() => {}} hookError onRetryHook={() => {}} onReplaceHook={() => {}} />);
+    assert.match(error, /role="alert"/);
+    assert.match(error, /<fieldset disabled=""/);
+  }
+  const manager = readFileSync("client/src/components/hosts/HostProbeServiceManager.tsx", "utf8");
+  assert.match(manager, /utils\.client\.hosts\.probeServiceIpSwitchHook\.mutate/);
+  assert.match(manager, /if \(!cancelled\) setForm/);
+  assert.match(manager, /return \(\) => \{ cancelled = true; \}/);
+  assert.match(manager, /if \(!dialogOpen\) setForm\(defaultForm\)/);
 });
 
 test("China health notifications default to administrators without a recipient selector in either language", async () => {
@@ -26,7 +60,7 @@ test("China health notifications default to administrators without a recipient s
       assert.equal(chinaHealthPayload(draft).notifyUserId, null, "legacy user targets are ignored");
       const html = renderToStaticMarkup(<HostChinaHealthSettings value={draft} onChange={() => {}} />);
       assert.ok(html.includes(language === "en" ? "Notify admins" : "通知管理员"));
-      assert.doesNotMatch(html, /role="combobox"|Notify user|Host owner|通知用户|主机所有者/);
+      assert.doesNotMatch(html, /Notify user|Host owner|通知用户|主机所有者/);
       if (language === "en") assert.doesNotMatch(html, /\p{Script=Han}/u);
     }
     const source = readFileSync("client/src/components/hosts/HostChinaHealthSettings.tsx", "utf8");

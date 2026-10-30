@@ -18,7 +18,7 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/localizedToast";
-import HostChinaHealthSettings, { createChinaHealthDraft, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft, type HostProbeServiceMode } from "./HostChinaHealthSettings";
+import HostChinaHealthSettings, { createChinaHealthDraft, applyChinaHealthHook, chinaHealthPayload, applyHostProbeServiceMode, HostProbeServiceModeTabs, type ChinaHealthDraft, type HostProbeServiceMode } from "./HostChinaHealthSettings";
 import HostResourceAlertSettings, { type ResourceAlertSaveState } from "./HostResourceAlertSettings";
 import HostUrlProbeFields from "./HostUrlProbeFields";
 import { normalizeHostProbeMethod, urlProbeOptionsSchema, type HostProbeMethod } from "@shared/urlProbe";
@@ -296,6 +296,26 @@ export default function HostProbeServiceManager({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
+  const [hookLoading, setHookLoading] = useState(false);
+  const [hookError, setHookError] = useState(false);
+  const [hookReload, setHookReload] = useState(0);
+  const needsSavedHook = dialogOpen && editingId !== null && form.health.hookConfigured;
+  useEffect(() => {
+    if (!dialogOpen) setForm(defaultForm); // Never retain decrypted credentials after closing.
+    setHookError(false);
+    if (!needsSavedHook || editingId === null) { setHookLoading(false); return; }
+    let cancelled = false;
+    setHookLoading(true);
+    // Direct client call: secrets stay out of both the query and mutation caches.
+    void utils.client.hosts.probeServiceIpSwitchHook.mutate({ serviceId: editingId }).then(hook => {
+      if (!cancelled) setForm(previous => ({ ...previous, health: applyChinaHealthHook(previous.health, hook) }));
+    }).catch(() => {
+      if (!cancelled) setHookError(true);
+    }).finally(() => {
+      if (!cancelled) setHookLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [dialogOpen, editingId, needsSavedHook, hookReload, utils.client]);
   const [serviceMode, setServiceMode] = useState<HostProbeServiceMode>("standard");
   const [editingResource, setEditingResource] = useState<ResourceAlertService | null>(null);
   const resourceAlertFormId = useId();
@@ -729,12 +749,15 @@ export default function HostProbeServiceManager({
                 )}
               </div>
             )}
-            <HostChinaHealthSettings value={form.health} onChange={health => setForm(previous => ({ ...previous, health }))} />
+            <HostChinaHealthSettings value={form.health} onChange={health => setForm(previous => ({ ...previous, health }))}
+              hookLoading={hookLoading || needsSavedHook && !form.health.hookLoaded && !hookError} hookError={hookError}
+              onRetryHook={() => setHookReload(previous => previous + 1)}
+              onReplaceHook={() => setForm(previous => ({ ...previous, health: createChinaHealthDraft({ ...previous.health, hookConfigured: false }) }))} />
             </>}
           </HostProbeServiceModeTabs>
           <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>{translateText("取消")}</Button>
-            {serviceMode === "resource" ? <Button type="submit" form={resourceAlertFormId} disabled={!resourceAlertSaveState.ready || resourceAlertSaveState.pending}>{resourceAlertSaveState.pending ? translateText("处理中...") : translateText("保存")}</Button> : <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>}
+            {serviceMode === "resource" ? <Button type="submit" form={resourceAlertFormId} disabled={!resourceAlertSaveState.ready || resourceAlertSaveState.pending}>{resourceAlertSaveState.pending ? translateText("处理中...") : translateText("保存")}</Button> : <Button onClick={submit} disabled={createMutation.isPending || updateMutation.isPending || hookLoading || needsSavedHook && !form.health.hookLoaded && !hookError}>{createMutation.isPending || updateMutation.isPending ? translateText("处理中...") : translateText("保存")}</Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>
