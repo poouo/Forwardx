@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.207"
+var Version = "2.2.208"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -3402,7 +3402,12 @@ func setRuntimePanelURL(panelURL string) {
 	if normalized == "" {
 		return
 	}
+	panelURLStream.Lock()
 	runtimePanelURL.Store(normalized)
+	if panelURLStream.cancel != nil && panelURLStream.url != normalized {
+		panelURLStream.cancel()
+	}
+	panelURLStream.Unlock()
 }
 
 func currentPanelURL(cfg Config) string {
@@ -4739,8 +4744,9 @@ func runAgentEventStream(cfg Config) error {
 		return err
 	}
 	query, _ := json.Marshal(env)
-	panelURL := currentPanelURL(cfg)
-	req, err := http.NewRequest("GET", panelURL+"/api/stream?e="+url.QueryEscape(string(query)), nil)
+	streamContext, panelURL, releaseStream := newPanelURLStreamContext(cfg)
+	defer releaseStream()
+	req, err := http.NewRequestWithContext(streamContext, "GET", panelURL+"/api/stream?e="+url.QueryEscape(string(query)), nil)
 	if err != nil {
 		return err
 	}

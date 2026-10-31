@@ -248,6 +248,8 @@ export const hosts = table("hosts", {
   preferredIpv6: text("preferredIpv6"),
   hostType: varchar("hostType", { length: 32 }).notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
+  agentPanelUrlEnabled: boolean("agentPanelUrlEnabled").notNull().default(false),
+  agentPanelUrl: text("agentPanelUrl"),
   agentInstallationId: varchar("agentInstallationId", { length: 64 }),
   // 用户自定义的入口 IP/域名，为空时回退使用 ip
   entryIp: text("entryIp"),

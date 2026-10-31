@@ -1509,6 +1509,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           presenceSupported: true,
           reconciliationCoalesced: true,
           panelMigration,
+          panelUrl: await resolveAgentAdvertisedPanelUrl(host),
         });
         return;
       }
@@ -1789,7 +1790,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const trafficShutdownCheck = req.body?.trafficShutdownSupported === true && host.trafficShutdownEnabled && !host.trafficShutdownTriggered;
     if (busyHeartbeat) {
-      const panelUrl = await resolveAgentAdvertisedPanelUrl();
+      const panelUrl = await resolveAgentAdvertisedPanelUrl(host);
       const metricsWatching = isHostMetricsWatching(host.id);
       logAgentHeartbeatSummary({
         hostId: logHostId,
@@ -1873,7 +1874,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         pluginTasks: [],
         agentUpgrade: null,
         trafficShutdownCheck,
-        panelUrl: stablePlan.panelUrl,
+        panelUrl: await resolveAgentAdvertisedPanelUrl(host),
         forceTcping: false,
         nextInterval: metricsWatching ? 3 : stablePlan.idleNextInterval,
         requestLocalState: false,
@@ -6099,7 +6100,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (agentUpgradeCompleted) {
       await db.clearHostAgentUpgradeRequest(host.id);
     }
-    const panelUrl = await resolveAgentAdvertisedPanelUrl();
+    const panelUrl = await resolveAgentAdvertisedPanelUrl(host);
     const agentMigrationTargetPanelUrl = await getAgentMigrationSwitchTarget();
     const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
     const staleMigrationUpgrade = (host as any).agentUpgradeRequested

@@ -152,6 +152,7 @@ jobs:
           pnpm test:server
           pnpm test:ai
           pnpm test:selftest-dispatch
+          pnpm test:agent-connectivity
           pnpm docs:build
 
       - name: Verify Agent and FXP
@@ -159,7 +160,8 @@ jobs:
           bash scripts/fetch-runtime.sh amd64
           export FORWARDX_TEST_GOST_BINARY="$PWD/dist/agent/forwardx-runtime-linux-amd64"
           "$FORWARDX_TEST_GOST_BINARY" -V
-          "$FORWARDX_TEST_GOST_BINARY" -V | grep -F 'forwardx-runtime 3.2.6-forwardx.1 ('
+          "$FORWARDX_TEST_GOST_BINARY" -V | grep -F 'forwardx-runtime 3.2.6-forwardx.2 ('
+          FORWARDX_RUNTIME_TEST_BINARY="$FORWARDX_TEST_GOST_BINARY" node --import tsx --test server/runtimeFailoverIntegration.test.ts
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
 

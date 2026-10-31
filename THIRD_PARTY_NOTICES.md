@@ -6,9 +6,9 @@
 - Pinned source commit: `340ba32ef0bebc7293908007cc423dd5f33dd88c`.
 - License: MIT. Copyright (c) 2016 ginuerzh.
 - Usage: built from pinned upstream source as `forwardx-runtime` for Linux amd64/arm64.
-- Modifications: CLI product label and version/build identity only. Upstream protocol and configuration behavior is retained. Dependency versions and checksums remain those of the pinned source.
+- Modifications: CLI product label, version/build identity, and a node-level FIFO/HA selector fix to avoid repeatedly retrying known-failed upstreams while healthy alternatives exist. Protocols and configuration syntax are retained. The patch is in `scripts/runtime-patches/`, applied to a private copy of the pinned `go-gost/x v0.8.1` dependency; the shared module cache is never modified.
 - Build recipe: `scripts/build-runtime.sh`; source archive SHA-256 is pinned in `shared/runtimeBuild.ts`. Bundles include `dist/agent/RUNTIME_LICENSE.txt` and `dist/agent/RUNTIME_BUILD.txt` for full upstream license and source/build/checksum provenance.
-- Distribution: compiled locally by the maintainer and published under the independent `runtime-v3.2.6-forwardx.1` GitHub release. Panel, Docker and Agent packages fetch these same artifacts with pinned SHA-256 verification via `scripts/fetch-runtime.sh`; they do not rebuild or fall back to upstream binaries.
+- Distribution: compiled locally by the maintainer for an independent runtime release (currently pinned to `runtime-v3.2.6-forwardx.2`). Publish its immutable artifacts before publishing dependent panel or Agent packages. Panel, Docker and Agent packages fetch these same artifacts with pinned SHA-256 verification via `scripts/fetch-runtime.sh`; they do not rebuild or fall back to upstream binaries.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

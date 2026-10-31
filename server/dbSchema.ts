@@ -293,6 +293,7 @@ const tables: TableDef[] = [
       c("ipv4", "text"), c("ipv6", "text"), c("hostType", "varchar", { length: 32, notNull: true, default: "slave" }),
       c("ipv4Addresses", "text"), c("ipv6Addresses", "text"), c("preferredIpv4", "text"), c("preferredIpv6", "text"),
       c("agentToken", "text"), c("agentInstallationId", "varchar", { length: 64 }), c("entryIp", "text"), c("tunnelEntryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
+      c("agentPanelUrlEnabled", "bool", { notNull: true, default: false }), c("agentPanelUrl", "text"),
       c("memoryTotal", "bigint"), c("agentVersion", "text"),
       c("mimicAvailable", "bool"), c("mimicVersion", "text"), c("mimicStatus", "varchar", { length: 64 }),
       c("mimicMessage", "text"), c("mimicCheckedAt", "epoch"),

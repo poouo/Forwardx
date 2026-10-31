@@ -31,6 +31,12 @@ test("runtime builds use pinned source, checksums, transparent identity and the 
   assert.match(build, /72b04e24f8133035d10b651664a055df/);
   assert.match(build, /cp "\$SOURCE_DIR\/LICENSE" "\$OUT_DIR\/RUNTIME_LICENSE\.txt"/);
   assert.match(build, /RUNTIME_BUILD\.txt/);
+  assert.match(build, /bash "\$ROOT_DIR\/scripts\/patch-runtime\.sh" "\$SOURCE_DIR"/);
+  const patch = fs.readFileSync("scripts/patch-runtime.sh", "utf8");
+  assert.match(patch, /VERSION" = v0\.8\.1/);
+  assert.match(patch, /ForwardXFailoverNodeSelector\(cfg\.MaxFails, cfg\.FailTimeout\)/);
+  assert.match(patch, /go mod edit -replace=github\.com\/go-gost\/x=\.\/\.forwardx-gost-x/);
+  assert.match(patch, /go test \.\/selector \.\/config\/parsing\/selector/);
   assert.doesNotMatch(build + bundle, /gost_\$\{GOST_VERSION\}_linux_|download_gost_runtime|upx -|openssl rand/);
   assert.match(bundle, /bash "\$ROOT_DIR\/scripts\/fetch-runtime\.sh"/);
   assert.doesNotMatch(bundle, /bash "\$ROOT_DIR\/scripts\/build-runtime\.sh"/);

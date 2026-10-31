@@ -38,6 +38,8 @@
 
 机器人使用长轮询，面板服务器需访问 api.telegram.org，不需要设置 Telegram webhook。
 
+Telegram 请求优先使用 IPv4；连接尚未建立时，最多等待 5 秒再尝试 IPv6。若地址明确连接失败则提前尝试下一地址；仅有 IPv6 地址的环境直接使用 IPv6。此策略仅用于 Telegram，不需要为此启用 Docker IPv6 或修改宿主机网络配置。
+
 ### 用户绑定
 
 在个人中心或账号菜单打开 Telegram 绑定，生成一次性绑定码后跳转机器人并点击 Start，也可在私聊发送：

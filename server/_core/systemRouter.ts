@@ -32,6 +32,7 @@ import { refreshDiscordBotProfile, resetDiscordBot, startDiscordBot, discordConn
 import { notificationChannel, publicNotificationSettings } from "../notificationSettings";
 import { validateDiscordBotToken } from "../discordCredentials";
 import { pushAgentRefresh, pushAgentSupportBundle, pushAgentUpgrade, requestHostTcping } from "../agentEvents";
+import { resolveAgentAdvertisedPanelUrl } from "../agentPanelUrl";
 import { createSupportBundleTask, failSupportBundleHost, getSupportBundleTask } from "../supportBundle";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { AGENT_ASSET_NAMES } from "../agentAssets";
@@ -2973,8 +2974,6 @@ export const systemRouter = router({
       if (!target) throw new Error("目标 Agent 版本不在最近 5 个可回退版本内");
       await assertAgentReleaseAssetsReadyForRollback(target.panelVersion, target.agentVersion);
       const hosts = await db.getHosts();
-      const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
-      const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
       let requested = 0;
       let pushed = 0;
       let skippedSame = 0;
@@ -2988,7 +2987,7 @@ export const systemRouter = router({
         }
         await db.requestHostAgentUpgrade(hostId, target.agentVersion, target.panelVersion);
         requested += 1;
-        if (pushAgentUpgrade(hostId, target.agentVersion, panelUrl, target.panelVersion)) pushed += 1;
+        if (pushAgentUpgrade(hostId, target.agentVersion, await resolveAgentAdvertisedPanelUrl(host), target.panelVersion)) pushed += 1;
       }
       console.info(`[AgentRollback] targetAgent=v${target.agentVersion} release=v${target.panelVersion} requested=${requested} pushed=${pushed} skippedSame=${skippedSame}`);
       return {

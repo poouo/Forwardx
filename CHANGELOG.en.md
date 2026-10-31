@@ -4,10 +4,14 @@
 
 ## [Unreleased]
 
-- Trigger developer notice and automatic version checks on administrator visits, reusing a shared 30-minute cache. Remove idle browser polling and scheduled server checks while retaining manual checks.
-- Update the responsive form test for the added IP switch timeout field, fixing the stale input-count assertion that failed CI.
-- Fix automatic IP switching silently stopping when compact Agent identities omit host addresses; retain execution-time validation and report missing or changed addresses. No Agent update is required for this fix.
-- Automatically load saved IP switch parameters in the administrator's service editor and keep them visible for editing. Lists remain credential-free; viewing or saving never calls the provider API.
+## [2.3.295] - 2026-11-01
+
+- Add per-host Agent panel URLs for reverse proxies and different network routes.
+- Fix intermittent stalls caused by repeatedly retrying offline failover nodes.
+- Improve Telegram connectivity in Docker and IPv4-first environments.
+- Fix automatic IP switching and allow editing saved provider parameters.
+- Check notices and updates on administrator visits to reduce background requests.
+- Versions: panel `2.3.295`, Android / iOS `2.4.13`, Agent `2.2.208`, ForwardX FXP runtime `2.2.122` (unchanged). Upgrade the Agent and forwarding runtime `3.2.6-forwardx.2`; runtime updates may briefly interrupt connections.
 
 ## [2.3.294] - 2026-10-30
 

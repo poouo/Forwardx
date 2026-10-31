@@ -19,6 +19,8 @@ import HostLoad from "@/components/hosts/HostLoad";
 import HostConnectionCount from "@/components/hosts/HostConnectionCount";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
 import HostStatusNotificationSetting from "@/components/hosts/HostStatusNotificationSetting";
+import HostAgentPanelUrlSetting from "@/components/hosts/HostAgentPanelUrlSetting";
+import { normalizeAgentPanelUrl } from "@shared/agentPanelUrl";
 import HostReminderSettings from "@/components/hosts/HostReminderSettings";
 import HostTrafficShutdownSetting from "@/components/hosts/HostTrafficShutdownSetting";
 import HostAddressSelectors from "@/components/hosts/HostAddressSelectors";
@@ -530,6 +532,8 @@ type HostExpiryAction = "none" | "extend_cycle";
 const HOST_TRAFFIC_GB_BYTES = 1024 ** 3;
 
 type HostFormData = {
+  agentPanelUrlEnabled: boolean;
+  agentPanelUrl: string;
   name: string;
   ip: string;
   hostType: "master" | "slave";
@@ -570,6 +574,8 @@ type HostFormData = {
 };
 
 const defaultFormData: HostFormData = {
+  agentPanelUrlEnabled: false,
+  agentPanelUrl: "",
   name: "",
   ip: "",
   hostType: "slave",
@@ -1710,6 +1716,8 @@ function HostsContent() {
 
   const openEdit = (host: any) => {
     setForm({
+      agentPanelUrlEnabled: !!host.agentPanelUrlEnabled,
+      agentPanelUrl: host.agentPanelUrl || "",
       name: host.name,
       ip: host.ip,
       hostType: host.hostType,
@@ -1773,6 +1781,12 @@ function HostsContent() {
   };
 
   const handleSubmit = () => {
+    if (form.agentPanelUrlEnabled && !form.agentPanelUrl.trim()) {
+      toast.error(translateText("请填写 Agent 面板连接地址")); return;
+    }
+    if (form.agentPanelUrl.trim() && !normalizeAgentPanelUrl(form.agentPanelUrl)) {
+      toast.error(translateText("Agent 面板连接地址须为有效 HTTP/HTTPS 地址，不含账号、查询参数或片段")); return;
+    }
     const name = (form.name || "").trim();
     const entry = (form.entryIp || "").trim();
     const tunnelEntry = (form.tunnelEntryIp || "").trim();
@@ -1834,6 +1848,8 @@ function HostsContent() {
     const canSaveTelegramReminder = telegramBotSettingsLoaded ? telegramBotReady : true;
     const trafficConfigPayload = user?.role === "admin"
       ? {
+          agentPanelUrlEnabled: form.agentPanelUrlEnabled,
+          agentPanelUrl: normalizeAgentPanelUrl(form.agentPanelUrl) || null,
           purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
           trafficLimit: trafficLimitBytes,
@@ -3109,6 +3125,9 @@ function HostsContent() {
                   </div>
                   {user?.role === "admin" ? (
                     <>
+                      <HostAgentPanelUrlSetting enabled={form.agentPanelUrlEnabled} value={form.agentPanelUrl}
+                        onEnabledChange={(agentPanelUrlEnabled) => setForm({ ...form, agentPanelUrlEnabled })}
+                        onChange={(agentPanelUrl) => setForm({ ...form, agentPanelUrl })} />
                       <div className="grid min-w-0 grid-cols-2 gap-2.5 px-1">
                         <div className="col-span-2 min-w-0 space-y-1 sm:col-span-1">
                           <Label className="text-sm">{translateText("机器购买时间")}</Label>
