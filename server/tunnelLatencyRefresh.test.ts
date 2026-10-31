@@ -75,10 +75,11 @@ test("tunnel latency wait does not miss a signal during its initial query", asyn
   assert.equal(queries, 2);
 });
 
-test("tunnel latency wait performs one final query after an empty timeout", async () => {
+test("tunnel latency wait performs one final query after an empty timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
   const signals = new TunnelLatencyRefreshSignals();
   let queries = 0;
-  const result = await waitForTunnelLatencyRefresh({
+  const waiting = waitForTunnelLatencyRefresh({
     tunnelId: 10,
     baselineId: 40,
     waitMs: 20,
@@ -89,15 +90,19 @@ test("tunnel latency wait performs one final query after an empty timeout", asyn
     },
   });
 
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(20);
+  const result = await waiting;
   assert.equal(result.id, 40);
   assert.equal(queries, 2);
   assert.equal(signals.pendingWaiterCount(10), 0);
 });
 
-test("a row older than the baseline id cannot satisfy the refresh wait", async () => {
+test("a row older than the baseline id cannot satisfy the refresh wait", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
   const signals = new TunnelLatencyRefreshSignals();
   let queries = 0;
-  const result = await waitForTunnelLatencyRefresh({
+  const waiting = waitForTunnelLatencyRefresh({
     tunnelId: 13,
     baselineId: 70,
     waitMs: 20,
@@ -108,6 +113,9 @@ test("a row older than the baseline id cannot satisfy the refresh wait", async (
     },
   });
 
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(20);
+  const result = await waiting;
   assert.equal(result.id, 69);
   assert.equal(queries, 2);
 });

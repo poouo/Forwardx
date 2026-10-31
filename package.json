@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.294",
+  "version": "2.3.295",
   "description": "ForwardX 多主机端口转发与隧道管理面板",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -38,6 +38,7 @@
     "test:latency-history": "node --import tsx --test server/latencyHistory.test.ts server/hostAvailability.test.ts server/devHistoryTrendData.test.ts client/src/components/hosts/HostAvailabilityHistory.test.tsx client/src/components/LatencyHistoryDays.test.tsx client/src/lib/historyDayTrend.test.ts server/historyCleanupIndexes.test.ts server/latencySeries.test.ts server/probeCounter.test.ts client/src/lib/latencyChart.test.ts",
     "test:support": "node --import tsx --test server/supportTickets.test.ts server/supportTicketNotifications.test.ts client/src/components/SupportTicketMessage.test.tsx client/src/components/SupportTicketManagementSettings.test.tsx client/src/components/NotificationPreferencesCard.test.tsx",
     "test:agent-proxy": "node --import tsx --test server/runtimeBuild.test.ts server/managementProxy.test.ts server/agentInstallScripts.test.ts server/panelDockerInstaller.test.ts server/panelInstallerAccelerator.test.ts",
+    "test:agent-connectivity": "node --import tsx --test server/agentPanelUrl.test.ts server/hostAgentPanelUrl.test.ts server/hostAgentPanelUrlSchema.test.ts client/src/components/hosts/HostAgentPanelUrlSetting.test.tsx server/telegramApiTimeout.test.ts server/runtimeBuild.test.ts server/runtimeFailoverIntegration.test.ts",
     "test:deployment-docs": "node --test scripts/dev-panel-runtime.test.mjs && node --import tsx --test server/deploymentDocs.test.ts",
     "test:ui": "node --import tsx --test shared/sidebarMenu.test.ts client/src/lib/sidebarScroll.test.ts client/src/lib/ruleSortScope.test.ts client/src/components/ui/pearl-ui.test.tsx client/src/components/ui/sliding-tabs.test.tsx client/src/components/ui/confirm-dialog.test.tsx client/src/components/ui/ui-copy.test.tsx client/src/components/ui/async-button.test.tsx client/src/components/ui/responsive-forms.test.tsx client/src/components/AuthorSupportDialog.test.tsx",
     "test:release-notes": "node --test scripts/release-notes.test.mjs",
@@ -139,6 +140,7 @@
     "recharts": "^2.13.0",
     "superjson": "^2.2.2",
     "svg-captcha": "^1.4.0",
+    "undici": "^7.30.1",
     "zod": "^3.24.0"
   },
   "devDependencies": {

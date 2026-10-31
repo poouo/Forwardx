@@ -28,6 +28,18 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install Y
 
 安装器默认选择兼容的 Realm `2.9.4`，其他版本可通过 `FORWARDX_REALM_VERSION` 显式选择。iperf3 仅用于网络测试，安装失败会警告，不应阻断 Agent 主流程。
 
+## 2.1. 按主机使用不同的面板入口
+
+管理员在「主机管理 → 编辑主机 → 其他配置」打开 **Agent 面板连接地址**，填写例如 `https://cn-panel.example.com:8443`。默认关闭，继续使用全局 `panelPublicUrl`；关闭后保留填写的地址，方便下次启用。启用时必须填写完整的 HTTP/HTTPS 地址，可带自定义端口，不支持账号密码、查询参数或片段。
+
+此地址仅覆盖该主机的 Agent 通信和已绑定 Token 的安装、升级、回滚命令，不改变浏览器访问地址、业务转发地址或其他主机配置。现有 Agent 收到下次心跳响应后更新本地 `panelUrl`；配套新版 Agent 还会主动重连事件流，不重启业务转发。已离线的 Agent 需要先恢复与面板的通信才能接收配置。
+
+反向代理由管理员自行配置，必须指向**同一面板**，完整转发 Agent API、流式 SSE 连接和认证头，并使用有效的 TLS 证书。不要填入不可信的第三方地址。该功能不会自动配置 CDN、反向代理或修复网络。
+
+若填错地址导致离线，先修正面板内该主机的配置，再通过 SSH 修改 `/etc/forwardx/agent/config.json` 中的 `panelUrl` 为可达入口并执行 `systemctl restart forwardx-agent`。只在本地修改、却不修正面板设置，会在下次通信时再次被覆盖。进行面板迁移时，需要同步调整自建反向代理的后端；迁移流程的显式切换指令仍优先于普通配置。
+
+English: In **Hosts → Edit → Other settings**, enable **Agent panel URL** to use a per-host reverse-proxy URL, including custom ports. Off uses the global URL and retains the saved value. The URL must lead to the same panel and forward Agent APIs, authentication headers and SSE correctly, with valid TLS. Installation for bound tokens, communication, upgrades and rollback use this URL. Existing Agents adopt it on the next heartbeat; the updated Agent also reconnects SSE without restarting forwarding. Offline Agents must regain connectivity first. If the URL is wrong, correct it in the panel, fix `panelUrl` in `/etc/forwardx/agent/config.json`, and restart `forwardx-agent` over SSH. This is not a local URL lock or an automatic reverse-proxy setup.
+
 ## 3. SOCKS / HTTP 代理（可选）
 
 需要使用代理时，下载入口脚本与安装执行均需设置：
@@ -121,7 +133,9 @@ fwxm agent uninstall
 
 ### ForwardX 自编译转发运行时
 
-后续发行包中的 `forwardx-runtime` 由维护者在本机从固定的 GOST 3.2.6 源码提交编译，上传到独立的 `runtime-v3.2.6-forwardx.1` Release。面板、Docker 和 Agent 发布包统一下载这批产物并校验固定 SHA-256，不再各自重新编译或分发上游预编译二进制。程序名和 `-V` 输出使用 ForwardX 标识（当前为 `forwardx-runtime 3.2.6-forwardx.1`），引擎类型、配置路径、协议及管理 API 保持兼容，不需要修改已有规则。
+后续发行包中的 `forwardx-runtime` 由维护者在本机从固定的 GOST 3.2.6 源码提交编译，上传到独立的运行时 Release。当前源码固定为 `runtime-v3.2.6-forwardx.2`，需先发布该运行时附件，再发布依赖它的面板或 Agent 安装包。面板、Docker 和 Agent 发布包统一下载这批产物并校验固定 SHA-256，不再各自重新编译或分发上游预编译二进制。程序名和 `-V` 输出使用 ForwardX 标识，引擎类型、配置路径、协议及管理 API 保持兼容，不需要修改已有规则。
+
+该运行时修复 GOST 节点选择器的主备切换：仍有正常候选时，不因隔离时间到期就重试已知故障节点，避免周期性卡顿；不会主动抢回原首选节点。全部节点均失败时才轮流尝试恢复，首次故障和全部故障时仍可能有连接等待。此行为不改变面板转发组的 DDNS 故障窗口、恢复窗口或「恢复后切回」设置，也不改变 Agent 本地目标主备代理的健康检测。
 
 新安装和升级只从 ForwardX Release 或面板获取这一构建；不会复制机器上已有的 `gost`，也不会在失败时静默下载上游原版。若新包不可用，保留已有运行时并明确警告，避免下载失败破坏现有转发；因此已有节点需在自编译资产发布后执行 Agent 升级，不能仅更新面板就认为节点已替换。替换二进制后仍需按维护计划重启运行时或重新应用规则，才能让现有进程使用新构建，可能短暂中断连接。
 

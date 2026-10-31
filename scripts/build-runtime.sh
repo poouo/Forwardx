@@ -34,10 +34,11 @@ tar -xzf "$SOURCE_TMP/source.tar.gz" -C "$SOURCE_TMP"
 SOURCE_DIR="$SOURCE_TMP/gost-$SOURCE_COMMIT"
 MAIN_FILE="$SOURCE_DIR/cmd/gost/main.go"
 
-# Change only the CLI product label; preserve upstream protocols, configuration,
-# command flags, dependency checksums and attribution. Do not pack or obfuscate.
+# Preserve upstream protocols, flags and attribution. Apply the reviewed local
+# failover patch to a private dependency copy; never mutate the module cache.
 [ "$(grep -Fc 'fmt.Fprintf(os.Stdout, "gost %s' "$MAIN_FILE")" = 1 ]
 sed -i 's/fmt.Fprintf(os.Stdout, "gost %s/fmt.Fprintf(os.Stdout, "forwardx-runtime %s/' "$MAIN_FILE"
+bash "$ROOT_DIR/scripts/patch-runtime.sh" "$SOURCE_DIR"
 
 ARTIFACTS=()
 for arch in "${ARCHS[@]}"; do
@@ -69,6 +70,8 @@ cp "$SOURCE_DIR/LICENSE" "$OUT_DIR/RUNTIME_LICENSE.txt"
   printf 'product=forwardx-runtime\nversion=%s\nupstream=go-gost/gost\nupstreamVersion=%s\nsourceCommit=%s\nsourceArchiveSHA256=%s\n' \
     "$RUNTIME_VERSION" "$UPSTREAM_VERSION" "$SOURCE_COMMIT" "$SOURCE_SHA256"
   go version
+  printf '\nForwardX patches (SHA256)\n'
+  (cd "$ROOT_DIR"; sha256sum scripts/patch-runtime.sh scripts/runtime-patches/selector/forwardx_failover.go)
   printf '\nSHA256\n'
   (cd "$OUT_DIR"; for artifact in "${ARTIFACTS[@]}"; do sha256sum "$(basename "$artifact")"; done)
   printf '\nMD5 (not for integrity verification)\n'

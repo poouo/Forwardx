@@ -7,11 +7,13 @@ import { createDirectForwardRuleForActor, deleteForwardRuleForActor, toggleForwa
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
 import { pushAgentRefresh, pushAgentUpgrade } from "./agentEvents";
+import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
 import { createTelegramWebAppLoginChallenge } from "./telegramWebAppLogin";
 import { withTelegramApiTimeout } from "./telegramApiTimeout";
+import { telegramApiFetch } from "./telegramApiTransport";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
 import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
@@ -637,7 +639,7 @@ async function telegramApi<T = any>(method: string, body?: Record<string, unknow
   if (!settings.token) throw new Error("Telegram Bot Token is not configured");
   if (!settings.enabled && method !== "getMe" && method !== "setMyCommands") throw new Error("Telegram notification channel is inactive");
   return withTelegramApiTimeout(method, async (signal) => {
-    const resp = await fetch(`https://api.telegram.org/bot${settings.token}/${method}`, {
+    const resp = await telegramApiFetch(`https://api.telegram.org/bot${settings.token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
@@ -5009,8 +5011,6 @@ async function executePendingUpdateAction(pending: PendingUpdateAction) {
   if (hostIds.length === 0) {
     return "没有可执行更新的 Agent 主机，请重新检查。";
   }
-  const configuredPanelUrl = String((await db.getSetting("panelPublicUrl")) || "").trim();
-  const panelUrl = /^https?:\/\//i.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
   let requested = 0;
   let pushed = 0;
   let skippedLatest = 0;
@@ -5031,7 +5031,7 @@ async function executePendingUpdateAction(pending: PendingUpdateAction) {
     try {
       await db.requestHostAgentUpgrade(hostId, targetVersion);
       requested += 1;
-      if (pushAgentUpgrade(hostId, targetVersion, panelUrl)) pushed += 1;
+      if (pushAgentUpgrade(hostId, targetVersion, await resolveAgentAdvertisedPanelUrl(host))) pushed += 1;
     } catch {
       failed += 1;
       failedHostIds.push(hostId);

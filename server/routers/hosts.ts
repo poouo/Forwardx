@@ -35,6 +35,23 @@ import { getMonitorSettings, saveMonitorSettings, getResourceAlertPolicy, saveRe
 import { operationsMonitorSchema, resourceAlertPolicySchema, resourceAlertServiceSchema } from "../../shared/operationsMonitor";
 import { normalizeHostProbeMethod, urlProbeOptionsSchema } from "../../shared/urlProbe";
 import { getAgentConnectionStats } from "../agentConnectionStats";
+import { resolveAgentAdvertisedPanelUrl } from "../agentPanelUrl";
+import { normalizeAgentPanelUrl } from "../../shared/agentPanelUrl";
+
+const agentPanelUrlFields = {
+  agentPanelUrlEnabled: z.boolean().optional(),
+  agentPanelUrl: z.string().trim().max(2048).nullable().optional().refine(
+    value => !value || !!normalizeAgentPanelUrl(value),
+    "Agent 面板连接地址须为有效 HTTP/HTTPS 地址，不含账号、查询参数或片段",
+  ),
+};
+
+function normalizeHostAgentPanelUrl(input: { agentPanelUrlEnabled?: boolean; agentPanelUrl?: string | null }, previous?: any) {
+  const agentPanelUrlEnabled = input.agentPanelUrlEnabled ?? !!previous?.agentPanelUrlEnabled;
+  const agentPanelUrl = normalizeAgentPanelUrl(input.agentPanelUrl !== undefined ? input.agentPanelUrl : previous?.agentPanelUrl) || null;
+  if (agentPanelUrlEnabled && !agentPanelUrl) throw new TRPCError({ code: "BAD_REQUEST", message: "请填写 Agent 面板连接地址" });
+  return { agentPanelUrlEnabled, agentPanelUrl };
+}
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -1052,6 +1069,7 @@ export const hostsRouter = router({
       }),
     create: adminProcedure
       .input(z.object({
+        ...agentPanelUrlFields,
         name: z.string().min(1).max(128),
         ip: hostAddressSchema,
         hostType: z.enum(["master", "slave"]).default("slave"),
@@ -1117,6 +1135,7 @@ export const hostsRouter = router({
           ...input,
           ...trafficConfig,
           ...ddnsConfig,
+          ...normalizeHostAgentPanelUrl(input),
           hostStatusNotifyEnabled: ctx.user.role === "admin" ? (input.hostStatusNotifyEnabled ?? true) : true,
           agentToken,
           networkInterface: input.networkInterface || null,
@@ -1149,6 +1168,7 @@ export const hostsRouter = router({
       }),
     update: adminProcedure
       .input(z.object({
+        ...agentPanelUrlFields,
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
         ip: hostAddressSchema.optional(),
@@ -1207,6 +1227,13 @@ export const hostsRouter = router({
           ? normalizePortAllowlist(input.portAllowlist)
           : String((host as any).portAllowlist || "");
         const { id, ...data } = input;
+        const hasAgentPanelUrlInput = input.agentPanelUrl !== undefined || input.agentPanelUrlEnabled !== undefined;
+        const nextAgentPanelUrl = hasAgentPanelUrlInput ? normalizeHostAgentPanelUrl(input, host) : null;
+        const agentPanelUrlChanged = !!nextAgentPanelUrl && (
+          nextAgentPanelUrl.agentPanelUrlEnabled !== !!host.agentPanelUrlEnabled
+          || nextAgentPanelUrl.agentPanelUrl !== (host.agentPanelUrl || null)
+        );
+        if (nextAgentPanelUrl) Object.assign(data, nextAgentPanelUrl);
         const primarySelectionChanged = data.preferredIpv4 !== undefined || data.preferredIpv6 !== undefined;
         if (primarySelectionChanged) {
           for (const [field, family] of [["preferredIpv4", "ipv4"], ["preferredIpv6", "ipv6"]] as const) {
@@ -1323,6 +1350,10 @@ export const hostsRouter = router({
           });
         }
         await db.updateHost(id, data as any);
+        if (agentPanelUrlChanged) {
+          appendPanelLog("info", `[AgentConnection] host=${id} customPanelUrl=${(data as any).agentPanelUrlEnabled ? "enabled" : "disabled"}; refresh requested`);
+          pushAgentRefresh(id, "host-agent-panel-url-updated", { urgent: true });
+        }
         if (ddnsConfigChanged || primarySelectionChanged) {
           scheduleHostDdnsUpdate({ ...host, ...(data as any), id }, "host-ddns-config-updated", { force: true });
         }
@@ -1473,8 +1504,7 @@ export const hostsRouter = router({
         appendPanelLog("info", `[AgentUpgrade] request host=${host.id} name=${host.name} current=${currentVersion || "-"} target=${targetVersion}`);
         await assertAgentReleaseAssetsReady(targetVersion);
         await db.requestHostAgentUpgrade(input.hostId, targetVersion);
-        const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
-        const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
+        const panelUrl = await resolveAgentAdvertisedPanelUrl(host);
         const pushed = pushAgentUpgrade(input.hostId, targetVersion, panelUrl);
         return { success: true, pushed };
       }),
@@ -1482,8 +1512,6 @@ export const hostsRouter = router({
       .input(z.object({ hostIds: z.array(z.number()).min(1).max(500), targetVersion: z.string().max(64).nullable().optional() }))
       .mutation(async ({ input }) => {
         const targetVersion = normalizeVersion(input.targetVersion || AGENT_VERSION);
-        const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
-        const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
         let requested = 0;
         let pushed = 0;
         let skippedLatest = 0;
@@ -1522,14 +1550,14 @@ export const hostsRouter = router({
           await db.requestHostAgentUpgrade(host.id, targetVersion, null, requestedAt);
           requested += 1;
           if (delayMs === 0) {
-            if (pushAgentUpgrade(host.id, targetVersion, panelUrl)) pushed += 1;
+            if (pushAgentUpgrade(host.id, targetVersion, await resolveAgentAdvertisedPanelUrl(host))) pushed += 1;
           } else {
             scheduled += 1;
             const timer = setTimeout(() => {
-              void db.getHostById(Number(host.id)).then((currentHost: any) => {
+              void db.getHostById(Number(host.id)).then(async (currentHost: any) => {
                 if (!currentHost?.agentUpgradeRequested) return;
                 if (normalizeVersion(currentHost.agentUpgradeTargetVersion) !== targetVersion) return;
-                pushAgentUpgrade(host.id, targetVersion, panelUrl);
+                pushAgentUpgrade(host.id, targetVersion, await resolveAgentAdvertisedPanelUrl(currentHost));
               }).catch((error) => {
                 console.warn(`[AgentUpgrade] scheduled push failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
               });

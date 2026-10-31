@@ -1,4 +1,8 @@
 {
+  "Agent 面板连接地址": "Agent panel URL",
+  "关闭时使用全局地址；开启后仅此主机使用该入口，需自行反代至同一面板。": "Off: use the global URL. On: this host uses your reverse-proxy URL for the same panel.",
+  "请填写 Agent 面板连接地址": "Enter the Agent panel URL",
+  "Agent 面板连接地址须为有效 HTTP/HTTPS 地址，不含账号、查询参数或片段": "Use a valid HTTP/HTTPS Agent panel URL without credentials, query parameters or fragments",
   "查看更新": "View update",
   "IPv4 或 IPv6": "IPv4 or IPv6",
   "CNAME（旧配置）": "CNAME (legacy)",
