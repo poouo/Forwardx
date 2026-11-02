@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { nanoid } from "nanoid";
-import * as svgCaptcha from "svg-captcha";
-import Cap from "@cap.js/server";
+import type * as svgCaptcha from "svg-captcha";
+import type Cap from "@cap.js/server";
 import { Router, type Request, type Response } from "express";
 import { setBoundedMapValue } from "./boundedCache";
 import { createObfuscatedImageCaptcha } from "./imageCaptcha";
@@ -43,7 +43,17 @@ interface CapTokenEntry {
   purpose: CaptchaPurpose;
 }
 
-const capServer = new Cap({ noFSState: true });
+let capServer: Cap | undefined;
+let capLoading: Promise<Cap> | undefined;
+function getCapServer() {
+  return capLoading ??= import("@cap.js/server").then(({ default: Cap }) => {
+    capServer = new Cap({ noFSState: true });
+    return capServer;
+  }).catch(error => {
+    capLoading = undefined;
+    throw error;
+  });
+}
 
 interface FailureEntry {
   count: number;
@@ -100,7 +110,6 @@ export class AuthCaptchaService {
   private readonly maxChallenges: number;
   private readonly maxRateLimitKeys: number;
   private readonly svgGenerator: SvgCaptchaGenerator;
-  private readonly cap: Cap = capServer;
 
   constructor(options: CaptchaServiceOptions = {}) {
     this.challengeTtlMs = options.challengeTtlMs ?? CAPTCHA_CHALLENGE_TTL_MS;
@@ -184,8 +193,9 @@ export class AuthCaptchaService {
 
   async createCapChallenge(ip: string, purpose: CaptchaPurpose, now = Date.now()) {
     this.consumeRefreshSlot(ip, now);
+    const cap = await getCapServer();
     this.pruneCapState(now);
-    const result = await this.cap.createChallenge({
+    const result = await cap.createChallenge({
       // A short PoW keeps the interaction to one click while still making
       // high-volume automated requests expensive.
       challengeCount: 5,
@@ -216,7 +226,8 @@ export class AuthCaptchaService {
     }
     // Cap consumes challenges on redemption, including invalid solutions.
     this.capChallenges.delete(token);
-    const result = await this.cap.redeemChallenge({ token, solutions });
+    if (!capServer) return { success: false as const, message: "CAPTCHA_INVALID" };
+    const result = await capServer.redeemChallenge({ token, solutions });
     if (!result.success || !result.token || !result.expires) return result;
     setBoundedMapValue(this.capTokens, result.token, {
       expiresAt: result.expires,
@@ -238,7 +249,8 @@ export class AuthCaptchaService {
     // Remove before awaiting validation so a concurrent login cannot consume
     // the same token twice. A failed validation is intentionally non-reusable.
     this.capTokens.delete(token);
-    const result = await this.cap.validateToken(token);
+    if (!capServer) return false;
+    const result = await capServer.validateToken(token);
     return result.success;
   }
 
@@ -249,7 +261,8 @@ export class AuthCaptchaService {
     for (const [token, entry] of this.capTokens) {
       if (entry.expiresAt <= now) this.capTokens.delete(token);
     }
-    const state = this.cap.config.state;
+    if (!capServer) return;
+    const state = capServer.config.state;
     for (const [token, entry] of Object.entries(state.challengesList)) {
       if (entry.expires <= now) delete state.challengesList[token];
     }
@@ -356,8 +369,10 @@ export class AuthCaptchaService {
     this.refreshTimestamps.clear();
     this.capChallenges.clear();
     this.capTokens.clear();
-    this.cap.config.state.challengesList = {};
-    this.cap.config.state.tokensList = {};
+    if (capServer) {
+      capServer.config.state.challengesList = {};
+      capServer.config.state.tokensList = {};
+    }
   }
 }
 

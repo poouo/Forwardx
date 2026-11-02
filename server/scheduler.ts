@@ -22,6 +22,7 @@ import { cleanOperationsHistory } from "./repositories/operationsRepository";
 import { runHistoryMaintenance } from "./historyMaintenance";
 import { cleanMonitorHistory } from "./operationsMonitor";
 import { cleanProbeHealthHistory } from "./hostProbeHealth";
+import { reconcileIpSwitchAddresses } from "./hostIpSwitchObservation";
 import { reconcileHostDdnsRecords } from "./hostDdns";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
 import { databaseHealth } from "./databaseHealthState";
@@ -674,6 +675,7 @@ export function startScheduler() {
     await runForwardGroupFailover();
     await runHostDdnsReconcile();
   });
+  const ipSwitchObservation = createNonOverlappingScheduledTask("IP change observation and runtime sync", reconcileIpSwitchAddresses);
   const portEntryMaintenance = createNonOverlappingScheduledTask("port entry-group reconciliation", async () => {
     await db.reconcilePortEntryGroups();
   });
@@ -729,6 +731,7 @@ export function startScheduler() {
   // Let the liveness prime's startup grace accept a live Agent presence before
   // the broad recovery sweep evaluates persisted heartbeat timestamps.
   repeatAfter(forwardingMaintenance, 5 * 60 * 1000, 20_000);
+  repeatAfter(ipSwitchObservation, 30_000, 22_000);
   repeatAfter(portEntryMaintenance, 60_000, 25_000);
   repeatAfter(expirationCheck, 60 * 60 * 1000, 16_000);
   // Keep host expiry dates responsive without changing the account-expiration

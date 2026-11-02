@@ -54,7 +54,17 @@ const AGENT_EVENT_CACHE_RETENTION_MS = 60 * 60 * 1000;
 // is safer than allowing a dead connection to retain an unbounded desired state.
 const AGENT_EVENT_MAX_PENDING_FRAMES = 16;
 const AGENT_EVENT_MAX_PENDING_BYTES = 1024 * 1024;
+const AGENT_EVENT_GLOBAL_MAX_PENDING_BYTES = 32 * 1024 * 1024;
 const AGENT_EVENT_DRAIN_TIMEOUT_MS = 30_000;
+let agentEventPendingBytes = 0;
+
+export function getAgentEventQueueStats() {
+  return {
+    clients: agentEventClients.size,
+    pendingBytes: agentEventPendingBytes,
+    maxPendingBytes: AGENT_EVENT_GLOBAL_MAX_PENDING_BYTES,
+  };
+}
 
 function shouldLogAgentEventIssue(key: string, intervalMs = AGENT_EVENT_LOG_INTERVAL_MS) {
   const now = Date.now();
@@ -100,6 +110,7 @@ function closeAgentEventClient(
   if (client.closed) return;
   client.closed = true;
   client.backpressured = false;
+  agentEventPendingBytes -= client.pendingBytes;
   client.pendingFrames.length = 0;
   client.pendingBytes = 0;
   if (client.drainTimer) clearTimeout(client.drainTimer);
@@ -171,7 +182,9 @@ function writeFrameNow(client: AgentEventClient, frame: string) {
 function flushPendingFrames(client: AgentEventClient) {
   while (!client.closed && !client.backpressured && client.pendingFrames.length > 0) {
     const frame = client.pendingFrames.shift()!;
-    client.pendingBytes = Math.max(0, client.pendingBytes - Buffer.byteLength(frame));
+    const frameBytes = Buffer.byteLength(frame);
+    client.pendingBytes -= frameBytes;
+    agentEventPendingBytes -= frameBytes;
     if (!writeFrameNow(client, frame)) return;
   }
 }
@@ -190,13 +203,16 @@ function writeAgentEventFrame(client: AgentEventClient, frame: string, queueWhen
   if (
     client.pendingFrames.length >= AGENT_EVENT_MAX_PENDING_FRAMES
     || client.pendingBytes + frameBytes > AGENT_EVENT_MAX_PENDING_BYTES
+    || agentEventPendingBytes + frameBytes > AGENT_EVENT_GLOBAL_MAX_PENDING_BYTES
   ) {
-    logAgentEventIssue(client.hostId, "stream", "backlog-exceeded");
+    logAgentEventIssue(client.hostId, "stream", agentEventPendingBytes + frameBytes > AGENT_EVENT_GLOBAL_MAX_PENDING_BYTES
+      ? "global-backlog-exceeded" : "backlog-exceeded");
     closeAgentEventClient(client, "destroy");
     return false;
   }
   client.pendingFrames.push(frame);
   client.pendingBytes += frameBytes;
+  agentEventPendingBytes += frameBytes;
   return true;
 }
 

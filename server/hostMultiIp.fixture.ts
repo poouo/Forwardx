@@ -38,13 +38,14 @@ try {
   assert.equal((await db.getHostById(1))!.ddnsAddressMode, "primary");
   const caller = (id: number, role: string) => hostsRouter.createCaller({ user: { id, role }, req: { headers: {}, socket: {} }, res: {}, authSession: null, authFailureReason: null } as any);
   const admin = caller(1, "admin"), owner = caller(2, "user"), stranger = caller(3, "user");
-  await assert.rejects(stranger.update({ id: 1, preferredIpv4: "8.8.8.8" }), /无权/);
-  await assert.rejects(owner.update({ id: 1, preferredIpv4: "9.9.9.9" }), /主 IP/);
-  await assert.rejects(owner.update({ id: 1, preferredIpv4: "2606:4700:4700::1111" }), /主 IP/);
-  await owner.update({ id: 1, preferredIpv4: "8.8.8.8", preferredIpv6: "2606:4700:4700::1001", ddnsEnabled: true, ddnsAddressMode: "all" });
+  await assert.rejects(stranger.update({ id: 1, preferredIpv4: "8.8.8.8" }), (error: any) => error.code === "FORBIDDEN");
+  await assert.rejects(owner.update({ id: 1, preferredIpv4: "8.8.8.8" }), (error: any) => error.code === "FORBIDDEN");
+  await assert.rejects(admin.update({ id: 1, preferredIpv4: "9.9.9.9" }), /主 IP/);
+  await assert.rejects(admin.update({ id: 1, preferredIpv4: "2606:4700:4700::1111" }), /主 IP/);
+  await admin.update({ id: 1, preferredIpv4: "8.8.8.8", preferredIpv6: "2606:4700:4700::1001" });
   let host = (await db.getHostById(1))!;
   assert.equal(host.ipv4, "8.8.8.8"); assert.equal(host.ip, "8.8.8.8"); assert.equal(host.ipv6, "2606:4700:4700::1001");
-  assert.equal(host.ddnsEnabled, false); assert.equal(host.ddnsAddressMode, "primary", "only admins may configure DDNS");
+  assert.equal(host.ddnsEnabled, false); assert.equal(host.ddnsAddressMode, "primary", "primary selection alone preserves DDNS settings");
   // Authoritative Agent inventory changes preserve valid selected primaries.
   await db.updateHost(1, mergeAgentReportedAddress({ ipv4: "1.1.1.1", ipv4Addresses: ["8.8.8.8", "1.1.1.1"], ipv6Addresses: ["2606:4700:4700::1001", "2606:4700:4700::1111"] }, host));
   assert.equal((await db.getHostById(1))!.ipv4, "8.8.8.8");
@@ -87,7 +88,7 @@ try {
   host = await settled(item => !!item.lastDdnsAt && !item.lastDdnsError);
   assert.equal(host.ddnsIpVersion, "ipv4");
   assert.equal((await db.getHostOptions()).find((item: any) => item.id === 1)!.ddnsIpVersion, "ipv4");
-  await owner.update({ id: 1, preferredIpv4: null, preferredIpv6: null });
+  await admin.update({ id: 1, preferredIpv4: null, preferredIpv6: null });
   await settled(item => !item.lastDdnsError);
   assert.equal((await db.getHostById(1))!.preferredIpv4, null);
 } finally {

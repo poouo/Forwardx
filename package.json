@@ -1,11 +1,12 @@
 {
   "name": "forwardx",
-  "version": "2.3.295",
+  "version": "2.3.296",
   "description": "ForwardX 多主机端口转发与隧道管理面板",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:memory": "node --import tsx --test server/databaseLazyLoading.test.ts server/idleResourceCache.test.ts server/operationsSourceGeoLifecycle.test.ts server/routineDependencyLoading.test.ts",
     "test:developer-announcements": "node --import tsx --test server/developerAnnouncements.test.ts server/panelUpdateCache.test.ts client/src/components/DeveloperAnnouncement.test.ts",
     "test:database-network": "node --import tsx --test server/databaseNetworkGuard.test.ts",
     "test:resource-traffic": "node --import tsx --test server/resourceTrafficReset.test.ts server/resourceTrafficSummary.test.ts server/portEntryGroup.test.ts client/src/components/ResourceTrafficSummary.test.tsx client/src/components/ResourceTrafficReset.test.tsx",

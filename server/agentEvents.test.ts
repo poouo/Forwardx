@@ -6,6 +6,7 @@ import {
   registerAgentEventClient,
   unregisterAgentEventClient,
   supersedeAgentEventClient,
+  getAgentEventQueueStats,
 } from "./agentEvents";
 import { decryptPayload } from "./agentCrypto";
 
@@ -107,4 +108,60 @@ test("replacing an Agent SSE stream closes the old response without unregisterin
   assert.equal(pushAgentSupportBundle(910_004, "new-stream"), true);
   assert.equal(newResponse.writes.length, 1);
   newStream.close();
+});
+
+test("Agent SSE shares a process-wide pending budget without closing healthy streams", () => {
+  const baseline = getAgentEventQueueStats();
+  const streams: ReturnType<typeof registerAgentEventClient>[] = [];
+  const healthyResponse = new FakeEventResponse();
+  const healthy = registerAgentEventClient(920_000, "healthy-budget-test", asResponse(healthyResponse));
+  const data = { payload: "x".repeat(400_000) };
+  try {
+    let rejected = 0;
+    for (let index = 1; index <= 50; index++) {
+      const response = new FakeEventResponse();
+      response.failNextWrites = 1;
+      const stream = registerAgentEventClient(920_000 + index, "backlog-budget-test", asResponse(response));
+      streams.push(stream);
+      assert.equal(stream.writeEvent("ready", {}), true);
+      if (!stream.writeEvent("agent-desired-state", data)) {
+        rejected++;
+        assert.equal(response.destroyed, true);
+      }
+      assert.ok(getAgentEventQueueStats().pendingBytes <= baseline.maxPendingBytes);
+    }
+    assert.ok(rejected > 0, "the aggregate budget must reject before all 50 queues fill");
+    assert.equal(healthy.writeEvent("agent-refresh", {}), true);
+    assert.equal(healthyResponse.destroyed, false);
+    assert.ok(getAgentEventQueueStats().pendingBytes > 0);
+  } finally {
+    streams.forEach(stream => stream.close());
+    healthy.close();
+  }
+  assert.deepEqual(getAgentEventQueueStats(), baseline, "close/reject must return every queued byte");
+});
+
+test("Agent SSE drain, disconnect and replacement return their aggregate budget exactly once", () => {
+  const baseline = getAgentEventQueueStats();
+  const response = new FakeEventResponse();
+  response.failNextWrites = 1;
+  const old = registerAgentEventClient(920_100, "queue-accounting-test", asResponse(response));
+  old.writeEvent("ready", {});
+  old.writeEvent("agent-desired-state", { revision: 1 });
+  assert.ok(getAgentEventQueueStats().pendingBytes > baseline.pendingBytes);
+  response.failNextWrites = 1;
+  old.writeEvent("agent-desired-state", { revision: 2 });
+  response.emit("drain"); // Flush one frame, then become backpressured again.
+  assert.ok(getAgentEventQueueStats().pendingBytes > baseline.pendingBytes);
+  response.emit("drain");
+  assert.equal(getAgentEventQueueStats().pendingBytes, baseline.pendingBytes);
+  response.failNextWrites = 1;
+  old.writeEvent("ready", {});
+  old.writeEvent("agent-desired-state", { revision: 3 });
+  const replacement = registerAgentEventClient(920_100, "replacement-accounting-test", asResponse(new FakeEventResponse()));
+  assert.equal(getAgentEventQueueStats().pendingBytes, baseline.pendingBytes);
+  old.close();
+  replacement.close();
+  replacement.close();
+  assert.deepEqual(getAgentEventQueueStats(), baseline);
 });

@@ -9,6 +9,68 @@ import ts from "typescript";
 import { pageResult, pageWindowForTotal } from "../shared/pagination";
 import { gateForwardRulesForUserSurface } from "./forwardRuleVisibility";
 
+test("host page-size preferences match rule options and tolerate missing or blocked browser storage", () => {
+  const text = fs.readFileSync("client/src/pages/Hosts.tsx", "utf8");
+  const source = ts.createSourceFile("Hosts.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declaration = (name: string) => {
+    const node = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert.ok(node);
+    return node.getText(source);
+  };
+  const constants = source.statements.filter(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => ["HOST_PAGE_SIZE_STORAGE_KEY", "HOST_PAGE_SIZE_OPTIONS"].includes(item.name.getText(source)))).map(node => node.getText(source)).join("\n");
+  const code = ts.transpileModule(`${constants}\n${declaration("getStoredHostPageSize")}\n${declaration("storeHostPageSize")}\n({read:getStoredHostPageSize,write:storeHostPageSize,options:HOST_PAGE_SIZE_OPTIONS})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const entries = new Map<string, string>();
+  const localStorage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => { entries.set(key, value); } };
+  const preference = runInNewContext(code, { window: { localStorage } });
+  assert.deepEqual(Array.from(preference.options), [12, 24, 36, 48]);
+  const rules = fs.readFileSync("client/src/pages/Rules.tsx", "utf8");
+  assert.match(rules, /RULE_PAGE_SIZE_OPTIONS[^=]*= \[12, 24, 36, 48\]/);
+  assert.equal(preference.read(), 12);
+  for (const size of preference.options) {
+    preference.write(size);
+    assert.equal(preference.read(), size);
+    assert.equal(entries.get("forwardx.hosts.pageSize"), String(size));
+  }
+  for (const invalid of ["", "bad", "0", "-1", "999999", "24.5", "Infinity"]) {
+    entries.set("forwardx.hosts.pageSize", invalid);
+    assert.equal(preference.read(), 12);
+  }
+  const noWindow = runInNewContext(code);
+  assert.equal(noWindow.read(), 12);
+  assert.doesNotThrow(() => noWindow.write(24));
+  const blocked = runInNewContext(code, { window: { get localStorage() { throw new Error("storage blocked"); } } });
+  assert.equal(blocked.read(), 12);
+  assert.doesNotThrow(() => blocked.write(24));
+});
+
+test("changing host page size resets the request and shares the size with server paging and sort offsets", () => {
+  const text = fs.readFileSync("client/src/pages/Hosts.tsx", "utf8");
+  const source = ts.createSourceFile("Hosts.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let handler: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "handleHostPageSizeChange") handler = node.initializer;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(handler);
+  const code = ts.transpileModule(`(${handler.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const calls: unknown[][] = [];
+  const change = runInNewContext(code, {
+    HOST_PAGE_SIZE_OPTIONS: [12, 24, 36, 48], hostPageSize: 12,
+    hostPageRequest: { setPage: (page: number) => calls.push(["page", page]) },
+    setHostPageSize: (size: number) => calls.push(["size", size]),
+    storeHostPageSize: (size: number) => calls.push(["store", size]),
+  });
+  for (const invalid of ["bad", "0", "13", "24.5", "12"]) change(invalid);
+  assert.deepEqual(calls, []);
+  change("48");
+  assert.deepEqual(calls, [["page", 1], ["size", 48], ["store", 48]]);
+  assert.equal((text.match(/pageSize: hostPageSize/g) || []).length, 2, "request and paginator must use the same page size");
+  assert.match(text, /const startIndex = \(hostPagination.currentPage - 1\) \* hostPagination.pageSize/);
+  assert.match(text, /activeManageTab === "hosts" && !isHostMapView && \([\s\S]*?onValueChange=\{handleHostPageSizeChange\}/);
+  assert.match(text, /HOST_PAGE_SIZE_OPTIONS\.map\(\(pageSize\) =>/);
+});
+
 test("host management badges use one count-only query across database dialects", async () => {
   const text = fs.readFileSync("server/repositories/hostRepository.ts", "utf8");
   const source = ts.createSourceFile("hostRepository.ts", text, ts.ScriptTarget.Latest, true);

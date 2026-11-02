@@ -1,8 +1,6 @@
 import fs from "fs";
 import path from "path";
-import Database from "better-sqlite3";
-import mysql from "mysql2/promise";
-import pg from "pg";
+import { loadMysqlDriver, loadPostgresqlDriver, loadSqliteDriver } from "./databaseDrivers";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 import {
   applyLegacyCompatibilityMigration,
@@ -266,6 +264,7 @@ async function openDatabase(
     if (!fs.existsSync(config.path)) {
       throw new Error("SQLite database does not exist: " + config.path);
     }
+    const Database = await loadSqliteDriver();
     const sqlite = new Database(config.path);
     sqlite.pragma("busy_timeout = 10000");
     sqlite.pragma("foreign_keys = ON");
@@ -298,6 +297,7 @@ async function openDatabase(
   }
 
   if (config.type === "mysql") {
+    const mysql = await loadMysqlDriver();
     const connection = await mysql.createConnection({
       host: config.config.host,
       port: config.config.port,
@@ -335,6 +335,7 @@ async function openDatabase(
     return { db, close: async () => connection.end() };
   }
 
+  const pg = await loadPostgresqlDriver();
   const client = new pg.Client({
     host: config.config.host,
     port: config.config.port,

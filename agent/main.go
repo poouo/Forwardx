@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.208"
+var Version = "2.2.209"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -284,6 +284,7 @@ var publicIPv4Cache string
 var publicIPv6Cache string
 var publicIPCheckedAt time.Time
 var publicIPRefreshRunning bool
+var publicIPFastRefreshUntil time.Time // Guarded by publicIPMu; bounded post-switch observation.
 var lastTrafficCollectAt time.Time
 var nextTrafficCollectInterval = trafficCollectInterval
 var trafficCollectMu sync.Mutex
@@ -14425,7 +14426,7 @@ func osInfo() string {
 func publicIPs() (string, string) {
 	publicIPMu.Lock()
 	ipv4, ipv6 := publicIPv4Cache, publicIPv6Cache
-	stale := publicIPCheckedAt.IsZero() || time.Since(publicIPCheckedAt) >= publicIPRefreshInterval
+	stale := publicIPCheckedAt.IsZero() || time.Since(publicIPCheckedAt) >= publicIPRefreshIntervalFor(time.Now(), publicIPFastRefreshUntil)
 	if stale && !publicIPRefreshRunning {
 		publicIPRefreshRunning = true
 		go refreshPublicIPs()
@@ -14462,6 +14463,7 @@ func refreshPublicIPs() {
 	ipv4 := <-ipv4Ch
 	ipv6 := <-ipv6Ch
 	publicIPMu.Lock()
+	addressChanged := (ipv4 != "" && publicIPv4Cache != "" && ipv4 != publicIPv4Cache) || (ipv6 != "" && publicIPv6Cache != "" && ipv6 != publicIPv6Cache)
 	if ipv4 != "" {
 		publicIPv4Cache = ipv4
 	}
@@ -14478,6 +14480,10 @@ func refreshPublicIPs() {
 	}
 	publicIPRefreshRunning = false
 	publicIPMu.Unlock()
+	if addressChanged {
+		logf("[HostAddress] public IP change detected; requesting configuration refresh")
+		wakeHeartbeat()
+	}
 }
 
 func fetchPublicIP(urls []string) string {

@@ -8,6 +8,7 @@ import { Header, IPv4, IPv6, newWithBuffer, type Searcher } from "ip2region.js";
 import { chinaProvince } from "../shared/operations";
 import { executeRaw, queryRaw, getDatabaseKind } from "./dbRuntime";
 import { quoteIdentifier as q } from "./dbCompat";
+import { IdleResourceCache } from "./idleResourceCache";
 
 export const SOURCE_GEO_VERSION = "1bf6cabfb63c1a14";
 const assets = {
@@ -15,7 +16,9 @@ const assets = {
   6: { bytes: 37277813, hash: "939f6b46bd2b8bec3cf7c5ceb8ba782266ae9b1f35b5ba7916700dec0b7506ed" },
 };
 const decompress = promisify(gunzip);
-const searchers = new Map<number, Promise<Searcher>>();
+// Keep a busy batch fast, but release each family's full XDB buffer after a
+// minute without lookups. Cached geographic results remain in the database.
+const searchers = new IdleResourceCache<4 | 6, Searcher>(loadSearcher, 60_000);
 const blocked = new net.BlockList();
 for (const [ip, bits] of [["0.0.0.0",8],["10.0.0.0",8],["100.64.0.0",10],["127.0.0.0",8],["169.254.0.0",16],["172.16.0.0",12],["192.0.0.0",24],["192.0.2.0",24],["192.168.0.0",16],["198.18.0.0",15],["198.51.100.0",24],["203.0.113.0",24],["224.0.0.0",4],["240.0.0.0",4]] as const) blocked.addSubnet(ip,bits,"ipv4");
 blocked.addSubnet("2001:db8::",32,"ipv6");
@@ -27,16 +30,13 @@ export function sourceGeoPublicAddress(address: string) {
 }
 
 async function loadSearcher(family: 4 | 6) {
-  if (!searchers.has(family)) searchers.set(family, (async () => {
-    const directory = process.env.FORWARDX_SOURCE_GEO_DIR || path.resolve(process.cwd(), process.env.NODE_ENV === "production" ? "dist/geo" : "server/assets/ip2region");
-    const content = await decompress(await readFile(path.join(directory, `ip2region_v${family}.xdb.gz`)), { maxOutputLength: assets[family].bytes });
-    if (content.length !== assets[family].bytes || createHash("sha256").update(content).digest("hex") !== assets[family].hash) throw new Error("source geo data integrity check failed");
-    const header = new Header(content.subarray(0,256));
-    if (header.version !== 3 || header.ipVersion !== family || header.runtimePtrBytes !== 4 || header.endIndexPtr >= content.length) throw new Error("unsupported source geo data format");
-    console.info(`[OperationsGeo] offline IPv${family} database ready version=${SOURCE_GEO_VERSION}`);
-    return newWithBuffer(family === 4 ? IPv4 : IPv6, content);
-  })());
-  return searchers.get(family)!;
+  const directory = process.env.FORWARDX_SOURCE_GEO_DIR || path.resolve(process.cwd(), process.env.NODE_ENV === "production" ? "dist/geo" : "server/assets/ip2region");
+  const content = await decompress(await readFile(path.join(directory, `ip2region_v${family}.xdb.gz`)), { maxOutputLength: assets[family].bytes });
+  if (content.length !== assets[family].bytes || createHash("sha256").update(content).digest("hex") !== assets[family].hash) throw new Error("source geo data integrity check failed");
+  const header = new Header(content.subarray(0,256));
+  if (header.version !== 3 || header.ipVersion !== family || header.runtimePtrBytes !== 4 || header.endIndexPtr >= content.length) throw new Error("unsupported source geo data format");
+  console.info(`[OperationsGeo] offline IPv${family} database ready version=${SOURCE_GEO_VERSION}`);
+  return newWithBuffer(family === 4 ? IPv4 : IPv6, content);
 }
 
 export type SourceGeo = { countryCode: string; countryName: string | null; region: string | null; city: string | null; isp: string | null };
@@ -50,8 +50,7 @@ export function parseSourceGeo(region: string): SourceGeo | null {
 export async function lookupOperationsSourceGeo(address: string) {
   const ip = address.replace(/^::ffff:/i, "").toLowerCase();
   if (!sourceGeoPublicAddress(ip)) return null;
-  const searcher = await loadSearcher(net.isIP(ip) as 4 | 6);
-  return parseSourceGeo(await searcher.search(ip));
+  return searchers.use(net.isIP(ip) as 4 | 6, async searcher => parseSourceGeo(await searcher.search(ip)));
 }
 
 let lastWarning = 0;

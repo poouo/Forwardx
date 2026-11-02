@@ -7,6 +7,7 @@ import { hostsRouter } from "./routers/hosts";
 import { hostChinaHealthSchema, ipSwitchHookSchema } from "../shared/hostChinaHealth";
 import { observeProbeHealth, getProbeHealthViews, saveProbeHealth, validateIpSwitchClaim, acknowledgeIpSwitch } from "./hostProbeHealth";
 import { hostIngressAddress } from "./hostAddressRuntime";
+import { observeIpSwitchAddress } from "./hostIpSwitchObservation";
 import express from "express";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
 import { agentEncryptionMiddleware } from "./agentEncryptionMiddleware";
@@ -105,14 +106,54 @@ try {
   await acknowledgeIpSwitch(second.id);
   assert.equal((await getProbeHealthViews([second.id])).get(second.id).lastAction.acknowledged, true);
 
-  // Provider success followed by runtime sync failure must not be shown as fully synced.
+  // A provider's claimed new IP is not proof and must not change panel addresses.
   const third = await admin.createProbeService({ ...serviceInput, hostIds: [3], health: { ...health, hook: { ...hook, ipPath: "ip", updateAddress: "entry" } } });
   const host3 = (await db.getHostById(3))!, report3 = { ...report, serviceId: third.id };
   for (const offset of [0, 15, 30]) await observeProbeHealth({ id: host3.id, name: host3.name }, [report3], base + offset, { ...deps,
     request: async (_hook, context) => ({ taskId: context.incidentId, outcome: "accepted", reason: "ok", newIp: "8.8.4.4" }),
     refresh: async () => { throw new Error("runtime_sync_failed"); },
   });
+  assert.equal((await getProbeHealthViews([third.id])).get(third.id).lastAction.status, "accepted");
+  assert.equal((await db.getHostById(3))!.entryIp, null);
+  assert.equal((await getProbeHealthViews([third.id])).get(third.id).lastAction.newIp, null);
+  // The Agent's actual observation confirms even a different IP than the response.
+  await db.updateHostHeartbeat(3, { ip: "9.9.9.9", ipv4: "9.9.9.9" } as any);
+  await db.updateHost(3, { lastHeartbeat: new Date((base + 31) * 1000) });
+  const changedHost3 = (await db.getHostById(3))!;
+  assert.equal(await observeIpSwitchAddress(changedHost3, { refresh: async () => { throw new Error("runtime_sync_failed"); } }), false);
   assert.equal((await getProbeHealthViews([third.id])).get(third.id).lastAction.status, "sync_failed");
+  assert.equal((await getProbeHealthViews([third.id])).get(third.id).lastAction.newIp, "9.9.9.9");
+  let retrySync = 0;
+  assert.equal(await observeIpSwitchAddress(changedHost3, { refresh: async () => { retrySync++; }, notify: async () => {} }), true);
+  assert.equal(retrySync, 1);
+  assert.equal((await getProbeHealthViews([third.id])).get(third.id).lastAction.status, "succeeded");
+  assert.equal(await observeIpSwitchAddress(changedHost3, { refresh: async () => { retrySync++; } }), false);
+  assert.equal(retrySync, 1, "successful observations are idempotent");
+
+  // Actual heartbeats may arrive before the provider HTTP result, which may fail.
+  await runtime.insertAndGetId("hosts", { id: 15, name: "In-flight switch", ip: "1.1.1.1", ipv4: "1.1.1.1", entryIp: "1.1.1.1", userId: 1 });
+  const inflight = await admin.createProbeService({ ...serviceInput, hostIds: [15] });
+  const host15 = (await db.getHostById(15))!, report15 = { ...report, serviceId: inflight.id };
+  let finishResponse!: (value: any) => void, signalStarted!: () => void, inflightCalls = 0, inflightRefreshes = 0;
+  const requestStarted = new Promise<void>(resolve => { signalStarted = resolve; });
+  const requestResponse = new Promise<any>(resolve => { finishResponse = resolve; });
+  const inflightDeps = { ...deps, request: async (_hook: any, context: any) => {
+    inflightCalls++;
+    assert.equal(await validateIpSwitchClaim(15, inflight.id, context.incidentId, "1.1.1.1"), true);
+    signalStarted();
+    return requestResponse;
+  }};
+  for (const offset of [0, 15]) await observeProbeHealth(host15, [report15], base + offset, inflightDeps);
+  const pendingRequest = observeProbeHealth(host15, [report15], base + 30, inflightDeps);
+  await requestStarted;
+  await db.updateHostHeartbeat(15, { ip: "8.8.4.4", ipv4: "8.8.4.4", lastHeartbeat: new Date((base + 31) * 1000) } as any);
+  assert.equal(await observeIpSwitchAddress((await db.getHostById(15))!, { refresh: async () => { inflightRefreshes++; }, notify: async () => {} }), true);
+  finishResponse({ taskId: "ignored-by-fixture", outcome: "uncertain", reason: "request_failed" });
+  await pendingRequest;
+  const inflightResult = (await getProbeHealthViews([inflight.id])).get(inflight.id).lastAction;
+  assert.equal(inflightResult.status, "succeeded"); assert.equal(inflightResult.newIp, "8.8.4.4");
+  assert.equal(inflightResult.reason, "ip_changed");
+  assert.equal(inflightCalls, 1); assert.equal(inflightRefreshes, 1);
 
   const fourth = await admin.createProbeService({ ...serviceInput, hostIds: [4], intervalSeconds: 300, health: { ...health, autoSwitch: false } });
   await runtime.executeRaw("UPDATE host_probe_health SET state = ? WHERE serviceId = ?", [JSON.stringify({ phase: "healthy", lastSeen: base - 500 }), fourth.id]);

@@ -8,16 +8,16 @@ export const ipSwitchHookSchema = z.object({
   method: z.enum(["GET", "POST", "PUT"]).default("GET"),
   headers: z.record(z.string().max(4096)).default({}).refine(value => Object.keys(value).length <= 20 && Object.entries(value).every(([key, entry]) => /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) && !/[\r\n]/.test(entry) && !/^(host|content-length|connection|transfer-encoding|upgrade|proxy-authorization|proxy-connection|trailer|te)$/i.test(key)), "接口请求头不合法"),
   body: z.string().max(16384).default(""),
-  successMode: z.enum(["json", "http"]).default("json"),
+  // Legacy response checks are retained as diagnostics, not proof of an IP change.
+  successMode: z.enum(["json", "http"]).default("http"),
   successPath: jsonPath.optional(),
   successValue: z.union([z.string().max(256), z.boolean(), z.number().finite()]).optional(),
   ipPath: jsonPath.optional(),
-  updateAddress: z.enum(["none", "entry", "entry_and_tunnel"]).default("none"),
+  updateAddress: z.enum(["none", "entry", "entry_and_tunnel"]).default("entry_and_tunnel"),
   timeoutSeconds: z.number().int().min(5).max(30).default(15),
 }).strict().superRefine((value, ctx) => {
   if (value.successMode === "json" && (!value.successPath || value.successValue === undefined)) ctx.addIssue({ code: "custom", message: "请填写成功字段和预期值", path: ["successPath"] });
   if (value.method === "GET" && value.body) ctx.addIssue({ code: "custom", message: "GET 请求不能配置请求体", path: ["body"] });
-  if (value.updateAddress !== "none" && !value.ipPath) ctx.addIssue({ code: "custom", message: "同步主机地址必须填写新 IP 的 JSON 路径", path: ["ipPath"] });
 });
 export const hostChinaHealthSchema = z.object({
   enabled: z.boolean().default(false),
@@ -78,9 +78,20 @@ export const ipSwitchReasonLabels: Record<string, string> = {
   request_failed: "商家接口连接失败或超时", http_status: "商家接口返回非 2xx 状态",
   invalid_response: "商家返回的内容不是有效 JSON", success_mismatch: "商家返回值与成功条件不匹配",
   invalid_ip: "商家返回的新 IP 无效", agent_unavailable: "Agent 暂不可用",
+  claimed: "Agent 已通过执行前校验", ip_changed: "Agent 已检测到 IP 变化", runtime_sync_failed: "IP 已变化，关联转发配置同步失败，正在重试",
 };
 export const ipSwitchBlockedLabels: Record<string, string> = {
   agent_unavailable: "等待 Agent 上报换 IP 能力", unresolved: "等待核对上次商家结果",
   daily_limit: "已达 24h 请求上限", cooldown: "商家请求间隔中",
   host_address_unavailable: "主机入口地址不可用", host_address_changed: "主机地址已变更，等待探测",
 };
+
+export function ipSwitchActionLabel(status: string, reason?: string | null) {
+  if (status === "succeeded") return reason === "ip_changed" ? "已检测到 IP 变化并同步配置" : "商家接口确认成功（旧记录）";
+  if (status === "sync_failed") return reason === "runtime_sync_failed" ? "IP 已变化，配置同步失败，正在重试" : "商家成功，面板同步失败";
+  const labels: Record<string, string> = {
+    pending: "换 IP 请求处理中", uncertain: "回执异常，等待检测 IP 变化", accepted: "等待 Agent 确认 IP 变化",
+    not_executed: "Agent 未执行请求", sync_pending: "IP 已变化，正在同步配置", sync_skipped: "商家成功，面板地址同步已跳过",
+  };
+  return labels[status] || "未知";
+}

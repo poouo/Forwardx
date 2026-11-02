@@ -90,6 +90,7 @@ type PaymentConfigForm = {
     pid: string;
     secretKey: string;
     network: "tron" | "ethereum" | "bsc" | "polygon" | "solana" | "aptos" | "plasma";
+    signatureAlgorithm: "md5" | "hmac-sha256";
   };
 };
 
@@ -160,6 +161,7 @@ const emptyForm: PaymentConfigForm = {
     pid: "",
     secretKey: "",
     network: "tron",
+    signatureAlgorithm: "md5",
   },
 };
 
@@ -310,6 +312,7 @@ export default function Payments() {
         pid: config.gmpay?.pid || "",
         secretKey: "",
         network: config.gmpay?.network || "tron",
+        signatureAlgorithm: config.gmpay?.signatureAlgorithm || "md5",
       },
     });
   }, [config]);
@@ -686,6 +689,15 @@ export default function Payments() {
                 </Field>
                 <Field label={translateText("商户密钥")} hint={config?.gmpay?.hasSecretKey ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
                   <Input type="password" value={form.gmpay.secretKey} onChange={(e) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, secretKey: e.target.value } }))} />
+                </Field>
+                <Field label={translateText("签名方式")} hint={translateText("Epusdt v2 请选择 HMAC-SHA256；旧版保留 MD5。切换前请处理完未支付订单。")}>
+                  <Select value={form.gmpay.signatureAlgorithm} onValueChange={(signatureAlgorithm: PaymentConfigForm["gmpay"]["signatureAlgorithm"]) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, signatureAlgorithm } }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hmac-sha256">{translateText("HMAC-SHA256（Epusdt v2）")}</SelectItem>
+                      <SelectItem value="md5">{translateText("MD5（旧版兼容）")}</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </Field>
                 <Field label={translateText("USDT 网络")}>
                   <Select value={form.gmpay.network} onValueChange={(network: PaymentConfigForm["gmpay"]["network"]) => setForm((prev) => ({ ...prev, gmpay: { ...prev.gmpay, network } }))}>

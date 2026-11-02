@@ -469,12 +469,14 @@ test("connection retries are single-flight and idle PostgreSQL errors never esca
     const original = pg.Pool.prototype.connect;
     let probes = 0;
     let release;
-    let query = async () => { probes++; await new Promise((resolve) => { release = resolve; }); return { rows: [{ "?column?": 1 }] }; };
+    let probeStarted;
+    const probeReady = new Promise((resolve) => { probeStarted = resolve; });
+    let query = async () => { probes++; probeStarted(); await new Promise((resolve) => { release = resolve; }); return { rows: [{ "?column?": 1 }] }; };
     pg.Pool.prototype.connect = async () => ({ query: (...args) => query(...args), release() {} });
     try {
       databaseHealth.healthy();
       const connections = Array.from({ length: 20 }, () => runtime.connectDatabase(config));
-      await new Promise((resolve) => setImmediate(resolve));
+      await probeReady;
       assert.equal(probes, 1);
       release();
       const dbs = await Promise.all(connections);

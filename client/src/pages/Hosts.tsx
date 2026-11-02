@@ -1037,6 +1037,7 @@ function HostTrafficSummaryCard({
 }
 
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
+type HostPageSize = 12 | 24 | 36 | 48;
 type HostManageTab = "hosts" | "groups" | "services" | "tokens";
 type HostManageFilterStats = { filtered: number; total: number };
 type HostDialogTab = "basic" | "other";
@@ -1067,9 +1068,30 @@ const HOST_DIALOG_TABS = [
 
 const HOST_MANAGE_TAB_STORAGE_KEY = "forwardx.hosts.manageTab";
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
+const HOST_PAGE_SIZE_STORAGE_KEY = "forwardx.hosts.pageSize";
+const HOST_PAGE_SIZE_OPTIONS: HostPageSize[] = [12, 24, 36, 48];
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 const HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
 const HOST_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.hostGroups.viewMode";
+
+function getStoredHostPageSize(fallback: HostPageSize = 12): HostPageSize {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = Number(window.localStorage.getItem(HOST_PAGE_SIZE_STORAGE_KEY)) as HostPageSize;
+    return HOST_PAGE_SIZE_OPTIONS.includes(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeHostPageSize(pageSize: HostPageSize) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HOST_PAGE_SIZE_STORAGE_KEY, String(pageSize));
+  } catch {
+    // The selection still works when browser storage is unavailable.
+  }
+}
 
 function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
@@ -1253,7 +1275,15 @@ function HostsContent() {
   });
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const hostSearchQuery = manageSearchQueries.hosts;
+  const [hostPageSize, setHostPageSize] = useState<HostPageSize>(() => getStoredHostPageSize());
   const hostPageRequest = usePersistentPageRequest("forwardx.hosts.page");
+  const handleHostPageSizeChange = (value: string) => {
+    const nextPageSize = Number(value) as HostPageSize;
+    if (!HOST_PAGE_SIZE_OPTIONS.includes(nextPageSize) || nextPageSize === hostPageSize) return;
+    hostPageRequest.setPage(1);
+    setHostPageSize(nextPageSize);
+    storeHostPageSize(nextPageSize);
+  };
   const hostListRefreshInterval = visiblePollingInterval("slow", pageVisible);
   const managementCountsQuery = trpc.hosts.managementCounts.useQuery(undefined, {
     enabled: user?.role === "admin",
@@ -1263,7 +1293,7 @@ function HostsContent() {
   });
   const hostPageQuery = trpc.hosts.listPage.useQuery({
     page: hostPageRequest.page,
-    pageSize: 12,
+    pageSize: hostPageSize,
     search: hostSearchQuery,
     groupId: selectedHostGroupId === "all" ? null : Number(selectedHostGroupId),
   }, {
@@ -1935,7 +1965,7 @@ function HostsContent() {
     bulkUpgradeCandidateQuery.data?.offlineItems ?? hostPageQuery.data?.offlineUpgradeableItems ?? 0,
   );
   const hostPagination = useServerPagination<any>(usesFullHostDisplay ? [] : filteredDisplayHosts, Number(hostPageQuery.data?.totalItems || 0), hostPageRequest, {
-    pageSize: 12,
+    pageSize: hostPageSize,
     isReady: !hostPageQuery.isLoading && !!hostPageQuery.data,
   });
   const pagedHosts = hostPagination.items;
@@ -2025,8 +2055,9 @@ function HostsContent() {
       normalizedHostSearchQuery || "search-all",
       selectedHostGroupId === "all" ? "all" : `group-${selectedHostGroupId}`,
       hostPagination.currentPage,
+      hostPageSize,
     ].join(":"),
-    [hostCardModeTransitionKey, hostPagination.currentPage, normalizedHostSearchQuery, selectedHostGroupId, viewMode],
+    [hostCardModeTransitionKey, hostPagination.currentPage, hostPageSize, normalizedHostSearchQuery, selectedHostGroupId, viewMode],
   );
   useEffect(() => {
     if (!hostLiveRefreshInterval || !pagedMetricHostIds.length) return;
@@ -2458,6 +2489,18 @@ function HostsContent() {
             </button>
           ) : null}
         </div>
+        {activeManageTab === "hosts" && !isHostMapView && (
+          <Select value={String(hostPageSize)} onValueChange={handleHostPageSizeChange}>
+            <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]" aria-label={translateText("每页数量")}>
+              <SelectValue placeholder={translateText("每页数量")} />
+            </SelectTrigger>
+            <SelectContent>
+              {HOST_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                <SelectItem key={pageSize} value={String(pageSize)}>{translateText("每页 ")}{pageSize}{translateText(" 台")}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <span className="text-xs tabular-nums text-muted-foreground">
           {activeManageFilterStats.filtered} / {activeManageFilterStats.total} {activeManageFilterConfig.unit}
         </span>

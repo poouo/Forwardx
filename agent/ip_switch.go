@@ -416,6 +416,7 @@ func handleIPSwitchTask(cfg Config, task ipSwitchTask) {
 		logIPSwitchTask(task, "stage=claim_finished allowed=%t error=%s", err == nil && response.Allowed, ipSwitchErrorCategory(err))
 		return err == nil && response.Allowed
 	}, func(task ipSwitchTask) ipSwitchResult {
+		beginIPSwitchAddressObservation()
 		client := newIPSwitchClient(time.Duration(task.Request.TimeoutSeconds) * time.Second)
 		defer client.CloseIdleConnections()
 		return executeIPSwitchRequest(task, client)
@@ -425,6 +426,21 @@ func handleIPSwitchTask(cfg Config, task ipSwitchTask) {
 	reportIPSwitchResult(task, result, func(result ipSwitchResult, ack *ipSwitchReportAck) error {
 		return post(cfg, "/api/agent/ip-switch-result", map[string]any{"result": result}, ack)
 	})
+}
+
+func publicIPRefreshIntervalFor(now, fastUntil time.Time) time.Duration {
+	if now.Before(fastUntil) {
+		return 10 * time.Second
+	}
+	return publicIPRefreshInterval
+}
+
+func beginIPSwitchAddressObservation() {
+	publicIPMu.Lock()
+	publicIPFastRefreshUntil = time.Now().Add(3 * time.Minute)
+	publicIPCheckedAt = time.Time{}
+	publicIPMu.Unlock()
+	wakeHeartbeat()
 }
 
 type ipSwitchReportAck struct {
