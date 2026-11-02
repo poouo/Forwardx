@@ -32,11 +32,31 @@ export function createQueryCache(options: number | CacheOptions = 300) {
   const cache = new Map<string, CacheEntry<unknown>>();
   let bytes = 0;
   let nextPruneAt = clock() + 1000;
+  let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function stopCleanupIfEmpty() {
+    if (cache.size || !cleanupTimer) return;
+    clearTimeout(cleanupTimer);
+    cleanupTimer = undefined;
+  }
+
+  function armCleanup() {
+    if (cleanupTimer || !cache.size) return;
+    cleanupTimer = setTimeout(() => {
+      cleanupTimer = undefined;
+      // Reclaim expired values even after the user closes the page. This
+      // performs no queries and never removes an in-flight load.
+      prune();
+      armCleanup();
+    }, 30_000);
+    cleanupTimer.unref?.();
+  }
 
   function remove(key: string) {
     const entry = cache.get(key);
     if (entry) bytes -= entry.bytes;
     cache.delete(key);
+    stopCleanupIfEmpty();
   }
 
   // Never evict running loads: doing so would allow duplicate concurrent SQL.
@@ -61,6 +81,7 @@ export function createQueryCache(options: number | CacheOptions = 300) {
       if (cache.size >= maxEntries) return Promise.reject(new QueryCacheBusyError());
       entry = { freshUntil: 0, staleUntil: 0, retryAt: 0, bytes: 0 };
       cache.set(key, entry);
+      armCleanup();
     }
     const current = entry;
     const promise = Promise.resolve().then(load)
@@ -113,7 +134,7 @@ export function createQueryCache(options: number | CacheOptions = 300) {
   }
 
   function clear(matches?: (key: string) => boolean) {
-    if (!matches) { cache.clear(); bytes = 0; return; }
+    if (!matches) { cache.clear(); bytes = 0; stopCleanupIfEmpty(); return; }
     for (const key of cache.keys()) if (matches(key)) remove(key);
   }
 

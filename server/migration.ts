@@ -5,7 +5,7 @@ import path from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGzip } from "zlib";
-import Database from "better-sqlite3";
+import { loadSqliteDriver } from "./databaseDrivers";
 import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs, affiliateEnabledFromLegacySidebar, supportTicketsEnabledFromLegacySidebar } from "./dbSchema";
 import { AFFILIATE_TABLES, assertAffiliateImportSafe } from "./affiliateMigration";
 import {
@@ -338,7 +338,8 @@ function decodeDirectSqliteMeta(value: string | null): DirectSqliteMigrationMeta
   };
 }
 
-function validateSqliteMigrationFile(filePath: string) {
+async function validateSqliteMigrationFile(filePath: string) {
+  const Database = await loadSqliteDriver();
   const sqlite = new Database(filePath, { readonly: true, fileMustExist: true });
   try {
     const quickCheck = String(sqlite.pragma("quick_check", { simple: true }) || "");
@@ -358,7 +359,7 @@ async function createDirectSqliteBackup(meta: Omit<DirectSqliteMigrationMeta, "b
   const filePath = sqliteMigrationTempPath(`export-${Date.now()}`);
   try {
     await withSqliteExclusive((sqlite) => sqlite.backup(filePath));
-    validateSqliteMigrationFile(filePath);
+    await validateSqliteMigrationFile(filePath);
     const stat = await fs.promises.stat(filePath);
     const sha256 = await sha256File(filePath);
     return { filePath, meta: { ...meta, byteLength: stat.size, sha256 } as DirectSqliteMigrationMeta };
@@ -400,7 +401,7 @@ async function downloadDirectSqliteBackup(response: globalThis.Response, jobId: 
     if (stat.size !== meta.byteLength) throw new Error(`SQLite 迁移文件大小不一致：预期 ${meta.byteLength}，实际 ${stat.size}`);
     const sha256 = await sha256File(filePath);
     if (sha256 !== meta.sha256) throw new Error("SQLite 迁移文件校验失败，请重新迁移");
-    validateSqliteMigrationFile(filePath);
+    await validateSqliteMigrationFile(filePath);
     return { kind: "sqlite-direct" as const, filePath, meta };
   } catch (error) {
     await fs.promises.rm(filePath, { force: true }).catch(() => undefined);

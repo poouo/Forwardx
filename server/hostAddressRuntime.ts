@@ -24,13 +24,20 @@ export async function refreshAgentsAffectedByHostAddress(hostId: number, reason:
     if (entryHostId > 0) affected.add(entryHostId);
     if (exitHostId > 0) affected.add(exitHostId);
 
-    const hops = await hopRepo.getTunnelHops(Number(tunnel?.id || 0)).catch(() => []);
+    if (Number(tunnel.entryGroupId) > 0) {
+      const group = await db.getForwardGroupById(Number(tunnel.entryGroupId));
+      for (const member of (group as any)?.members || []) {
+        if ((member.isEnabled === true || Number(member.isEnabled) === 1) && Number(member.hostId) > 0) affected.add(Number(member.hostId));
+      }
+    }
+
+    const hops = await hopRepo.getTunnelHops(Number(tunnel?.id || 0));
     for (const hop of hops || []) {
       const hopHostId = Number((hop as any)?.hostId || 0);
       if (hopHostId > 0) affected.add(hopHostId);
     }
 
-    const exits = await hopRepo.getTunnelExitNodes(Number(tunnel?.id || 0)).catch(() => []);
+    const exits = await hopRepo.getTunnelExitNodes(Number(tunnel?.id || 0));
     for (const exit of exits || []) {
       const exitHostId = Number((exit as any)?.hostId || 0);
       if (exitHostId > 0) affected.add(exitHostId);
@@ -38,7 +45,7 @@ export async function refreshAgentsAffectedByHostAddress(hostId: number, reason:
   }));
 
   for (const affectedHostId of affected) {
-    pushAgentRefresh(affectedHostId, reason);
+    pushAgentRefresh(affectedHostId, reason, { urgent: true });
   }
 }
 
@@ -50,12 +57,17 @@ export async function refreshHostAddressRuntime(hostId: number, previousHost: an
   await refreshAgentsAffectedByHostAddress(hostId, reason);
 }
 
-export async function handleHostAddressChanged(hostId: number, currentHost: any, previousHost: any, reason: string) {
+export async function handleHostAddressChanged(hostId: number, currentHost: any, previousHost: any, reason: string, options: { forceRuntimeRefresh?: boolean; retryDdnsFailures?: boolean } = {}) {
+  // Host DNS has its own per-host deduplication and retry scheduler. Do not
+  // block forwarding recovery on a slow DNS provider.
   scheduleHostDdnsUpdate(currentHost, reason);
-  await db.runForwardGroupsForHostAddressChange(hostId, reason).catch((error) => {
-    console.warn(`[HostAddress] Forward group DDNS refresh failed host=${hostId}: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  if (hostUsesAutomaticIngress(previousHost)) {
+  if (options.forceRuntimeRefresh || hostUsesAutomaticIngress(previousHost)) {
     await refreshHostAddressRuntime(hostId, previousHost, reason);
   }
+  // Refresh dependent resources before evaluating their group DNS. A failed
+  // DNS request must not prevent the forwarding runtime from receiving its IP.
+  await db.runForwardGroupsForHostAddressChange(hostId, reason).catch((error) => {
+    console.warn(`[HostAddress] Forward group DDNS refresh failed host=${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+    if (options.retryDdnsFailures) throw error;
+  });
 }

@@ -25,6 +25,7 @@ import {
 } from "./agentAuth";
 import { normalizeAgentText } from "./agentInputValidation";
 import { mergeAgentReportedAddress } from "./agentAddressState";
+import { observeIpSwitchAddress } from "./hostIpSwitchObservation";
 import { scheduleHostDdnsUpdate } from "./hostDdns";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
@@ -470,12 +471,15 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         lastHeartbeat: new Date(),
       });
       if (entryChanged) {
-        await handleHostAddressChanged(
-          existingHost.id,
-          { ...existingHost, ...reportedAddress },
-          existingHost,
-          "agent-address-changed",
-        );
+        const updatedHost = await db.getHostById(existingHost.id);
+        if (!updatedHost || !await observeIpSwitchAddress(updatedHost)) {
+          await handleHostAddressChanged(
+            existingHost.id,
+            { ...existingHost, ...reportedAddress },
+            existingHost,
+            "agent-address-changed",
+          );
+        }
       } else if (["ipv4Addresses", "ipv6Addresses"].some(key => (reportedAddress as any)[key] !== (existingHost as any)[key])) {
         scheduleHostDdnsUpdate({ ...existingHost, ...reportedAddress }, "agent-address-inventory-changed");
       }

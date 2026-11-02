@@ -1,4 +1,4 @@
-import ExcelJS from "exceljs";
+import type ExcelJS from "exceljs";
 import { setImmediate } from "node:timers/promises";
 import { createWriteStream } from "node:fs";
 import { iterateBillingLedgerExport, type listBillingLedger } from "./repositories/billingRepository";
@@ -38,6 +38,10 @@ export async function writeBillingLedgerXlsx(
   signal?: AbortSignal,
   batches: AsyncIterable<BillingExportRow[]> = iterateBillingLedgerExport(options, signal),
 ) {
+  signal?.throwIfAborted();
+  // The download route is registered at startup, but the spreadsheet engine
+  // is only needed when an authenticated user actually exports a ledger.
+  const ExcelJS = (await import("exceljs")).default;
   signal?.throwIfAborted();
   const output = createWriteStream(filename, { mode: 0o600 });
   // Handle early disk failures as well as failures during commit.

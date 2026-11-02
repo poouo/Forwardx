@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { createQueryCache } from "./queryCache";
 import { createDisplayQueryCache } from "./displayQueryCache";
 
@@ -165,4 +166,54 @@ test("stale display reads stay available while the read pool is busy", async () 
   assert.equal(cache.stats().queued, 1);
   slow.resolve(10); await blocking; await tick();
   assert.equal(await cache.get(user, "cached", {}, async () => 3, timing), 2);
+});
+
+test("expired display/chart values are reclaimed without another request or database query", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0, loads = 0;
+  const cache = createQueryCache({ now: () => now, sizeOf: () => 1024 });
+  await cache.get("closed-chart", { ttlMs: 100, staleMs: 100 }, async () => { loads++; return {}; });
+  assert.equal(cache.size(), 1);
+  assert.ok(cache.bytes() > 0);
+  now = 30_000;
+  t.mock.timers.tick(30_000);
+  assert.equal(cache.size(), 0);
+  assert.equal(cache.bytes(), 0);
+  assert.equal(loads, 1, "idle cleanup must never run loaders");
+  await cache.get("next-chart", { ttlMs: 100, staleMs: 100 }, async () => { loads++; return {}; });
+  now += 30_000;
+  t.mock.timers.tick(30_000);
+  assert.equal(cache.size(), 0);
+  assert.equal(loads, 2, "an emptied cache must restart cleanup when used again");
+});
+
+test("idle pruning preserves fresh/stale values and in-flight refresh deduplication", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0, loads = 0;
+  const cache = createQueryCache({ now: () => now });
+  await cache.get("active", { ttlMs: 30_000, staleMs: 60_000 }, async () => 1);
+  const pending = deferred<number>();
+  const work = cache.get("pending", { ttlMs: 100, staleMs: 100 }, () => { loads++; return pending.promise; });
+  await tick();
+  now = 30_001;
+  t.mock.timers.tick(30_000);
+  assert.equal(cache.size(), 2, "valid stale data and active loads must remain");
+  assert.equal(await cache.get("active", { ttlMs: 30_000, staleMs: 60_000 }, async () => 2), 1);
+  const joined = cache.get("pending", { ttlMs: 100, staleMs: 100 }, async () => { loads++; return 3; });
+  pending.resolve(10);
+  assert.deepEqual(await Promise.all([work, joined]), [10, 10]);
+  assert.equal(loads, 1);
+  cache.clear();
+  now += 60_000;
+  t.mock.timers.tick(60_000);
+  assert.equal(cache.size(), 0);
+});
+
+test("idle query cache cleanup does not keep an otherwise stopped panel alive", () => {
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { createQueryCache } from "./server/queryCache.ts";
+    const cache = createQueryCache();
+    await cache.get("one", { ttlMs: 60_000 }, async () => 1);
+  `], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr || String(result.error));
 });

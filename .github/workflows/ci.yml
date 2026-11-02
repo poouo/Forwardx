@@ -143,6 +143,7 @@ jobs:
           pnpm test:payments
           pnpm test:product-stock
           pnpm test:performance
+          pnpm test:memory
           pnpm test:database-network
           pnpm test:plugin-bbr
           pnpm exec tsc --noEmit
@@ -153,6 +154,7 @@ jobs:
           pnpm test:ai
           pnpm test:selftest-dispatch
           pnpm test:agent-connectivity
+          pnpm test:china-health
           pnpm docs:build
 
       - name: Verify Agent and FXP

@@ -8,11 +8,10 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList } from "@/components/ui/sliding-tabs";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Activity, ShieldCheck, RefreshCw } from "lucide-react";
-import { ipSwitchBlockedLabels, ipSwitchReasonLabels } from "@shared/hostChinaHealth";
+import { ipSwitchBlockedLabels, ipSwitchReasonLabels, ipSwitchActionLabel } from "@shared/hostChinaHealth";
 
 const metricNames: Record<string, string> = { cpu: "CPU", memory: "内存", disk: "磁盘" };
 const healthNames: Record<string, string> = { unknown: "待检测", healthy: "正常", suspect: "疑似异常", unhealthy: "检测异常", recovering: "恢复观察中" };
-const actionNames: Record<string, string> = { pending: "换 IP 请求处理中", uncertain: "换 IP 结果不明确", accepted: "商家接口已接收请求", not_executed: "Agent 未执行请求", succeeded: "商家接口确认成功", sync_skipped: "商家成功，面板地址同步已跳过", sync_failed: "商家成功，面板同步失败" };
 const time = (value: unknown) => new Date(Number(value) * 1000).toLocaleString(getFormatLocale(), { timeZone: "Asia/Shanghai" });
 
 export default function OperationsMonitorPanel({ interval }: { interval: number | false }) {
@@ -48,8 +47,8 @@ export default function OperationsMonitorPanel({ interval }: { interval: number 
         </TabsContent>
         <TabsContent value="ip" className="space-y-3">
           <p className="text-xs text-muted-foreground">{t("最近 30 天 IP 更换记录")}</p>
-          {report.data.ipEvents.map(row => <div key={row.id} className="flex flex-wrap justify-between gap-2 border-b py-2 text-xs last:border-0"><div className="min-w-0"><p className="truncate">{row.hostName || "—"} · {row.serviceName || `#${row.serviceId}`}</p><p className="mt-1 text-muted-foreground">{t(actionNames[row.status] || "未知")}{row.newIp ? ` · ${row.newIp}` : ""}</p>
-            {row.reason && row.reason !== "ok" && <p className="mt-1 break-words text-amber-600 dark:text-amber-400">{t(ipSwitchReasonLabels[row.reason] || "请求结果未确认")}{row.httpStatus ? ` · HTTP ${row.httpStatus}` : ""}</p>}
+          {report.data.ipEvents.map(row => <div key={row.id} className="flex flex-wrap justify-between gap-2 border-b py-2 text-xs last:border-0"><div className="min-w-0"><p className="truncate">{row.hostName || "—"} · {row.serviceName || `#${row.serviceId}`}</p><p className="mt-1 text-muted-foreground">{t(ipSwitchActionLabel(row.status, row.reason))}{row.newIp ? ` · ${row.newIp}` : ""}</p>
+            {row.reason && !["ok", "ip_changed"].includes(row.reason) && <p className="mt-1 break-words text-amber-600 dark:text-amber-400">{t(ipSwitchReasonLabels[row.reason] || "请求结果未确认")}{row.httpStatus ? ` · HTTP ${row.httpStatus}` : ""}</p>}
           </div><span className="text-muted-foreground">{time(row.createdAt)}</span></div>)}
           {!report.data.ipEvents.length && <p className="py-3 text-xs text-muted-foreground">{t("暂无数据")}</p>}
           {pagination(ipPage, report.data.ipTotal, setIpPage)}

@@ -102,11 +102,10 @@ export default function HostChinaHealthSettings({ value, onChange, hookLoading =
         <div className="space-y-1.5"><Label htmlFor="china-hook-timeout">{t("请求超时（秒）")}</Label><Input id="china-hook-timeout" type="number" min={5} max={30} value={value.hookTimeoutSeconds} onChange={event => patch({ hookTimeoutSeconds: Number(event.target.value) })} /></div>
         <div className="space-y-1.5"><Label htmlFor="china-hook-headers">{t("请求头（JSON）")}</Label><Textarea id="china-hook-headers" autoComplete="off" value={value.hookHeaders} onChange={event => patch({ hookHeaders: event.target.value })} placeholder={'{"Authorization":"Bearer ...","Content-Type":"application/json"}'} className="font-mono text-xs" /></div>
         {value.hookMethod !== "GET" && <div className="space-y-1.5"><Label htmlFor="china-hook-body">{t("请求体")}</Label><Textarea id="china-hook-body" autoComplete="off" value={value.hookBody} onChange={event => patch({ hookBody: event.target.value })} className="font-mono text-xs" /></div>}
-        <div className="space-y-1.5"><Label>{t("接口结果判断")}</Label><Select value={value.successMode} onValueChange={successMode => patch({ successMode: successMode as ChinaHealthDraft["successMode"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="http">{t("HTTP 2xx：请求已接收")}</SelectItem><SelectItem value="json">{t("JSON 字段严格匹配")}</SelectItem></SelectContent></Select></div>
+        <div className="space-y-1.5"><Label>{t("接口回执校验（仅用于排障）")}</Label><Select value={value.successMode} onValueChange={successMode => patch({ successMode: successMode as ChinaHealthDraft["successMode"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="http">{t("HTTP 2xx：请求已接收")}</SelectItem><SelectItem value="json">{t("JSON 字段严格匹配")}</SelectItem></SelectContent></Select></div>
         {value.successMode === "json" && <div className="grid gap-3 sm:grid-cols-2"><div className="space-y-1.5"><Label htmlFor="china-success-path">{t("成功字段 JSON 路径")}</Label><Input id="china-success-path" value={value.successPath} onChange={event => patch({ successPath: event.target.value })} placeholder="data.success" /></div><div className="space-y-1.5"><Label htmlFor="china-success-value">{t("成功字段预期值")}</Label><Input id="china-success-value" value={value.successValue} onChange={event => patch({ successValue: event.target.value })} placeholder="true" /></div></div>}
         {value.successMode === "http" && <p className="text-xs text-muted-foreground">{t("2xx 仅代表已接收，不代表换 IP 成功。")}</p>}
-        <div className="space-y-1.5"><Label htmlFor="china-ip-path">{t("新 IP 字段 JSON 路径（可选）")}</Label><Input id="china-ip-path" value={value.ipPath} onChange={event => patch({ ipPath: event.target.value })} placeholder="data.ip" /></div>
-        <div className="space-y-1.5"><Label>{t("成功后同步面板地址")}</Label><Select value={value.updateAddress} onValueChange={updateAddress => patch({ updateAddress: updateAddress as ChinaHealthDraft["updateAddress"] })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">{t("不修改面板地址")}</SelectItem><SelectItem value="entry">{t("更新主机入口地址")}</SelectItem><SelectItem value="entry_and_tunnel">{t("更新主机入口与隧道入口地址")}</SelectItem></SelectContent></Select></div>
+        <p className="text-xs text-muted-foreground">{t("以 Agent 检测到的实际 IP 变化确认成功，并同步仍指向旧 IP 的入口及关联转发配置；保留独立域名和自定义地址。")}</p>
       </fieldset>
       <details className="text-xs text-muted-foreground">
         <summary className="cursor-pointer select-none hover:text-foreground">{t("使用说明")}</summary>
@@ -116,8 +115,8 @@ export default function HostChinaHealthSettings({ value, onChange, hookLoading =
           {(value.autoSwitch || value.hookConfigured || value.hookUrl) && <>
             <p>{t("由被检测主机的 Agent 请求，支持商家内网 HTTP / HTTPS 管理接口。HTTP 仅建议用于可信内网，公网请使用 HTTPS。需要升级支持此功能的 Agent。")}</p>
             <p className="break-all">{t("可用变量：{{hostId}}、{{serviceId}}、{{ip}}、{{incidentId}}。凭据加密保存，管理员可在编辑窗口查看修改；保存不会调用接口。")}</p>
-            <p>{t("HTTP 2xx 只表示请求已接收，不代表 IP 已换好；有响应文档时建议使用 JSON 严格匹配，预期值按 JSON 类型匹配。")}</p>
-            <p>{t("同步地址需要接口返回有效的新公网 IP，并刷新关联链路。商家异步接口可先不修改地址，等待 Agent 重新上报；不自动轮询商家任务。")}</p>
+            <p>{t("HTTP 或 JSON 回执仅用于排障，不作为换 IP 成功依据；即使请求超时，Agent 检测到实际 IP 变化后仍可确认成功。")}</p>
+            <p>{t("IP 变更与连通恢复分开判断；同步失败仅重试配置同步，不会再次调用商家换 IP 接口。")}</p>
             <p>{t("商家换 IP 间隔默认 60 分钟，请按商家限制配置。同一主机共用请求历史，重启或重新添加服务不会清空间隔；明确未执行的任务可在间隔结束后重试。")}</p>
           </>}
         </div>

@@ -1,4 +1,3 @@
-import nodemailer from "nodemailer";
 import * as db from "./db";
 import {
   buildSmtpTransportOptions,
@@ -42,6 +41,7 @@ export async function sendMail(payload: MailPayload) {
   if (!config.enabled) return { skipped: true, reason: "email disabled" };
   if (!config.host || !config.from) throw new Error("邮件服务未配置完整");
 
+  const nodemailer = (await import("nodemailer")).default;
   const transporter = nodemailer.createTransport(buildSmtpTransportOptions(config));
   try {
     const result = await withSmtpOperationTimeout(

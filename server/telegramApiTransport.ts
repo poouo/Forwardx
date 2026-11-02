@@ -1,6 +1,6 @@
 import { lookup } from "node:dns";
 import type { LookupFunction } from "node:net";
-import { Agent } from "undici";
+import type { Agent } from "undici";
 
 // Docker commonly has working IPv4 but no IPv6 route. Do not abandon a
 // healthy, higher-latency IPv4 connection after Node's default 250ms race.
@@ -17,7 +17,8 @@ export function createTelegramLookup(resolve: LookupFunction = lookup): LookupFu
   };
 }
 
-export function createTelegramApiDispatcher(resolve: LookupFunction = lookup) {
+export async function createTelegramApiDispatcher(resolve: LookupFunction = lookup) {
+  const { Agent } = await import("undici");
   return new Agent({
     connections: 8,
     pipelining: 1,
@@ -30,15 +31,21 @@ export function createTelegramApiDispatcher(resolve: LookupFunction = lookup) {
   });
 }
 
-let dispatcher: Agent | undefined;
+let dispatcher: Promise<Agent> | undefined;
 
-export function telegramApiFetch(url: string, options: RequestInit) {
+export async function telegramApiFetch(url: string, options: RequestInit) {
   // Reuse one bounded pool, scoped to Telegram rather than changing global
   // DNS/socket settings. Address fallback happens before any HTTP body is
   // sent: never replay sendMessage after an ambiguous HTTP failure.
+  options.signal?.throwIfAborted();
+  const pool = await (dispatcher ??= createTelegramApiDispatcher().catch(error => {
+    dispatcher = undefined;
+    throw error;
+  }));
+  options.signal?.throwIfAborted();
   const init: RequestInit & { dispatcher: Agent } = {
     ...options,
-    dispatcher: dispatcher ??= createTelegramApiDispatcher(),
+    dispatcher: pool,
   };
   return fetch(url, init);
 }

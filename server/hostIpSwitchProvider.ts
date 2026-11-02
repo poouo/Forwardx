@@ -1,5 +1,3 @@
-import { isIP } from "node:net";
-import { assertSafeOutboundHost } from "./ssrf";
 import { ipSwitchHookSchema, type IpSwitchHook } from "../shared/hostChinaHealth";
 import { enqueueIpSwitchAgentTask, type IpSwitchAgentResult } from "./agentIpSwitchTasks";
 
@@ -19,12 +17,4 @@ export function requestIpSwitch(hook: IpSwitchHook, context: IpSwitchContext): P
       headers: Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, template(value, context, "header")])),
       body: template(request.body, context, "body") },
   });
-}
-export async function verifyIpSwitchResponse(hook: IpSwitchHook, response: IpSwitchAgentResult, oldIp: string) {
-  if (response.outcome !== (hook.successMode === "http" ? "accepted" : "verified")) throw new Error("provider_success_unconfirmed");
-  if (!hook.ipPath) return null;
-  const ip = response.newIp;
-  if (typeof ip !== "string" || !isIP(ip.trim()) || ip.trim() === oldIp) throw new Error("provider_invalid_new_ip");
-  await assertSafeOutboundHost(ip.trim(), { purpose: "新 IP" });
-  return ip.trim();
 }

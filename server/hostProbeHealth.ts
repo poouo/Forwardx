@@ -7,8 +7,9 @@ import { boolLiteral, inList, quoteIdentifier as q } from "./dbCompat";
 import { withKeyedTaskLock } from "./keyedTaskLock";
 import { assertSafeOutboundHost } from "./ssrf";
 import * as db from "./db";
-import { requestIpSwitch, verifyIpSwitchResponse } from "./hostIpSwitchProvider";
-import { hostIngressAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { requestIpSwitch } from "./hostIpSwitchProvider";
+import { hostIngressAddress, handleHostAddressChanged } from "./hostAddressRuntime";
+import { ipSwitchAddressSnapshot, observeIpSwitchAddress } from "./hostIpSwitchObservation";
 import { getNotificationAdminRecipients, sendUserNotification } from "./notifications";
 import { appendPanelLog } from "./_core/panelLogger";
 import { seamlessBackgroundPaused } from "./seamlessMigrationState";
@@ -95,8 +96,8 @@ async function notify(service: any, host: any, message: string, config: HostChin
     });
   }
 }
-type Dependencies = { request: typeof requestIpSwitch; notify: typeof notify; refresh: typeof refreshHostAddressRuntime; ready: typeof ipSwitchAgentReady };
-const dependencies: Dependencies = { request: requestIpSwitch, notify, refresh: refreshHostAddressRuntime, ready: ipSwitchAgentReady };
+type Dependencies = { request: typeof requestIpSwitch; notify: typeof notify; refresh: typeof handleHostAddressChanged; ready: typeof ipSwitchAgentReady };
+const dependencies: Dependencies = { request: requestIpSwitch, notify, refresh: handleHostAddressChanged, ready: ipSwitchAgentReady };
 async function performSwitch(row: any, service: any, host: any, state: ChinaHealthState, config: HostChinaHealthConfig, now: number, deps: Dependencies) {
   return withKeyedTaskLock(`probe-health-ip-switch:${host.id}`, async () => {
     // Authentication deliberately supplies only an ID/name, not mutable addresses.
@@ -137,7 +138,7 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       if (!freshHost || !expectedIp) return defer("host_address_unavailable", "自动换 IP 等待中：主机不存在或入口地址为空，尚未请求商家接口");
       if (hostIngressAddress(freshHost) !== expectedIp) return defer("host_address_changed", "自动换 IP 等待中：主机地址已变更，等待下一次探测，尚未请求商家接口");
       // Persist intent BEFORE any request: a crash or timeout must not silently retry a paid action.
-      attemptId = await insertAndGetId("host_ip_switch_attempts", { hostId: host.id, serviceId: service.id, incidentId: state.incidentId, status: "pending", createdAt: now, cooldownUntil: now + config.cooldownSeconds });
+      attemptId = await insertAndGetId("host_ip_switch_attempts", { hostId: host.id, serviceId: service.id, incidentId: state.incidentId, status: "pending", oldIp: isIP(expectedIp) ? expectedIp : freshHost.ipv4 || freshHost.ipv6 || null, addressSnapshot: JSON.stringify(ipSwitchAddressSnapshot(freshHost)), createdAt: now, cooldownUntil: now + config.cooldownSeconds });
       state.actionAttempted = true;
       delete state.actionBlockedReason; delete state.actionRetryAt;
       await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(state), row.id]);
@@ -147,7 +148,7 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
       if (blockedMessage) await deps.notify(service, host, blockedMessage, config);
       return;
     }
-    let status = "uncertain", newIp: string | null = null, message = "换 IP 请求结果未确认，已停止自动重试，请核对商家结果";
+    let status = "uncertain", message = "换 IP 请求结果未确认，等待 Agent 检测实际 IP 变化；不会自动重复请求";
     let reason: string = "request_failed", httpStatus: number | null = null;
     try {
       let hook: IpSwitchHook;
@@ -160,34 +161,24 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
         throw new Error("not_executed");
       }
       if (response.outcome === "uncertain") {
-        message = `换 IP 请求结果未确认：${ipSwitchReasonMessage(response.reason)}${httpStatus ? `（HTTP ${httpStatus}）` : ""}；已停止自动重试，请核对商家结果`;
-      }
-      newIp = await verifyIpSwitchResponse(hook, response, expectedIp);
-      status = response.outcome === "accepted" ? "accepted" : "succeeded";
-      message = response.outcome === "accepted" ? "商家接口已接收请求（HTTP 2xx），实际换 IP 结果以后续探测或商家状态为准" : "商家接口确认换 IP 请求成功，等待后续探测恢复";
-      if (newIp && hook.updateAddress !== "none") {
-        const current = await db.getHostById(host.id);
-        if (current && hostIngressAddress(current) === expectedIp) {
-          status = "sync_failed"; message = "商家接口已成功，但面板地址或关联链路同步失败，请检查配置";
-          await db.updateHost(host.id, { entryIp: newIp, ...(hook.updateAddress === "entry_and_tunnel" ? { tunnelEntryIp: newIp } : {}) });
-          await deps.refresh(host.id, current, "china-health-ip-switch");
-          status = "succeeded";
-          message = `商家接口确认换 IP 请求成功，已同步主机地址 ${newIp}，等待后续探测恢复`;
-        } else { status = "sync_skipped"; message = "商家接口确认成功，但主机地址已变更或主机已删除，未覆盖面板配置"; }
+        message = `换 IP 接口回执异常：${ipSwitchReasonMessage(response.reason)}${httpStatus ? `（HTTP ${httpStatus}）` : ""}；等待 Agent 检测实际 IP 变化，不会自动重复请求`;
+      } else {
+        status = "accepted";
+        message = "已收到换 IP 接口回执，等待 Agent 检测实际 IP 变化；接口返回成功不代表换 IP 已完成";
       }
     } catch (error) {
       if (error instanceof IpSwitchNotDispatchedError) {
         status = "not_executed"; reason = error.message === "invalid_request" ? "invalid_request" : "agent_unavailable";
         message = `换 IP 任务未下发给 Agent：${ipSwitchReasonMessage(reason)}；尚未调用商家接口，后续仍遵循商家请求间隔`;
-      } else if (status === "uncertain" && reason === "ok") {
-        reason = newIp || (error instanceof Error && error.message === "provider_invalid_new_ip") ? "invalid_ip" : "success_mismatch";
-        message = `换 IP 请求结果未确认：${ipSwitchReasonMessage(reason)}；已停止自动重试，请核对商家结果`;
       }
       // Neither exception messages nor response bodies are safe to log (URLs/headers may contain keys).
       // Even HTTP errors can follow a successful provider-side action: require operator verification.
     }
     const finishedAt = Math.max(now, Math.floor(Date.now() / 1000));
-    await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("status")} = ?, ${q("reason")} = ?, ${q("httpStatus")} = ?, ${q("newIp")} = ?, ${q("finishedAt")} = ?, ${q("cooldownUntil")} = ? WHERE ${q("id")} = ?`, [status, reason, httpStatus, newIp, finishedAt, finishedAt + config.cooldownSeconds, attemptId!]);
+    // An address report may arrive before the HTTP callback (or survive its loss).
+    // Preserve that observed result, including a pending/failed runtime refresh.
+    await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("status")} = ?, ${q("reason")} = ?, ${q("httpStatus")} = ?, ${q("finishedAt")} = ? WHERE ${q("id")} = ? AND ${q("newIp")} IS NULL`, [status, reason, httpStatus, finishedAt, attemptId!]);
+    await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("cooldownUntil")} = ? WHERE ${q("id")} = ?`, [finishedAt + config.cooldownSeconds, attemptId!]);
     if (status === "not_executed") {
       // A definite non-execution is safe to schedule again after the interval.
       // Give it a fresh durable task ID; ambiguous/accepted requests NEVER retry.
@@ -199,7 +190,10 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
         await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(next), row.id]);
       });
     }
-    await deps.notify(service, host, message, config);
+    const currentHost = status !== "not_executed" ? await db.getHostById(host.id) : null;
+    if (currentHost) await observeIpSwitchAddress(currentHost, { refresh: deps.refresh, notify: async (_attempt, changedHost, newIp) => deps.notify(service, changedHost, `Agent 已检测到主机 IP 变更为 ${newIp}，换 IP 成功；已刷新关联转发配置，实际连通性以后续探测为准`, config) });
+    const [result] = await queryRaw<any>(`SELECT ${q("newIp")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("id")} = ?`, [attemptId!]);
+    if (!result?.newIp) await deps.notify(service, host, message, config);
   });
 }
 
@@ -257,7 +251,9 @@ export async function validateIpSwitchClaim(hostId: number, serviceId: number, i
   const service = await db.getHostProbeServiceById(serviceId);
   const host = await db.getHostById(hostId);
   const [attempt] = await queryRaw<any>(`SELECT ${q("status")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("incidentId")} = ? AND ${q("hostId")} = ?`, [incidentId, hostId]);
-  return !!(host && hostIngressAddress(host) === expectedIp && config.enabled && config.autoSwitch && service?.isEnabled && service.hostScope === "specific" && service.hostIds.length === 1 && service.hostIds[0] === hostId && state?.incidentId === incidentId && state.phase === "unhealthy" && state.actionAttempted && attempt?.status === "pending");
+  const allowed = !!(host && hostIngressAddress(host) === expectedIp && config.enabled && config.autoSwitch && service?.isEnabled && service.hostScope === "specific" && service.hostIds.length === 1 && service.hostIds[0] === hostId && state?.incidentId === incidentId && state.phase === "unhealthy" && state.actionAttempted && attempt?.status === "pending");
+  if (allowed) await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("reason")} = 'claimed' WHERE ${q("incidentId")} = ? AND ${q("hostId")} = ? AND ${q("status")} = 'pending'`, [incidentId, hostId]);
+  return allowed;
 }
 export async function cleanProbeHealthHistory() {
   await executeRaw(`DELETE FROM ${q("host_ip_switch_attempts")} WHERE ${q("createdAt")} < ? AND (${q("status")} NOT IN ('pending','uncertain') OR ${q("acknowledged")} = ${boolLiteral(true)})`, [Math.floor(Date.now() / 1000) - 90 * 86400]);

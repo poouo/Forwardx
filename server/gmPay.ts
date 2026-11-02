@@ -4,6 +4,9 @@ export type GmPayNetwork = "tron" | "ethereum" | "bsc" | "polygon" | "solana" | 
 
 export const GM_PAY_NETWORKS = ["tron", "ethereum", "bsc", "polygon", "solana", "aptos", "plasma"] as const;
 
+export const GM_PAY_SIGNATURE_ALGORITHMS = ["md5", "hmac-sha256"] as const;
+export type GmPaySignatureAlgorithm = typeof GM_PAY_SIGNATURE_ALGORITHMS[number];
+
 type GmPaySignValue = string | number | null | undefined;
 
 export type GmPayCreateResponse = {
@@ -67,12 +70,25 @@ function gmPaySignValue(value: GmPaySignValue): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error("GM Pay 签名参数包含无效数字");
-    return String(value);
+    // Match Go's strconv.FormatFloat(value, 'f', -1, 64), including small
+    // crypto amounts which JavaScript would otherwise write as 1e-7.
+    const text = String(value);
+    if (!/[eE]/.test(text)) return text;
+    const [mantissa, exponent] = text.toLowerCase().split("e");
+    const negative = mantissa.startsWith("-");
+    const unsigned = negative ? mantissa.slice(1) : mantissa;
+    const point = (unsigned.indexOf(".") < 0 ? unsigned.length : unsigned.indexOf(".")) + Number(exponent);
+    const digits = unsigned.replace(".", "");
+    const decimal = point <= 0 ? `0.${"0".repeat(-point)}${digits}`
+      : point >= digits.length ? digits + "0".repeat(point - digits.length)
+      : `${digits.slice(0, point)}.${digits.slice(point)}`;
+    return negative ? `-${decimal}` : decimal;
   }
+  if (typeof value !== "string") throw new Error("GM Pay 签名参数类型无效");
   return value;
 }
 
-export function gmPaySign(params: Record<string, GmPaySignValue>, secretKey: string): string {
+export function gmPaySign(params: Record<string, GmPaySignValue>, secretKey: string, algorithm: GmPaySignatureAlgorithm = "md5"): string {
   const content = Object.keys(params)
     .filter((key) => key !== "signature")
     .sort()
@@ -80,14 +96,21 @@ export function gmPaySign(params: Record<string, GmPaySignValue>, secretKey: str
     .filter(([, value]) => value !== "")
     .map(([key, value]) => `${key}=${value}`)
     .join("&");
-  return crypto.createHash("md5").update(content + secretKey).digest("hex");
+  if (algorithm === "hmac-sha256") return crypto.createHmac("sha256", secretKey).update(content).digest("hex");
+  if (algorithm === "md5") return crypto.createHash("md5").update(content + secretKey).digest("hex");
+  throw new Error("GM Pay 签名方式无效");
 }
 
-export function verifyGmPaySignature(params: Record<string, GmPaySignValue>, secretKey: string): boolean {
+export function verifyGmPaySignature(params: Record<string, GmPaySignValue>, secretKey: string, algorithm: GmPaySignatureAlgorithm = "md5"): boolean {
   const provided = String(params.signature || "").trim().toLowerCase();
-  if (!/^[a-f0-9]{32}$/.test(provided) || !secretKey) return false;
-  const expected = gmPaySign(params, secretKey).toLowerCase();
-  return crypto.timingSafeEqual(Buffer.from(provided, "ascii"), Buffer.from(expected, "ascii"));
+  const signaturePattern = algorithm === "hmac-sha256" ? /^[a-f0-9]{64}$/ : /^[a-f0-9]{32}$/;
+  if (!signaturePattern.test(provided) || !secretKey) return false;
+  try {
+    const expected = gmPaySign(params, secretKey, algorithm);
+    return crypto.timingSafeEqual(Buffer.from(provided, "ascii"), Buffer.from(expected, "ascii"));
+  } catch {
+    return false;
+  }
 }
 
 async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 15_000) {
@@ -117,6 +140,7 @@ export async function createGmPayOrder(config: {
   pid: string;
   secretKey: string;
   network: GmPayNetwork;
+  signatureAlgorithm?: GmPaySignatureAlgorithm;
 }, order: {
   outTradeNo: string;
   subject: string;
@@ -137,7 +161,7 @@ export async function createGmPayOrder(config: {
     redirect_url: order.returnUrl,
     name: order.subject,
   };
-  params.signature = gmPaySign(params, config.secretKey);
+  params.signature = gmPaySign(params, config.secretKey, config.signatureAlgorithm);
   const response = await fetchWithTimeout(buildGmPayUrl(config.apiBase, "/payments/gmpay/v1/order/create-transaction"), {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8" },

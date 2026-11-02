@@ -1,9 +1,10 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import mysql, { type Pool, type PoolConnection, type PoolOptions } from "mysql2/promise";
-import pg from "pg";
-import Database from "better-sqlite3";
+import type { Pool, PoolConnection, PoolOptions } from "mysql2/promise";
+import type pg from "pg";
+import type Database from "better-sqlite3";
+import { loadMysqlDriver, loadPostgresqlDriver, loadSqliteDriver } from "./databaseDrivers";
 import { MIGRATION_TABLES, ensureDatabaseSchema, getDatabaseTableDefs, type ColumnDef } from "./dbSchema";
 import {
   type DatabaseConfig,
@@ -369,17 +370,20 @@ function postgresqlPoolOptions(config: DatabaseConfig & { type: "postgresql" }):
 
 async function openTarget(config: DatabaseConfig): Promise<TargetHandle> {
   if (config.type === "mysql") {
+    const mysql = await loadMysqlDriver();
     const pool = guardDatabasePool(mysql.createPool(mysqlPoolOptions(config)), "mysql", getDatabasePoolSettings);
     try { await pool.query("SELECT 1"); } catch (error) { await pool.end(); throw error; }
     return { kind: "mysql", pool };
   }
   if (config.type === "postgresql") {
+    const pg = await loadPostgresqlDriver();
     const pool = guardDatabasePool(new pg.Pool(postgresqlPoolOptions(config)), "postgresql", getDatabasePoolSettings);
     pool.on("error", () => {});
     try { await pool.query("SELECT 1"); } catch (error) { await pool.end(); throw error; }
     return { kind: "postgresql", pool };
   }
   const sqlitePath = normalizeSqlitePath(config);
+  const Database = await loadSqliteDriver();
   fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
   const sqlite = new Database(sqlitePath);
   sqlite.pragma("journal_mode = WAL");

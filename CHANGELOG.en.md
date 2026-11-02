@@ -2,7 +2,13 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.296] - 2026-11-03
+
+- Reduce routine panel memory use with on-demand dependencies and automatic cleanup of idle IP databases and expired caches.
+- Confirm automatic IP changes from observed addresses and sync linked forwarding configurations and DDNS.
+- Support Epusdt v2 payments while retaining legacy compatibility.
+- Add a remembered page-size selector to host management.
+- Versions: panel `2.3.296`, Android / iOS `2.4.14`, Agent `2.2.209`, ForwardX FXP runtime `2.2.122` (unchanged). Upgrading the Agent is recommended.
 
 ## [2.3.295] - 2026-11-01
 

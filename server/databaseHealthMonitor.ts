@@ -1,5 +1,4 @@
-import mysql from "mysql2/promise";
-import pg from "pg";
+import { loadMysqlDriver, loadPostgresqlDriver } from "./databaseDrivers";
 import { databaseHealth, describeDatabaseError, isDatabaseBusyError } from "./databaseHealthState";
 import { getSqlite, readDatabaseConfig, withSqliteExclusive, type DatabaseConfig } from "./dbRuntime";
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
@@ -24,12 +23,14 @@ export async function probeDatabase(config: DatabaseConfig, options: { timeoutMs
   // Separate, bounded diagnostic connections cannot queue behind business
   // queries or accumulate in the main pool during an outage.
   if (config.type === "postgresql") {
+    const pg = await loadPostgresqlDriver();
     const pool = guardDatabasePool(new pg.Pool({ ...config.postgresql, ssl: config.postgresql.ssl ? true : undefined, max: 1, connectionTimeoutMillis: timeout }), "postgresql", () => ({ maxOpen: 1, queueLimit: 1, connectTimeoutMillis: timeout }), { queryTimeoutMs: timeout });
     pool.on("error", () => {}); // Query errors are reported by the monitor.
     try { await pool.query("SELECT 1"); } finally { await pool.end(); }
     return;
   }
   if (config.type === "mysql") {
+    const mysql = await loadMysqlDriver();
     const pool = guardDatabasePool(mysql.createPool({ ...config.mysql, flags: MYSQL_COMPATIBILITY_FLAGS, ssl: config.mysql.ssl ? {} : undefined, connectTimeout: timeout, connectionLimit: 1, maxIdle: 1 }), "mysql", () => ({ maxOpen: 1, queueLimit: 1, connectTimeoutMillis: timeout }), { queryTimeoutMs: timeout });
     try { await pool.query("SELECT 1"); } finally { await pool.end(); }
     return;

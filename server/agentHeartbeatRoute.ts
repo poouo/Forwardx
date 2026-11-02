@@ -82,6 +82,7 @@ import {
   writeManagedServiceCmd,
 } from "./agentActionCommands";
 import { handleHostAddressChanged, hostIngressAddress, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
+import { observeIpSwitchAddress } from "./hostIpSwitchObservation";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { buildPluginHostAssetSyncActions } from "./repositories/pluginRepository";
@@ -1708,7 +1709,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         geoUpdatedAt: null,
       } : {}),
     } as any);
-    Object.assign(host as any, reportedAddress);
+    Object.assign(host as any, reportedAddress, { lastHeartbeat: new Date() });
     if (agentVersionChanged) {
       invalidateAgentDesiredStateCache(host.id, { preserveLocalRuntimeState: !!localRuntimeState.state });
       appendPanelLog(
@@ -1741,7 +1742,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     }
     if (addressChanged) {
-      await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
+      if (!await observeIpSwitchAddress(host)) await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
     } else if (["ipv4Addresses", "ipv6Addresses"].some(key => (reportedAddress as any)[key] !== (previousHost as any)[key])) {
       scheduleHostDdnsUpdate(host, "agent-address-inventory-changed");
     }

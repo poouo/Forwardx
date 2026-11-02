@@ -4,18 +4,18 @@
 
 | 组件 | 源码标识 |
 | --- | --- |
-| 面板 | 2.3.295 |
-| Android / iOS | 2.4.13 |
-| Agent | 2.2.208 |
+| 面板 | 2.3.296 |
+| Android / iOS | 2.4.14 |
+| Agent | 2.2.209 |
 | FXP 运行时 | 2.2.122 |
 
-`2.3.295` 于 2026-11-01 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
+`2.3.296` 于 2026-11-03 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
 
-本次增加按主机设置 Agent 面板连接地址，修复故障更换间歇卡顿与自动换 IP 异常，改善 Telegram 连接，并减少公告、版本检查的后台请求。升级前请先备份；见 [升级和备份](./upgrade-backup.md)、[Agent](./agent.md) 和 [数据库](./database.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+本次优化面板日常内存占用，完善自动换 IP 后的转发与 DDNS 同步，兼容 Epusdt v2 支付，并增加主机每页显示数量设置。升级前请先备份；见 [升级和备份](./upgrade-backup.md)、[Agent](./agent.md) 和 [数据库](./database.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 该表反映仓库中的版本字段，不证明对应 Release 已构建完成。安装或升级时，以实际 Release 附件和构建任务结果为准；各平台安装包可能先后完成。
 
-Agent 代理功能自 `2.2.197` 起提供；当前源码 Agent 为 `2.2.208`，FXP 为 `2.2.122`（本次未改动）。本次 Agent 支持面板连接地址变更后及时切换通信入口；故障更换修复还需通过 Agent 升级安装流程更新配套转发运行时 `3.2.6-forwardx.2`。运行中的旧进程需在维护窗口重启才会使用新文件。日志轮转、连接数上报、原生流量统计回退与 Agent 队列优化也需相应版本 Agent；GOST 统计回退还需同步更新面板并应用规则配置。同 Token 换机接管需配套升级 Agent / FXP，旧版 Agent 不具备停止同步的接管处理。V3 的入口与出口需同时升级，不兼容旧 V3，且暂未在面板开放。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。确认安装附件已生成后，按需 [备份并升级](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
+Agent 代理功能自 `2.2.197` 起提供；当前源码 Agent 为 `2.2.209`，FXP 为 `2.2.122`（本次未改动）。建议同步升级 Agent，以便换 IP 请求后更快检测并上报实际地址变化。本版沿用配套转发运行时 `3.2.6-forwardx.2`；旧版故障更换修复需通过 Agent 升级安装流程更新该运行时。运行中的旧进程需在维护窗口重启才会使用新文件。日志轮转、连接数上报、原生流量统计回退与 Agent 队列优化也需相应版本 Agent；GOST 统计回退还需同步更新面板并应用规则配置。同 Token 换机接管需配套升级 Agent / FXP，旧版 Agent 不具备停止同步的接管处理。V3 的入口与出口需同时升级，不兼容旧 V3，且暂未在面板开放。增量新增保护不等于升级过程中业务不断：更新二进制、首次启用控制接口或修改已有监听仍可能重启运行时。确认安装附件已生成后，按需 [备份并升级](./upgrade-backup.md)，升级后验证真实 TCP/UDP 业务。
 
 Android 和 iOS 使用相同的应用版本号；面板、Agent 和 FXP 分别维护自己的版本。安装包按平台识别更新，不会把 APK 当作 IPA。iOS 包仍需 [自行签名](./mobile-app.md)。
 

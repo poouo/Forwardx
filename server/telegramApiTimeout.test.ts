@@ -94,7 +94,7 @@ test("Telegram connections allow five seconds for IPv4 without changing global n
     connectionOptions = options;
     throw expected;
   });
-  const dispatcher = createTelegramApiDispatcher();
+  const dispatcher = await createTelegramApiDispatcher();
   t.after(() => dispatcher.destroy());
   const options: RequestInit & { dispatcher: typeof dispatcher } = { dispatcher };
   await assert.rejects(fetch("https://api.telegram.org", options), (error: any) => error.cause === expected);
@@ -133,7 +133,7 @@ async function testLoopback(t: TestContext, mode: "ipv4" | "fallback" | "ipv6-on
     mode === "ipv4" ? [{ address: "::1", family: 6 }, { address: "127.0.0.1", family: 4 }]
       : mode === "fallback" ? [{ address: "127.0.0.2", family: 4 }, { address: "::1", family: 6 }]
         : [{ address: "::1", family: 6 }]);
-  const dispatcher = createTelegramApiDispatcher(resolver);
+  const dispatcher = await createTelegramApiDispatcher(resolver);
   t.after(async () => {
     await dispatcher.destroy();
     server.closeAllConnections();

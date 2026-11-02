@@ -84,6 +84,63 @@ function scenario(code: string) {
   } finally { fs.rmSync(directory, {recursive:true,force:true}); }
 }
 
+for (const algorithm of ["md5", "hmac-sha256"] as const) test(`GM Pay ${algorithm} config, checkout and authenticated callbacks credit exactly once`, () => scenario(`const algorithm = ${JSON.stringify(algorithm)};` + String.raw`
+  const gm = {...base,enabled:true,maxPendingOrders:0,gmpay:{...base.gmpay,enabled:true,apiBase:"https://gm.example.test",pid:"1000",secretKey:"gm-secret-never-log",signatureAlgorithm:algorithm}};
+  const legacy = {...gm,gmpay:{...gm.gmpay}};
+  delete legacy.gmpay.signatureAlgorithm;
+  await db.setSetting("paymentConfig",JSON.stringify(legacy));
+  assert.equal((await admin.getConfig()).gmpay.signatureAlgorithm,"md5");
+  const saved = await admin.updateConfig(gm);
+  assert.equal(saved.gmpay.signatureAlgorithm,algorithm);
+  assert.equal(saved.gmpay.secretKey,"");
+  assert.equal(saved.gmpay.hasSecretKey,true);
+  // Older clients omitting the new field must not reset a saved v2 selection.
+  await admin.updateConfig({...legacy,gmpay:{...legacy.gmpay,secretKey:""}});
+  assert.equal((await admin.getConfig()).gmpay.signatureAlgorithm,algorithm);
+  assert.equal((await payment.getPaymentConfig()).gmpay.secretKey,gm.gmpay.secretKey);
+  await assert.rejects(admin.updateConfig({...gm,gmpay:{...gm.gmpay,signatureAlgorithm:"auto-downgrade"}}));
+  await assert.rejects(otherUser.updateConfig(gm));
+  const signature = (params, mode = algorithm, secret = gm.gmpay.secretKey) => {
+    const canonical = Object.keys(params).filter(k=>k!=="signature"&&params[k]!==""&&params[k]!=null).sort().map(k=>k+"="+params[k]).join("&");
+    return mode === "md5" ? crypto.createHash("md5").update(canonical+secret).digest("hex") : crypto.createHmac("sha256",secret).update(canonical).digest("hex");
+  };
+  let creates = 0;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url,"https://gm.example.test/payments/gmpay/v1/order/create-transaction");
+    const params = Object.fromEntries(options.body.entries());
+    assert.equal(params.signature,signature(params));
+    assert.equal(params.pid,"1000");
+    assert.equal(params.amount,"1.00");
+    assert.equal(params.notify_url,"https://panel.example.test/api/payment/webhook/gmpay");
+    creates++;
+    return new Response(JSON.stringify({status_code:200,data:{trade_id:"GM-"+params.order_id,order_id:params.order_id,amount:1,actual_amount:0.14,token:"USDT",payment_url:"/pay/checkout-counter/"+params.order_id}}));
+  };
+  const order = await admin.createOrder({amount:1,paymentType:"usdt"});
+  assert.equal(creates,1);
+  assert.equal(order.status,"pending");
+  assert.equal(order.payUrl,"https://gm.example.test/pay/checkout-counter/"+order.outTradeNo);
+  const payload = {pid:"1000",trade_id:order.tradeNo,order_id:order.outTradeNo,amount:1,actual_amount:0.14,receive_address:"TAddress",token:"USDT",block_transaction_id:"tx-id",status:2};
+  const post = fields => originalFetch(origin+"/api/payment/webhook/gmpay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(fields)});
+  const valid = {...payload,signature:signature(payload)};
+  assert.equal((await post({...valid,signature:signature(payload,algorithm === "md5" ? "hmac-sha256" : "md5")})).status,400);
+  assert.equal((await post({...valid,signature:signature(payload,algorithm,"wrong-key")})).status,400);
+  assert.equal((await post({...valid,amount:100})).status,400);
+  for (const fields of [{pid:"other"},{token:"BTC"},{amount:2},{trade_id:"wrong-trade"}]) {
+    const changed = {...payload,...fields};
+    assert.notEqual((await post({...changed,signature:signature(changed)})).status,200);
+  }
+  assert.equal(await balance(),0);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).status,"pending");
+  // Valid paid callbacks still settle after new payments are disabled.
+  await admin.updateConfig({...gm,enabled:false,gmpay:{...gm.gmpay,enabled:false}});
+  assert.equal((await post(valid)).status,200);
+  assert.equal((await post(valid)).status,200);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).status,"completed");
+  assert.equal(await balance(),100);
+  const {getPanelLogs} = await import(moduleUrl("server/_core/panelLogger.ts"));
+  assert.equal((await getPanelLogs()).some(log=>log.message.includes(gm.gmpay.secretKey)),false);
+`));
+
 test("EasyPay signs the complete API request and configuration validation rejects unusable WeChat modes", () => scenario(String.raw`
   const easy = {...base,enabled:true,maxPendingOrders:0,easypay:{...base.easypay,enabled:true,mode:"api",apiBase:"https://easy.example.test",pid:"pid-1",pkey:"secret"}};
   await admin.updateConfig(easy);
