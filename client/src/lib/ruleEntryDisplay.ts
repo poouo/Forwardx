@@ -47,34 +47,25 @@ export function getEntryAddressFamily(value: unknown): EntryAddressFamily {
   return "unknown";
 }
 
-export function filterRuleEntryAddressesForDisplay<T extends RuleEntryAddress>(entries: readonly T[]): T[] {
-  // Keep IPv6 in the copy model even when the UI collapses it by default.
-  return entries.filter((entry) => String(entry.value || "").trim());
-}
-
-export function partitionRuleEntryAddresses<T extends RuleEntryAddress>(entries: readonly T[]) {
-  const available = entries.slice();
-  const hasPreferred = available.some(entry => ["ipv4", "hostname"].includes(getEntryAddressFamily(entry.value)));
-  return {
-    visible: hasPreferred ? available.filter(entry => getEntryAddressFamily(entry.value) !== "ipv6") : available,
-    hidden: hasPreferred ? available.filter(entry => getEntryAddressFamily(entry.value) === "ipv6") : [],
-  };
-}
-
-/** Keep a group's preferred domain while also exposing its member IPv6 entries. */
-export function appendRuleEntryIpv6Addresses(entries: readonly RuleEntryAddress[], alternatives: readonly RuleEntryAddress[]): RuleEntryAddress[] {
+/** Add alternatives without changing the preferred address or exposing non-entry hosts. */
+export function appendRuleEntryIpv6Addresses<T extends RuleEntryAddress>(entries: readonly T[], candidates: readonly T[]): T[] {
   const rows = entries.slice();
-  for (const entry of alternatives) {
-    if (getEntryAddressFamily(entry.value) === "ipv6" && !rows.some(row => row.value === entry.value)) rows.push(entry);
+  const seen = new Set(rows.map((entry) => entry.value.trim()));
+  for (const entry of candidates) {
+    const value = entry.value.trim();
+    if (getEntryAddressFamily(value) !== "ipv6" || seen.has(value)) continue;
+    seen.add(value);
+    rows.push({ ...entry, value });
   }
   return rows;
 }
 
-export function formatRuleEntryAddress(address: string, port: number | string): string {
-  const value = String(address || "").trim();
-  if (!value) return "";
-  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
-    return `[${value}]:${port}`;
-  }
-  return `${value}:${port}`;
+export function filterRuleEntryAddressesForDisplay<T extends RuleEntryAddress>(entries: readonly T[], includeIpv6 = false): T[] {
+  if (includeIpv6) return entries.slice();
+  const hasIpv4OrHostname = entries.some((entry) => {
+    const family = getEntryAddressFamily(entry.value);
+    return family === "ipv4" || family === "hostname";
+  });
+  if (!hasIpv4OrHostname) return entries.slice();
+  return entries.filter((entry) => getEntryAddressFamily(entry.value) !== "ipv6");
 }

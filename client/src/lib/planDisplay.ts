@@ -22,6 +22,15 @@ export function planDescription(plan: { description?: unknown } | null | undefin
   return typeof plan?.description === "string" ? plan.description.trim() : "";
 }
 
+export function planPortCountText(portCount: unknown) {
+  return Number(portCount) === 0 ? translateText("不限") : translateText("{0} 个端口", [Number(portCount) || 0]);
+}
+
+export function subscriptionPortRangeText(subscription: { portCount?: unknown; portRangeStart?: unknown; portRangeEnd?: unknown }) {
+  if (Number(subscription.portCount) === 0) return translateText("不限");
+  return subscription.portRangeStart && subscription.portRangeEnd ? `${subscription.portRangeStart}-${subscription.portRangeEnd}` : "-";
+}
+
 export function planResourceParts(plan: PlanResourceSummary) {
   return [
     { label: translateText("历史主机"), count: plan.hostIds?.length || 0 },

@@ -8,8 +8,8 @@ import { RuleUsageSummary } from "@/components/rules/RuleUsageSummary";
 import { RuleGroupBar, RuleGroupMultiSelect, RuleGroupBulkEditor, RuleGroupBulkPagination, RuleGroupBulkApplyButton, useRuleGroupBulkEditor } from "@/components/rules/PersonalRuleGroups";
 import { RuleCardControls } from "@/components/rules/RuleCardControls";
 import { RulePersonalGroupBadges } from "@/components/rules/RulePersonalGroupBadges";
+import { RuleBatchHostSummary } from "@/components/rules/RuleBatchHostSummary";
 import { RuleCardMetadata } from "@/components/rules/RuleCardMetadata";
-import { RuleEntryAddresses } from "@/components/rules/RuleEntryAddresses";
 import ListSettings from "@/components/ListSettings";
 import ColumnResizeHandle from "@/components/ColumnResizeHandle";
 import { useRuleTableLayout } from "@/hooks/useRuleTableLayout";
@@ -104,13 +104,13 @@ import { parseCompatibleRuleTransferText, validateNyanpassImportTarget, type Com
 import {
   appendRuleEntryIpv6Addresses,
   filterRuleEntryAddressesForDisplay,
-  formatRuleEntryAddress as formatAddressWithPort,
   getEntryAddressFamily as addressFamily,
   resolveRuleEntryHost,
   type EntryAddressFamily,
 } from "@/lib/ruleEntryDisplay";
 import { cn } from "@/lib/utils";
 import { ruleBatchStages, ruleBatchCanAdvance, ruleBatchCategory, ruleBatchModes, ruleBatchModeAvailable, type RuleBatchManageMode } from "@/lib/ruleBatchFlow";
+import { getRuleBatchEntryHosts, matchesRuleBatchHost, ruleBatchHostLabel, ruleBatchHostOptions } from "@/lib/ruleBatchHosts";
 import {
   Plus,
   Trash2,
@@ -950,6 +950,14 @@ function getHostEntryAddress(host: any | null | undefined): string {
   return getHostEntryAddresses(host)[0]?.value || "";
 }
 
+function formatAddressWithPort(address: string, port: number | string): string {
+  const value = String(address || "").trim();
+  if (!value) return "";
+  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
+    return `[${value}]:${port}`;
+  }
+  return `${value}:${port}`;
+}
 
 function normalizeForwardGroupModeForRule(group: any | null | undefined) {
   const mode = String(group?.groupMode || "failover");
@@ -2185,6 +2193,11 @@ function RulesContent() {
   const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
   const [copyRuleSearch, setCopyRuleSearch] = useState("");
   const [copyRuleCategory, setCopyRuleCategory] = useState<RuleCategory>("all");
+  const [copyRuleHostId, setCopyRuleHostId] = useState("all");
+  useEffect(() => {
+    setCopyRuleHostId("all");
+    setCopyRuleIds([]);
+  }, [filterUser, user?.id]);
   const [copyRulePersonalGroupId, setCopyRulePersonalGroupId] = useState<number | null>(null);
   useEffect(() => {
     if (!copyRulePersonalGroupId || !personalGroupsQuery.data) return;
@@ -2653,6 +2666,7 @@ function RulesContent() {
     setCopyManageMode(transferSourceRules.length ? "operate" : "import");
     setBatchEditForm(buildEmptyBatchEditForm());
     setCopyRuleCategory(ruleCategory);
+    setCopyRuleHostId("all");
     setCopyRulePersonalGroupId(isOwnRuleScope ? activePersonalGroupId : null);
     setCopyRuleSearch(ruleSearchQuery);
     const preferredCopyTargetScope: RuleTransferScopeType = canUseSavedLocalForward
@@ -3747,6 +3761,12 @@ function RulesContent() {
     ? (fullRulesQuery.data as any[] | undefined) || []
     : baseScopedRules;
   const transferSourceRules = useMemo(() => transferSourceRuleCandidates.filter((rule: any) => user?.role === "admin" || !isAdminManagedRule(rule)), [transferSourceRuleCandidates, user?.role]);
+  const copyRuleEntryHosts = useMemo(() => new Map<number, ReturnType<typeof getRuleBatchEntryHosts>>(
+    transferSourceRules
+      .filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId && isRuleSupported(rule))
+      .map((rule: any) => [Number(rule.id), getRuleBatchEntryHosts(rule, { hostById, tunnelById, forwardGroupById })]),
+  ), [transferSourceRules, isRuleSupported, hostById, tunnelById, forwardGroupById]);
+  const copyRuleHostOptions = useMemo(() => ruleBatchHostOptions(copyRuleEntryHosts), [copyRuleEntryHosts]);
   const copyableSourceRules = useMemo(() => {
     const batchFilters: RuleFilterState = {
       ...ruleFilters,
@@ -3757,13 +3777,15 @@ function RulesContent() {
     return transferSourceRules
       .filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId && isRuleSupported(rule))
       .filter((rule: any) => matchesPersonalRuleGroup(rule.personalGroupIds, isOwnRuleScope ? copyRulePersonalGroupId : null))
+      .filter((rule: any) => matchesRuleBatchHost(copyRuleEntryHosts.get(Number(rule.id)) || [], copyRuleHostId))
       .filter((rule: any) => isForwardRuleVisibleByFilters(rule, batchFilters));
-  }, [copyRuleCategory, copyRulePersonalGroupId, isOwnRuleScope, copyRuleSearch, isRuleSupported, ruleFilters, transferSourceRules]);
+  }, [copyRuleCategory, copyRulePersonalGroupId, isOwnRuleScope, copyRuleSearch, isRuleSupported, ruleFilters, transferSourceRules, copyRuleEntryHosts, copyRuleHostId]);
   const copySelectedRules = useMemo(() => {
     const selected = new Set(copyRuleIds.map(Number));
     return transferSourceRules.filter((rule: any) => selected.has(Number(rule.id)) && !rule.forwardGroupRuleId && !rule.forwardGroupMemberId
+      && matchesRuleBatchHost(copyRuleEntryHosts.get(Number(rule.id)) || [], copyRuleHostId)
       && matchesPersonalRuleGroup(rule.personalGroupIds, isOwnRuleScope ? copyRulePersonalGroupId : null));
-  }, [copyRuleIds, copyRulePersonalGroupId, isOwnRuleScope, transferSourceRules]);
+  }, [copyRuleIds, copyRulePersonalGroupId, isOwnRuleScope, transferSourceRules, copyRuleEntryHosts, copyRuleHostId]);
   const copyTargetResources = useMemo(() => {
     if (copyTargetScopeType === "local") return availablePortForwardGroups;
     if (copyTargetScopeType === "tunnel") return supportedTunnels;
@@ -3852,6 +3874,18 @@ function RulesContent() {
         </div>
       </div>
       <div className="grid gap-2">
+        <Select value={copyRuleHostId} disabled={copyActionPending} onValueChange={(value) => {
+          setCopyRuleHostId(value);
+          setCopyRuleIds([]);
+        }}>
+          <SelectTrigger className="h-9 min-w-0 text-xs" aria-label={translateText("入口主机")}><SelectValue /></SelectTrigger>
+          <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
+            <SelectItem value="all">{translateText("所有主机")}</SelectItem>
+            {copyRuleHostOptions.map((host) => <SelectItem key={host.id} value={String(host.id)} className="[&>span:last-child]:min-w-0 [&>span:last-child]:flex-1">
+              <span className="block truncate" title={ruleBatchHostLabel(host)}>{ruleBatchHostLabel(host)}</span>
+            </SelectItem>)}
+          </SelectContent>
+        </Select>
         <div className={cn("grid min-w-0 gap-2", isOwnRuleScope && "grid-cols-2")}>
           <Select value={copyRuleCategory} onValueChange={(value) => setCopyRuleCategory(value as RuleCategory)} disabled={copyActionPending}>
             <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
@@ -3943,6 +3977,7 @@ function RulesContent() {
                   <span className="min-w-0 truncate text-sm font-medium">{rule.name}</span>
                   <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{desktopRuleTypeLabels[category]}</Badge>
                 </span>
+                <RuleBatchHostSummary hosts={copyRuleEntryHosts.get(Number(rule.id)) || []} />
                 <span className="mt-1 block truncate text-xs text-muted-foreground">
                   :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)} / {formatForwardRuleProtocol(rule.protocol)}
                 </span>
@@ -5521,9 +5556,9 @@ function RulesContent() {
     return getRuleEntries(rule)[0]?.value || getHostEntryAddress(getRuleEntryHost(rule));
   };
 
-  const getRuleEntries = (rule: any): EntryAddress[] => {
+  const getRuleEntries = (rule: any, includeIpv6 = false): EntryAddress[] => {
     const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
-    const tunnelEntries = getTunnelEntryAddresses(tunnel);
+    const tunnelEntries = getTunnelEntryAddresses(tunnel, includeIpv6);
     if (tunnelEntries.length > 0) return tunnelEntries;
     return getHostEntryAddresses(getRuleEntryHost(rule));
   };
@@ -5539,7 +5574,7 @@ function RulesContent() {
         : null);
   };
 
-  const getTunnelEntryAddresses = (tunnel: any | null | undefined): EntryAddress[] => {
+  const getTunnelEntryAddresses = (tunnel: any | null | undefined, includeIpv6 = false): EntryAddress[] => {
     if (!tunnel) return [];
     const rows: EntryAddress[] = [];
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0
@@ -5549,10 +5584,15 @@ function RulesContent() {
     const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
       ? enabledHostMembers(entryGroup)
       : [];
+    const entryHostId = Number(tunnel?.entryHostId || getTunnelHopIds(tunnel)[0] || 0);
+    const ipv6Alternatives = () => (entryMembers.length > 0
+      ? entryMembers.flatMap((member: any) => getHostEntryAddresses(
+        getTunnelEntryHostForDisplay(tunnel, Number(member.hostId || 0)) || member.host,
+      ))
+      : getHostEntryAddresses(getTunnelEntryHostForDisplay(tunnel, entryHostId)));
     if (entryGroupDomain) {
       pushUniqueEntryAddress(rows, "入口组", entryGroupDomain);
-      return appendRuleEntryIpv6Addresses(rows, entryMembers.flatMap((member: any) =>
-        getHostEntryAddresses(getTunnelEntryHostForDisplay(tunnel, Number(member.hostId || 0)))));
+      return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
     }
     if (entryMembers.length > 0) {
       const memberEntries = entryMembers.flatMap((member: any) => {
@@ -5563,15 +5603,14 @@ function RulesContent() {
         || memberEntries.find((entry) => addressFamily(entry.value) === "hostname");
       if (memberDomain) {
         pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
-        return appendRuleEntryIpv6Addresses(rows, memberEntries);
+        return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
       }
       const firstEntryHost = getTunnelEntryHostForDisplay(tunnel, Number(entryMembers[0]?.hostId || 0));
       for (const entry of getHostEntryAddresses(firstEntryHost)) {
         pushUniqueEntryAddress(rows, entry.label, entry.value);
       }
-      return rows;
+      return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
     }
-    const entryHostId = Number(tunnel?.entryHostId || getTunnelHopIds(tunnel)[0] || 0);
     for (const entry of getHostEntryAddresses(getTunnelEntryHostForDisplay(tunnel, entryHostId))) {
       pushUniqueEntryAddress(rows, entry.label, entry.value);
     }
@@ -5596,10 +5635,10 @@ function RulesContent() {
     return member?.host || null;
   };
 
-  const pushMemberEntryAddresses = (rows: EntryAddress[], member: any | null | undefined) => {
+  const pushMemberEntryAddresses = (rows: EntryAddress[], member: any | null | undefined, includeIpv6 = false) => {
     const tunnelId = Number(member?.tunnelId || 0);
     if (tunnelId > 0) {
-      const tunnelRows = getTunnelEntryAddresses(tunnelById.get(tunnelId));
+      const tunnelRows = getTunnelEntryAddresses(tunnelById.get(tunnelId), includeIpv6);
       for (const entry of tunnelRows) {
         pushUniqueEntryAddress(rows, entry.label, entry.value);
       }
@@ -5612,13 +5651,14 @@ function RulesContent() {
     pushUniqueEntryAddress(rows, "入口", member?.entryAddress);
   };
 
-  const getForwardGroupEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
+  const getForwardGroupEntryAddresses = (group: any | null | undefined, includeIpv6 = false): EntryAddress[] => {
     if (!group) return [];
     const rows: EntryAddress[] = [];
     const parallel = normalizeForwardGroupModeForRule(group) === "port" && Number(group.entryGroupId || 0) > 0;
     const domain = String(group?.domain || (parallel ? entryDomainForForwardGroup(group) : "")).trim();
     if (domain) {
       pushUniqueEntryAddress(rows, getForwardGroupRouteLabel(group), domain);
+      if (!parallel && !includeIpv6) return rows;
     }
     const activeMemberId = Number(group?.activeMemberId || 0);
     const members = [...(group?.members || [])]
@@ -5631,18 +5671,19 @@ function RulesContent() {
         return Number(a.priority || 0) - Number(b.priority || 0);
       });
     for (const member of members) {
+      const memberRows: EntryAddress[] = [];
+      pushMemberEntryAddresses(memberRows, member, includeIpv6);
       if (domain && !parallel) {
-        const memberEntries: EntryAddress[] = [];
-        pushMemberEntryAddresses(memberEntries, member);
-        return appendRuleEntryIpv6Addresses(rows, memberEntries);
+        if (memberRows.length > 0) return appendRuleEntryIpv6Addresses(rows, memberRows);
+      } else {
+        for (const entry of memberRows) pushUniqueEntryAddress(rows, entry.label, entry.value);
+        if (rows.length > 0 && !parallel) return rows;
       }
-      pushMemberEntryAddresses(rows, member);
-      if (rows.length > 0 && !parallel) return rows;
     }
     return rows;
   };
 
-  const getForwardChainEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
+  const getForwardChainEntryAddresses = (group: any | null | undefined, includeIpv6 = false): EntryAddress[] => {
     if (!group) return [];
     const rows: EntryAddress[] = [];
     const entryGroup = isForwardChainGroup(group) && group.entryGroupId
@@ -5652,13 +5693,16 @@ function RulesContent() {
     const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
       ? enabledHostMembers(entryGroup)
       : [];
+    const ipv6Alternatives = () => {
+      const candidates: EntryAddress[] = [];
+      for (const member of entryMembers.length > 0 ? entryMembers : (group.members || []).slice(0, 1)) {
+        pushMemberEntryAddresses(candidates, member, true);
+      }
+      return candidates;
+    };
     if (domain) {
       pushUniqueEntryAddress(rows, "入口组", domain);
-      const alternatives: EntryAddress[] = [];
-      for (const member of entryMembers.length ? entryMembers : (group.members || []).slice(0, 1)) {
-        pushMemberEntryAddresses(alternatives, member);
-      }
-      return appendRuleEntryIpv6Addresses(rows, alternatives);
+      return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
     }
     if (entryMembers.length > 0) {
       const memberDomain = entryMembers
@@ -5666,14 +5710,14 @@ function RulesContent() {
         .find(Boolean);
       if (memberDomain) {
         pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
-        return appendRuleEntryIpv6Addresses(rows, entryMembers.flatMap((member: any) => getHostEntryAddresses(getMemberEntryHost(member))));
+        return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
       }
       const firstEntryMember = entryMembers[0];
-      pushMemberEntryAddresses(rows, firstEntryMember);
-      return rows;
+      pushMemberEntryAddresses(rows, firstEntryMember, includeIpv6);
+      return includeIpv6 ? appendRuleEntryIpv6Addresses(rows, ipv6Alternatives()) : rows;
     }
     const entryMember = (group.members || [])[0];
-    pushMemberEntryAddresses(rows, entryMember);
+    pushMemberEntryAddresses(rows, entryMember, includeIpv6);
     return rows;
   };
 
@@ -5754,20 +5798,20 @@ function RulesContent() {
     return renderResolvedStatusDot(visual);
   };
 
-  const getRuleTransferDisplay = (rule: any) => {
+  const getRuleTransferDisplay = (rule: any, includeIpv6 = false) => {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const groupRouteLabel = getForwardGroupRouteLabel(group);
     const groupEntry = isForwardChainGroup(group)
       ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || "")
       : (group?.domain || group?.members?.[0]?.entryAddress || "");
-    const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group) : [];
-    const groupEntryItems = rule.forwardGroupId && !isForwardChainGroup(group) ? getForwardGroupEntryAddresses(group) : [];
+    const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group, includeIpv6) : [];
+    const groupEntryItems = rule.forwardGroupId && !isForwardChainGroup(group) ? getForwardGroupEntryAddresses(group, includeIpv6) : [];
     const entryItems = rule.forwardGroupId
       ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: translateText("转发链"), value: groupEntry }]) : (groupEntryItems.length > 0 ? groupEntryItems : [{ label: groupRouteLabel, value: groupEntry }]))
-      : (getRuleEntries(rule).length > 0
-        ? getRuleEntries(rule)
+      : (getRuleEntries(rule, includeIpv6).length > 0
+        ? getRuleEntries(rule, includeIpv6)
         : [{ label: translateText("入口"), value: "" }]);
-    const resolvedEntryAddresses = filterRuleEntryAddressesForDisplay(entryItems)
+    const resolvedEntryAddresses = filterRuleEntryAddressesForDisplay(entryItems, includeIpv6)
       .filter((entry) => String(entry.value || "").trim())
       .map((entry) => ({
         ...entry,
@@ -5779,11 +5823,15 @@ function RulesContent() {
       : [{ label: translateText("入口"), value: "", text: translateText("入口地址暂不可用"), copyable: false }];
     const entryAddress = resolvedEntryAddresses.map((entry) => entry.text).join(" / ");
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
+    const entryTitle = rule.forwardGroupId
+      ? translateText("复制{0}入口: {1}", [groupRouteLabel, entryAddress])
+      : translateText("复制入口地址: {0}", [entryAddress]);
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     return {
       entryAddresses,
       entryAddress,
       targetAddress,
+      entryTitle,
       failoverCount,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
@@ -5797,26 +5845,52 @@ function RulesContent() {
       failoverCount,
       failoverEnabled,
       failoverStrategy,
-    } = getRuleTransferDisplay(rule);
+    } = getRuleTransferDisplay(rule, effectiveRuleCardSize === "standard");
     const failoverBadge = failoverEnabled ? (
       <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
         {failoverStrategyLabels[failoverStrategy]} {failoverCount}
       </Badge>
     ) : null;
 
-    const panelClass = compact
+    const inlineEndpoints = effectiveRuleCardSize === "compact";
+    const panelClass = inlineEndpoints
+      ? "pearl-readout flex min-w-0 items-start gap-1.5 rounded-xl border border-border/50 px-2 py-1"
+      : compact
       ? "pearl-readout rounded-xl border border-border/50 px-2 py-1.5"
       : "pearl-readout rounded-xl border border-border/50 px-2.5 py-2";
-    const labelClass = "mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground";
-    const valueClass = compact
+    const labelClass = inlineEndpoints
+      ? "shrink-0 whitespace-nowrap py-0.5 text-[10px] font-medium leading-4 text-muted-foreground"
+      : "mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground";
+    const valueClass = inlineEndpoints
+      ? "min-w-0 flex-1 truncate text-[11px] leading-4"
+      : compact
       ? "min-w-0 break-all text-[11px] leading-4"
       : "min-w-0 break-all text-xs leading-5";
 
     return (
-      <div className="pearl-transfer min-w-0 space-y-1.5 font-mono text-xs">
+      <div className={cn("pearl-transfer min-w-0 font-mono text-xs", inlineEndpoints ? "space-y-1.5" : "rule-standard-transfer-sections")}>
         <div className={panelClass}>
           <div className={labelClass}>{translateText("入口")}</div>
-          <RuleEntryAddresses entries={entryAddresses} compact={compact} onCopy={value => copyEntryAddress(rule, value)} />
+          <div className={cn("flex min-w-0 flex-col gap-1", inlineEndpoints && "flex-1")}>
+            {entryAddresses.map((entry) => (
+              <button
+                key={`${entry.label}:${entry.value}`}
+                type="button"
+                onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
+                disabled={!entry.copyable}
+                className={cn("group flex max-w-full min-w-0 items-start gap-1.5 rounded px-1.5 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground", inlineEndpoints ? "py-0.5" : "bg-muted/35 py-1")}
+                title={entry.copyable ? translateText("复制入口地址: {0}", [entry.text]) : entry.text}
+              >
+                {!inlineEndpoints && entry.copyable && (
+                  <span className="w-[4ch] shrink-0 text-[10px] leading-4 text-muted-foreground">
+                    {addressFamily(entry.value) === "ipv6" ? "IPv6" : "IPv4"}
+                  </span>
+                )}
+                <code className={cn(valueClass, "flex-1 text-left")} title={inlineEndpoints ? entry.text : undefined}>{entry.text}</code>
+                {entry.copyable && <Copy className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex justify-center">
           <span aria-hidden="true" className="pearl-transfer-connector inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/50 bg-card text-primary shadow-sm">
@@ -5825,8 +5899,8 @@ function RulesContent() {
         </div>
         <div className={panelClass}>
           <div className={labelClass}>{translateText("出口")}</div>
-          <div className="flex min-w-0 items-start gap-1.5">
-            <code className={`${valueClass} flex-1 rounded bg-muted/35 px-1.5 py-1`} title={targetAddress}>
+          <div className={cn("flex min-w-0 items-start gap-1.5", inlineEndpoints && "flex-1")}>
+            <code className={cn(valueClass, "flex-1 rounded px-1.5", inlineEndpoints ? "py-0.5" : "bg-muted/35 py-1")} title={targetAddress}>
               {targetAddress}
             </code>
             {failoverBadge}
@@ -5837,8 +5911,25 @@ function RulesContent() {
   };
 
   const renderTableTransferEntry = (rule: any) => {
-    const { entryAddresses } = getRuleTransferDisplay(rule);
-    return <RuleEntryAddresses entries={entryAddresses} table onCopy={value => copyEntryAddress(rule, value)} />;
+    const { entryAddresses, entryTitle } = getRuleTransferDisplay(rule);
+    return (
+      <div className="flex min-w-0 items-center gap-1 overflow-hidden font-mono text-[11px] leading-5">
+        {entryAddresses.map((entry) => (
+          <button
+            key={`${entry.label}:${entry.value}`}
+            type="button"
+            onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
+            disabled={!entry.copyable}
+            className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
+            title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
+          >
+            {entryAddresses.length > 1 && <span className="shrink-0 text-[10px] text-muted-foreground">{entry.label}</span>}
+            <code className="min-w-0 truncate">{entry.text}</code>
+            {entry.copyable && <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
+          </button>
+        ))}
+      </div>
+    );
   };
 
   const renderTableTransferExit = (rule: any) => {
@@ -6432,14 +6523,14 @@ function RulesContent() {
         interactive={supported && !sortable?.isDragging}
         {...(sortable?.itemProps || {})}
         className={cn(
-          "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
+          "group/sortable relative action-card rule-standard-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
           !supported && "opacity-70",
           sortable?.isDragging && "opacity-55 ring-1 ring-primary/35",
           sortable?.isDropTarget && "ring-1 ring-primary/45",
         )}
         title={!supported ? unsupportedProtocolTitle : undefined}
       >
-        <CardContent className="action-card-content space-y-3 p-4">
+        <CardContent className="action-card-content rule-standard-card-content p-4">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-start gap-2">
               <div className="mt-2 flex h-4 w-4 flex-shrink-0 items-center justify-center">
@@ -6476,7 +6567,7 @@ function RulesContent() {
             </RuleCardControls>
           </div>
 
-          <div className="min-w-0">
+          <div className="rule-standard-card-transfer min-w-0">
             {renderTransfer(rule, true)}
           </div>
           {renderRuleCardMetadata(rule)}

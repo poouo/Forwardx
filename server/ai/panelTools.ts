@@ -50,7 +50,7 @@ const groupFields = {
 const planFields = {
   name: name.optional(), description: z.string().max(500).nullable().optional(), priceCents: z.number().int().min(0).max(100_000_000).optional().describe("cents; 100=1 CNY"),
   durationDays: z.union([z.literal(30), z.literal(90), z.literal(180), z.literal(365), z.literal(730)]).optional(),
-  portCount: z.number().int().min(1).max(1024).optional(), trafficLimit: count.optional().describe("bytes; 0=unlimited"),
+  portCount: z.number().int().min(0).max(65535).optional().describe("0=unlimited; positive values reserve consecutive ports"), trafficLimit: count.optional().describe("bytes; 0=unlimited"),
   rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(), maxRules: count.optional(), maxConnections: count.optional(), maxIPs: count.optional(),
   isActive: z.boolean().optional(), isStoreVisible: z.boolean().optional(), hostIds: ids.optional(), tunnelIds: ids.optional(), forwardGroupIds: ids.optional(),
 };

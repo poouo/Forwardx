@@ -4,6 +4,8 @@ import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
+import { subscriptionPortRangeText } from "@/lib/planDisplay";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -324,7 +326,7 @@ export default function Subscriptions() {
                   <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
                     <div className="rounded-md border border-border/50 p-3">
                       <div className="text-xs">{translateText("端口段")}</div>
-                      <div className="mt-1 font-medium text-foreground">{sub.portRangeStart && sub.portRangeEnd ? `${sub.portRangeStart}-${sub.portRangeEnd}` : "---"}</div>
+                      <div className="mt-1 font-medium text-foreground">{subscriptionPortRangeText(sub)}</div>
                     </div>
                     <div className="rounded-md border border-border/50 p-3">
                       <div className="text-xs">{translateText("可用资源")}</div>
@@ -332,7 +334,7 @@ export default function Subscriptions() {
                     </div>
                     <div className="rounded-md border border-border/50 p-3">
                       <div className="text-xs">{translateText("套餐额度")}</div>
-                      <div className="mt-1 font-medium text-foreground">{bytes(sub.trafficLimit)}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 font-medium text-foreground">{bytes(sub.trafficLimit)}<PlanTrafficModeBadge mode={sub.trafficMode} /></div>
                     </div>
                     {purchasedAddonBytes > 0 && (
                       <div className="rounded-md border border-border/50 p-3">

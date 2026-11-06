@@ -158,6 +158,28 @@ test("card quotas use an accessible popover icon without inline details or extra
   assert.doesNotMatch(cards, /<RuleUsageSummary[^>]*get\(rule.id\)\} \/>/);
 });
 
+test("compact rule cards keep addresses on one line with complete hover text and unchanged copying", () => {
+  const source = readFileSync("client/src/pages/Rules.tsx", "utf8");
+  const transfer = source.slice(source.indexOf("const renderTransfer ="), source.indexOf("const renderTableTransferEntry ="));
+  assert.match(transfer, /const inlineEndpoints = effectiveRuleCardSize === "compact"/);
+  assert.match(transfer, /const panelClass = inlineEndpoints\s*\? "pearl-readout flex min-w-0 items-start/);
+  assert.match(transfer, /const labelClass = inlineEndpoints\s*\? "shrink-0 whitespace-nowrap/);
+  assert.match(transfer, /: "mb-1 flex items-center gap-1/);
+  assert.match(transfer, /const valueClass = inlineEndpoints\s*\? "min-w-0 flex-1 truncate text-\[11px\]/);
+  assert.match(transfer, /min-w-0 break-all text-\[11px\]/);
+  assert.match(transfer, /min-w-0 break-all text-xs/);
+  assert.equal((transfer.match(/<div className=\{panelClass\}>/g) || []).length, 2);
+  for (const label of ["入口", "出口"]) {
+    assert.ok(transfer.includes(`<div className={labelClass}>{translateText("${label}")}</div>`));
+  }
+  assert.doesNotMatch(transfer, /line-clamp|RuleEntryAddresses/);
+  assert.match(transfer, /title=\{inlineEndpoints \? entry.text : undefined\}/);
+  assert.match(transfer, /onClick=\{\(\) => entry\.copyable && copyEntryAddress\(rule, entry\.value\)\}/);
+  assert.match(transfer, /disabled=\{!entry\.copyable\}/);
+  assert.match(transfer, /title=\{targetAddress\}/);
+  assert.match(transfer, /inlineEndpoints \? "py-0\.5" : "bg-muted\/35 py-1"/);
+});
+
 test("table headers, cells and grouped row spans share the same configured column list", () => {
   const source = readFileSync("client/src/pages/Rules.tsx", "utf8");
   assert.match(source, /tableLayout\.columns\.map\(column => <TableCell/);

@@ -3,6 +3,7 @@ import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
 import BillingExportButton from "@/components/BillingExportButton";
+import { subscriptionPortRangeText } from "@/lib/planDisplay";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -827,7 +828,7 @@ export default function Billing() {
                         <Badge variant="outline" className="shrink-0">{sub.source === "payment" ? translateText("购买") : translateText("后台分配")}</Badge>
                       </div>
                       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                        <MobileInfoRow label={translateText("端口段")}>{sub.portRangeStart}-{sub.portRangeEnd}</MobileInfoRow>
+                        <MobileInfoRow label={translateText("端口段")}>{subscriptionPortRangeText(sub)}</MobileInfoRow>
                         <MobileInfoRow label={translateText("到期时间")}>{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString(getFormatLocale()) : translateText("永久")}</MobileInfoRow>
                       </div>
                     </div>
@@ -852,7 +853,7 @@ export default function Billing() {
                         <TableRow key={sub.id}>
                           <TableCell>{sub.name || sub.username || translateText("用户 #{0}", [sub.userId])}</TableCell>
                           <TableCell>{sub.planName || translateText("套餐 #{0}", [sub.planId])}</TableCell>
-                          <TableCell>{sub.portRangeStart}-{sub.portRangeEnd}</TableCell>
+                          <TableCell>{subscriptionPortRangeText(sub)}</TableCell>
                           <TableCell><Badge variant="outline">{sub.source === "payment" ? translateText("购买") : translateText("后台分配")}</Badge></TableCell>
                           <TableCell>{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString(getFormatLocale()) : translateText("永久")}</TableCell>
                         </TableRow>

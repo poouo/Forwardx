@@ -113,5 +113,9 @@ test("globe chrome follows light, dark and custom themes without covering the ca
   assert.match(css, /background: var\(--popover\); color: var\(--popover-foreground\)/);
   assert.match(css, /max-width: min\(330px, 80vw, var\(--globe-tooltip-max-width, 330px\)\)/);
   assert.match(css, /\.globe-list-row:focus-visible/);
-  assert.match(readFileSync("client/src/pages/Settings.tsx", "utf8"), /pearl-hover-card group flex min-h-32/);
+  assert.match(readFileSync("client/src/pages/Settings.tsx", "utf8"), /<ThemeManagementCard\s*\/>/);
+  const themeSettings = readFileSync("client/src/components/ThemeManagementCard.tsx", "utf8");
+  assert.match(themeSettings, /<ThemePreviewFrame\s/);
+  assert.match(themeSettings, /dark=\{darkPreview\}/);
+  assert.match(themeSettings, /definition=\{preview.builtin \? undefined : previewQuery.data\}/);
 });
