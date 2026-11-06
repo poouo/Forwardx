@@ -55,8 +55,9 @@ test("English network result states and built-in appearance options contain no C
 
 test("Appearance settings translate built-in names without rewriting uploaded filenames", () => {
   const source = readFileSync("client/src/pages/Settings.tsx", "utf8");
-  assert.match(source, /translateText\(preset\.name\)/);
-  assert.match(source, /translateText\(preset\.description\)/);
+  const themes = readFileSync("client/src/components/ThemeManagementCard.tsx", "utf8");
+  assert.match(themes, /theme\.builtin \? t\(theme\.name\) : theme\.name/);
+  assert.match(themes, /theme\.builtin \? t\(theme\.description\) : theme\.description/);
   assert.match(source, /alt=\{translateText\(item\.name\)\}/);
   assert.match(source, /font-medium">\{translateText\(item\.name\)\}/);
   assert.match(source, /title=\{item\.name\}>\{item\.name\}/);

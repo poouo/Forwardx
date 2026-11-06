@@ -14,6 +14,7 @@ ForwardX 通过 Agent 管理 Linux 主机上的转发资源、业务规则、用
 | --- | --- |
 | 全新安装 | [快速开始](./quick-start.md) → [首次初始化](./first-setup.md) |
 | 找不到操作或界面变了 | [界面与常用操作](./interface.md) |
+| 切换主题、上传主题或开发后台外观 | [主题管理、开发与接口](./themes.md) |
 | 规则不通、流量不更新、探测异常 | [故障排查](./troubleshooting.md)、[流量和延迟](./traffic-latency.md) |
 | 设置单规则额度或用户权限 | [转发规则](./rules.md)、[用户与套餐](./users-billing.md) |
 | 升级、备份或迁移 | [升级备份](./upgrade-backup.md)、[迁移](./migration.md) |

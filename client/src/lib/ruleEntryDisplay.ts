@@ -48,10 +48,33 @@ export function getEntryAddressFamily(value: unknown): EntryAddressFamily {
 }
 
 export function filterRuleEntryAddressesForDisplay<T extends RuleEntryAddress>(entries: readonly T[]): T[] {
-  const hasIpv4OrHostname = entries.some((entry) => {
-    const family = getEntryAddressFamily(entry.value);
-    return family === "ipv4" || family === "hostname";
-  });
-  if (!hasIpv4OrHostname) return entries.slice();
-  return entries.filter((entry) => getEntryAddressFamily(entry.value) !== "ipv6");
+  // Keep IPv6 in the copy model even when the UI collapses it by default.
+  return entries.filter((entry) => String(entry.value || "").trim());
+}
+
+export function partitionRuleEntryAddresses<T extends RuleEntryAddress>(entries: readonly T[]) {
+  const available = entries.slice();
+  const hasPreferred = available.some(entry => ["ipv4", "hostname"].includes(getEntryAddressFamily(entry.value)));
+  return {
+    visible: hasPreferred ? available.filter(entry => getEntryAddressFamily(entry.value) !== "ipv6") : available,
+    hidden: hasPreferred ? available.filter(entry => getEntryAddressFamily(entry.value) === "ipv6") : [],
+  };
+}
+
+/** Keep a group's preferred domain while also exposing its member IPv6 entries. */
+export function appendRuleEntryIpv6Addresses(entries: readonly RuleEntryAddress[], alternatives: readonly RuleEntryAddress[]): RuleEntryAddress[] {
+  const rows = entries.slice();
+  for (const entry of alternatives) {
+    if (getEntryAddressFamily(entry.value) === "ipv6" && !rows.some(row => row.value === entry.value)) rows.push(entry);
+  }
+  return rows;
+}
+
+export function formatRuleEntryAddress(address: string, port: number | string): string {
+  const value = String(address || "").trim();
+  if (!value) return "";
+  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
+    return `[${value}]:${port}`;
+  }
+  return `${value}:${port}`;
 }

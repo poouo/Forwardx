@@ -39,6 +39,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
 
   return (
     <div
+      data-theme-part="card"
       ref={ref}
       className={cn(
         "glass-panel pearl-card rounded-2xl transition-[border-color,box-shadow,transform] duration-300",

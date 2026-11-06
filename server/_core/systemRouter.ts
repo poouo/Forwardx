@@ -1,4 +1,5 @@
 import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
+import { activeThemeSummary, activateTheme } from "../repositories/themeRepository";
 import { updateMultiDeviceLoginSettingCache } from "./context";
 import { z } from "zod";
 import { ADMIN_VISIT_CHECK_INTERVAL_MS } from "../../shared/visitChecks";
@@ -1630,6 +1631,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     siteTitle: all.siteTitle || "ForwardX",
     siteLogoDataUrl: all.siteLogoDataUrl || "",
     personalizationTheme: normalizePersonalizationThemePresetId(all.personalizationTheme),
+    activeTheme: activeThemeSummary(all),
     personalizationBackground: publicPersonalizationBackground(all),
     panelPublicUrl: all.panelPublicUrl ?? "",
     panelSsl: {
@@ -1781,6 +1783,7 @@ export const systemRouter = router({
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
       personalizationTheme: normalizePersonalizationThemePresetId(all.personalizationTheme),
+      activeTheme: activeThemeSummary(all),
       personalizationBackground: publicPersonalizationBackground(all),
       registrationEnabled: all.registrationEnabled !== "false",
       authCaptchaEnabled: all.authCaptchaEnabled !== "false",
@@ -2185,7 +2188,7 @@ export const systemRouter = router({
       }
       if (input.personalizationTheme !== undefined) {
         const theme = normalizePersonalizationThemePresetId(input.personalizationTheme);
-        await db.setSetting("personalizationTheme", theme);
+        await activateTheme(theme);
         console.info(`[Settings] personalization theme updated theme=${theme}`);
       }
       if (input.registrationEnabled !== undefined) {

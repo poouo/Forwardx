@@ -6,8 +6,12 @@ import { ArrowUpRight, Network, Server, ShieldCheck, Zap } from "lucide-react";
 import { ForwardXLogo } from "./ForwardXLogo";
 import { t } from "@/i18n";
 import { loginContentMotion } from "@/lib/loginTransition";
+import { useThemeDefinition } from "@/lib/themeRuntime";
+import { getLanguage } from "@/i18n";
+import { themeText, type ThemeText, type ThemeViews } from "@shared/themeViews";
+import ThemeBlocks from "./themes/ThemeBlocks";
 
-export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar, children }: {
+export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar, children, themeConfig }: {
   siteTitle: string;
   logo?: string | null;
   version?: string;
@@ -15,7 +19,12 @@ export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar,
   subtitle: string;
   toolbar: ReactNode;
   children: ReactNode;
+  themeConfig?: ThemeViews["login"];
 }) {
+  const managedTheme = useThemeDefinition();
+  const config = themeConfig ?? managedTheme?.manifest.views?.login;
+  const copy = (value: ThemeText | undefined, fallback: string) => themeText(value, getLanguage(), fallback);
+  const themeValues = { "site.title": siteTitle, "site.version": version || null };
   const frameRef = useRef<HTMLDivElement>(null);
   const formPanelRef = useRef<HTMLElement>(null);
   const [frameHeight, setFrameHeight] = useState<number>();
@@ -36,8 +45,8 @@ export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar,
   }, []);
 
   return (
-    <div className="mobile-login-screen auth-shell auth-login-shell">
-      <header className="auth-login-header">
+    <div data-theme-part="login" data-theme-login-layout={config?.layout} data-theme-login-artwork={config?.showArtwork} data-theme-login-features={config?.showFeatures} className="mobile-login-screen auth-shell auth-login-shell">
+      <header data-theme-part="login-header" className="auth-login-header">
         <Link href="/" className="auth-login-brand">
           <ForwardXLogo size={32} alt={siteTitle} src={logo} />
           <span>{siteTitle}</span>
@@ -49,10 +58,11 @@ export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar,
         <motion.div ref={frameRef} className="auth-login-frame auth-route-enter" initial={false}
           animate={frameHeight === undefined ? {} : { height: frameHeight }}
           transition={{ duration: reduceMotion ? 0 : .46, ease: [.22, 1, .36, 1] }}>
-          <aside className="auth-login-visual">
-            <div className="auth-login-eyebrow"><span />{t("网络控制台")}</div>
-            <h2>{t("连接每一条线路")}<span className="auth-login-heading-dot">.</span></h2>
-            <p className="auth-login-intro">{t("管理多主机转发、隧道和流量。")}</p>
+          <aside data-theme-part="login-hero" className="auth-login-visual">
+            {config?.hero ? <ThemeBlocks node={config.hero} values={themeValues} /> : <>
+            <div className="auth-login-eyebrow"><span />{copy(config?.eyebrow, t("网络控制台"))}</div>
+            <h2>{copy(config?.heroTitle, t("连接每一条线路"))}<span className="auth-login-heading-dot">.</span></h2>
+            <p className="auth-login-intro">{copy(config?.heroDescription, t("管理多主机转发、隧道和流量。"))}</p>
 
             <div className="auth-network-art" aria-hidden="true">
               <div className="auth-network-orbit" />
@@ -70,29 +80,34 @@ export function LoginLayout({ siteTitle, logo, version, mode, subtitle, toolbar,
             </div>
 
             <div className="auth-login-features">
+              {config?.features ? config.features.map((feature, index) => <span key={index}><Zap />{copy(feature, "")}</span>) : <>
               <span><Server />{t("多主机管理")}</span>
               <span><ShieldCheck />{t("权限控制")}</span>
               <span><Zap />{t("故障转移")}</span>
+              </>}
             </div>
+            </>}
           </aside>
 
-          <section ref={formPanelRef} className="auth-login-form-panel" aria-labelledby="auth-login-title">
+          <section ref={formPanelRef} data-theme-part="login-form" className="auth-login-form-panel" aria-labelledby="auth-login-title">
             <div className="auth-login-form-heading">
               <AnimatePresence mode="popLayout" initial={false}>
                 <motion.div key={mode} {...loginContentMotion(!!reduceMotion)}>
-                  <h1 id="auth-login-title">{t(mode === "login" ? "欢迎回来" : "创建账号")}</h1>
-                  <p>{subtitle}</p>
+                  <h1 id="auth-login-title">{copy(mode === "login" ? config?.loginTitle : config?.registerTitle, t(mode === "login" ? "欢迎回来" : "创建账号"))}</h1>
+                  <p>{copy(mode === "login" ? config?.loginSubtitle : config?.registerSubtitle, subtitle)}</p>
                 </motion.div>
               </AnimatePresence>
             </div>
             <div className="auth-login-form-content">
+              {config?.beforeForm && <div className="mb-4" data-theme-part="login-before"><ThemeBlocks node={config.beforeForm} values={themeValues} /></div>}
               {children}
+              {config?.afterForm && <div className="mt-4" data-theme-part="login-after"><ThemeBlocks node={config.afterForm} values={themeValues} /></div>}
             </div>
           </section>
         </motion.div>
       </main>
 
-      <footer className="auth-login-footer">ForwardX{version ? <span>v{version}</span> : null}</footer>
+      <footer data-theme-part="login-footer" className="auth-login-footer">{copy(config?.footer, "ForwardX")}{version ? <span>v{version}</span> : null}</footer>
     </div>
   );
 }

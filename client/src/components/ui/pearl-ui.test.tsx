@@ -379,7 +379,7 @@ test("Sidebar marker follows CSS width instead of measuring every menu item ever
 
 test("Desktop topbar does not duplicate the sidebar toggle and mobile retains its trigger", () => {
   const layout = readFileSync("client/src/components/DashboardLayout.tsx", "utf8");
-  const desktopTopbar = layout.match(/<header className="pearl-topbar">([\s\S]*?)<\/header>/)?.[1];
+  const desktopTopbar = layout.match(/<header\b[^>]*className="pearl-topbar"[^>]*>([\s\S]*?)<\/header>/)?.[1];
   assert.ok(desktopTopbar);
   assert.doesNotMatch(desktopTopbar, /SidebarTrigger/);
   assert.match(layout, /onClick=\{toggleSidebar\}/);
@@ -388,10 +388,10 @@ test("Desktop topbar does not duplicate the sidebar toggle and mobile retains it
 
 test("Theme switching stays in the topbar and mobile header, not the sidebar", () => {
   const layout = readFileSync("client/src/components/DashboardLayout.tsx", "utf8");
-  const sidebar = layout.match(/<Sidebar collapsible="icon"[\s\S]*?<\/Sidebar>/)?.[0];
+  const sidebar = layout.match(/<Sidebar\b[^>]*collapsible="icon"[\s\S]*?<\/Sidebar>/)?.[0];
   assert.ok(sidebar);
   assert.doesNotMatch(sidebar, /onClick=\{toggleTheme\}/);
-  const desktopTopbar = layout.match(/<header className="pearl-topbar">([\s\S]*?)<\/header>/)?.[1];
+  const desktopTopbar = layout.match(/<header\b[^>]*className="pearl-topbar"[^>]*>([\s\S]*?)<\/header>/)?.[1];
   assert.ok(desktopTopbar);
   assert.match(desktopTopbar, /onClick=\{toggleTheme\}/);
   assert.equal((layout.match(/onClick=\{toggleTheme\}/g) || []).length, 2);
