@@ -31,6 +31,7 @@ import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
 import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
+import { planTrafficBytes } from "../shared/planTraffic";
 import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
@@ -851,6 +852,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         .map((context) => context.rule)
         .filter((rule) => rulesWithBytes.has(Number(rule.id))))
       : new Map();
+    const planTrafficModes = await db.getPlanTrafficModesForRules((trafficContexts as any[])
+      .map(context => context.rule)
+      .filter(rule => rulesWithBytes.has(Number(rule.id)) && !billingResourcesByRuleId.get(Number(rule.id))?.config));
     for (const stat of stats) {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
@@ -916,7 +920,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         if (billingResource?.config) {
           billingEntries.push({ rule, ruleBytes, billingResource });
         } else {
-          const quotaBytes = applyTrafficMultiplier(ruleBytes, quotaTrafficMultiplierForRule(rule, tunnel, group));
+          const quotaBytes = applyTrafficMultiplier(planTrafficBytes(planTrafficModes.get(Number(rule.id)), bytesIn, bytesOut), quotaTrafficMultiplierForRule(rule, tunnel, group));
           quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + quotaBytes);
         }
       }

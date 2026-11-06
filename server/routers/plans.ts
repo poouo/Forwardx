@@ -21,8 +21,9 @@ const planInput = z.object({
     z.literal(365),
     z.literal(730),
   ]).default(30),
-  portCount: z.number().int().min(1).max(1024).default(20),
+  portCount: z.number().int().min(0).max(65535).default(20),
   trafficLimit: z.number().int().min(0).default(0),
+  trafficMode: z.enum(["both", "outbound"]).default("both"),
   rateLimitMbps: z.number().int().min(0).max(1_000_000).default(0),
   maxRules: z.number().int().min(0).default(20),
   maxConnections: z.number().int().min(0).max(1_000_000).default(2000),
@@ -173,7 +174,7 @@ export const plansRouter = router({
         : null;
       const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null, undefined, overrideDurationDays);
       await refreshUserForwardEndpoints(input.userId, "plan-assigned");
-      appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} duration=${overrideDurationDays ?? plan.durationDays} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+      appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} duration=${overrideDurationDays ?? plan.durationDays} ports=${result.portRangeStart && result.portRangeEnd ? `${result.portRangeStart}-${result.portRangeEnd}` : "unlimited"}`);
       return result;
     }),
   cancelSubscription: adminProcedure

@@ -181,7 +181,8 @@ async function performSwitch(row: any, service: any, host: any, state: ChinaHeal
     await executeRaw(`UPDATE ${q("host_ip_switch_attempts")} SET ${q("cooldownUntil")} = ? WHERE ${q("id")} = ?`, [finishedAt + config.cooldownSeconds, attemptId!]);
     if (status === "not_executed") {
       // A definite non-execution is safe to schedule again after the interval.
-      // Give it a fresh durable task ID; ambiguous/accepted requests NEVER retry.
+      // Give it a fresh durable task ID. Without an observed address change,
+      // ambiguous/accepted requests must never automatically retry.
       await withKeyedTaskLock(probeHealthLock(service.id), async () => {
         const [current] = await queryRaw<any>(`SELECT ${q("state")} FROM ${q("host_probe_health")} WHERE ${q("id")} = ?`, [row.id]);
         const next = parseState(current?.state);
@@ -220,11 +221,26 @@ export async function observeProbeHealth(host: any, reports: { serviceId: number
       const service = await db.getHostProbeServiceById(report.serviceId);
       if (!service?.isEnabled || service.hostScope !== "specific" || service.hostIds.length !== 1 || service.hostIds[0] !== Number(host.id)) return;
       if (report.targetIp !== service.targetIp || report.method !== service.method || Number(report.targetPort || 0) !== Number(service.targetPort || 0) || !Number.isInteger(report.probeCount) || Number(report.probeCount) <= 0 || !Number.isInteger(report.probeSuccesses) || Number(report.probeSuccesses) < 0 || Number(report.probeSuccesses) > Number(report.probeCount)) return;
-      const previous = parseState(row.state);
+      let previous = parseState(row.state);
+      let confirmedIp: string | undefined;
+      if (previous?.actionAttempted && previous.incidentId && ["unhealthy", "recovering"].includes(previous.phase)) {
+        // Read persisted proof, not the provider receipt. This also repairs
+        // states left latched by older panels or recovered after a restart.
+        const [completed] = await queryRaw<any>(`SELECT ${q("newIp")} FROM ${q("host_ip_switch_attempts")} WHERE ${q("incidentId")} = ? AND ${q("hostId")} = ? AND ${q("serviceId")} = ? AND ${q("status")} = 'succeeded' AND ${q("reason")} = 'ip_changed' AND ${q("newIp")} IS NOT NULL LIMIT 1`, [previous.incidentId, host.id, service.id]);
+        if (isIP(String(completed?.newIp || ""))) {
+          confirmedIp = String(completed.newIp);
+          // A new allocation is a new detection round even if connectivity
+          // never recovered. Do not carry the old IP's failure streak across.
+          // Keep the unhealthy/recovering phase until recovery is measured.
+          previous = { ...previous, failures: 0, successes: 0, failureSince: 0, incidentId: randomUUID(), actionAttempted: false };
+          delete previous.actionBlockedReason; delete previous.actionRetryAt;
+        }
+      }
       const next = advanceChinaHealth(previous, Number(report.probeSuccesses) > 0, now, service.intervalSeconds, config);
       if (previous && previous.lastSeen === next.state.lastSeen) return;
       if (next.event === "unhealthy") next.state.incidentId = randomUUID();
       await executeRaw(`UPDATE ${q("host_probe_health")} SET ${q("state")} = ? WHERE ${q("id")} = ?`, [JSON.stringify(next.state), row.id]);
+      if (confirmedIp) appendPanelLog("info", `[ChinaHealth] host=${host.id} service=${service.id} stage=monitoring_resumed observedIp=${confirmedIp} 新 IP 已确认，开始新一轮连通性检测；持续异常时按商家间隔与每日上限再次换 IP`);
       if (next.event) await deps.notify(service, host, next.event === "unhealthy" ? "连续探测失败，疑似国内连通异常；不等同于确认被墙" : "国内连通已恢复", config);
       if (next.state.phase === "unhealthy" && next.state.incidentId && !next.state.actionAttempted && config.autoSwitch && row.hookCiphertext) actions.push(() => performSwitch(row, service, host, next.state, config, now, deps));
       });

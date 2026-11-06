@@ -879,7 +879,7 @@ async function finalizePaidOrder(outTradeNo: string) {
         await db.recoverUserForwardAccessIfEligible(order.userId);
         await db.updatePaymentOrder(outTradeNo, { subscriptionId: result.subscriptionId, status: "completed", failureReason: null } as any);
         await accrueAffiliateCommission(outTradeNo);
-        appendPanelLog("info", `[Plan] subscription ${order.subscriptionId ? "renewed" : "granted"} user=${order.userId} plan=${order.planId} order=${outTradeNo} subscription=${result.subscriptionId} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+        appendPanelLog("info", `[Plan] subscription ${order.subscriptionId ? "renewed" : "granted"} user=${order.userId} plan=${order.planId} order=${outTradeNo} subscription=${result.subscriptionId} ports=${result.portRangeStart && result.portRangeEnd ? `${result.portRangeStart}-${result.portRangeEnd}` : "unlimited"}`);
         return;
       }
       if ((order as any).orderType === "balance") {

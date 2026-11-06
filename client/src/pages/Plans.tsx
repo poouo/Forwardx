@@ -19,11 +19,13 @@ import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-ta
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
 import { PlanDetails } from "@/components/PlanDetails";
+import { PlanTrafficModeBadge, PlanTrafficModeField } from "@/components/PlanTrafficMode";
+import { normalizePlanTrafficMode, type PlanTrafficMode } from "@shared/planTraffic";
 import { ProductStockBadge, ProductStockField } from "@/components/ProductStock";
 import { PlanDescriptionEditor } from "@/components/PlanDescriptionEditor";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
-import { planDescription, planDescriptionTemplate } from "@/lib/planDisplay";
+import { planDescription, planDescriptionTemplate, planPortCountText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
@@ -41,6 +43,7 @@ type PlanForm = {
   durationDays: string;
   portCount: string;
   trafficGB: string;
+  trafficMode: PlanTrafficMode;
   rateLimitMbps: string;
   maxRules: string;
   maxConnections: string;
@@ -85,6 +88,7 @@ const emptyForm: PlanForm = {
   durationDays: "30",
   portCount: "20",
   trafficGB: "0",
+  trafficMode: "both",
   rateLimitMbps: "0",
   maxRules: "20",
   maxConnections: "2000",
@@ -250,12 +254,13 @@ function PlanCard({
             ))}
           </div>
         </MobileInfoRow>
-        <MobileInfoRow label={translateText("端口")}>{plan.portCount}{translateText(" 个端口")}</MobileInfoRow>
+        <MobileInfoRow label={translateText("端口")}>{planPortCountText(plan.portCount)}</MobileInfoRow>
         <MobileInfoRow label={translateText("规则/流量")}>{translateText("规则 ")}{plan.maxRules || translateText("不限")}{translateText(" · 流量 ")}{bytes(plan.trafficLimit)}</MobileInfoRow>
         <MobileInfoRow label={translateText("连接/IP")}>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}</MobileInfoRow>
         <MobileInfoRow label={translateText("限速")}>{speed(plan.rateLimitMbps)}</MobileInfoRow>
         <MobileInfoRow label={translateText("附加流量")}>{plan.trafficAddons?.length || 0}{translateText(" 档")}</MobileInfoRow>
         </PlanDetails>
+        <MobileInfoRow label={translateText("流量计算方式")}><PlanTrafficModeBadge mode={plan.trafficMode} /></MobileInfoRow>
         <MobileInfoRow label={translateText("状态")}>
           <PlanStatusQuickToggle
             plan={plan}
@@ -563,6 +568,7 @@ function toForm(plan: any): PlanForm {
     durationDays: String(plan.durationDays ?? 30),
     portCount: String(plan.portCount ?? 20),
     trafficGB: String(Number(plan.trafficLimit || 0) / 1024 / 1024 / 1024 || 0),
+    trafficMode: normalizePlanTrafficMode(plan.trafficMode),
     rateLimitMbps: String(Number(plan.rateLimitMbps || 0) || 0),
     maxRules: String(plan.maxRules ?? 20),
     maxConnections: String(plan.maxConnections ?? 2000),
@@ -592,8 +598,9 @@ function payload(form: PlanForm) {
     priceCents: Math.round(Number(form.price || 0) * 100),
     currency: (form.currency || "CNY").toUpperCase(),
     durationDays: ([30, 90, 180, 365, 730].includes(durationDays) ? durationDays : 30) as PlanDurationDays,
-    portCount: Math.max(1, Math.floor(Number(form.portCount || 1))),
+    portCount: Math.max(0, Math.floor(Number(form.portCount || 0))),
     trafficLimit: Math.max(0, Math.floor(Number(form.trafficGB || 0) * 1024 * 1024 * 1024)),
+    trafficMode: form.trafficMode,
     rateLimitMbps: Math.max(0, Math.floor(Number(form.rateLimitMbps || 0))),
     maxRules: Math.max(0, Math.floor(Number(form.maxRules || 0))),
     maxConnections: Math.max(0, Math.floor(Number(form.maxConnections || 0))),
@@ -809,7 +816,9 @@ export default function Plans() {
 
   const assignPlan = trpc.plans.assign.useMutation({
     onSuccess: (result) => {
-      toast.success(translateText("套餐已分配，端口段 {0}-{1}", [result.portRangeStart, result.portRangeEnd]));
+      toast.success(result.portRangeStart && result.portRangeEnd
+        ? translateText("套餐已分配，端口段 {0}-{1}", [result.portRangeStart, result.portRangeEnd])
+        : translateText("套餐已分配，端口不限"));
       setAssignOpen(false);
       setAssignUserId("");
       setAssignPlanId("");
@@ -1144,13 +1153,14 @@ export default function Plans() {
               <p className="text-xs text-muted-foreground">{translateText("超过一个月按月重置流量。")}</p>
             </div>
             <div className="space-y-2">
-              <Label>{translateText("连续端口数")}</Label>
-              <Input type="number" min={1} max={1024} value={form.portCount} onChange={(e) => setForm({ ...form, portCount: e.target.value })} />
+              <Label>{translateText("连续端口数（0 为不限）")}</Label>
+              <Input type="number" min={0} max={65535} value={form.portCount} onChange={(e) => setForm({ ...form, portCount: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label>{translateText("总流量（GB，0 为不限）")}</Label>
               <Input type="number" min={0} value={form.trafficGB} onChange={(e) => setForm({ ...form, trafficGB: e.target.value })} />
             </div>
+            <PlanTrafficModeField value={form.trafficMode} onChange={trafficMode => setForm({ ...form, trafficMode })} />
             <div className="space-y-2">
               <Label>{translateText("限速（Mbps，0 为不限）")}</Label>
               <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps} onChange={(e) => setForm({ ...form, rateLimitMbps: e.target.value })} />

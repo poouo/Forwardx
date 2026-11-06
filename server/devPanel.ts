@@ -277,6 +277,22 @@ async function seedUsers(adminId: number): Promise<DevUsers> {
   };
 }
 
+/** Backfill only missing addresses on known demo hosts; preserve local edits. */
+async function seedDevHostIpv6Entries() {
+  if (!isDevPanelMode()) return;
+  const admin = await getUserByUsername(DEV_ADMIN_USERNAME);
+  if (!admin) return;
+  const entries = [
+    ["HK entry 01", "2001:db8:21::10"],
+  ];
+  for (const [name, ipv6] of entries) {
+    await executeRaw(
+      `UPDATE hosts SET ipv6 = ? WHERE ${quoteDbIdentifier("userId")} = ? AND name = ? AND TRIM(COALESCE(ipv6, '')) = ''`,
+      [ipv6, admin.id, name],
+    );
+  }
+}
+
 async function seedHosts(adminId: number) {
   const common = {
     userId: adminId,
@@ -2313,6 +2329,7 @@ export async function seedDevPanelData() {
 
   // Watch-mode restarts must not wipe tickets, rules or settings being debugged.
   if (await getSetting("devPanelSeededAt")) {
+    await seedDevHostIpv6Entries();
     await seedDevHistoryTrend();
     console.log("[DevPanel] Reusing existing local development data");
     return;
@@ -2323,6 +2340,7 @@ export async function seedDevPanelData() {
 
   const usersSeed = await seedUsers(adminId);
   const hostIds = await seedHosts(adminId);
+  await seedDevHostIpv6Entries();
   await seedAgentTokens(adminId, hostIds);
   await seedHostGroups(adminId, hostIds);
   await seedHostMetrics(hostIds);

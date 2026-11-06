@@ -746,6 +746,50 @@
     margin-top: auto;
   }
 
+  .rule-standard-card-content {
+    gap: 0.75rem;
+  }
+
+  .rule-standard-transfer-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  /* Share section tracks only within each visual row. Long addresses, missing
+     IPv6 and extra warnings then align without fixed heights or JS observers. */
+  @supports (grid-template-rows: subgrid) {
+    .rule-standard-card {
+      display: grid;
+      height: auto;
+      grid-row: span 7;
+      grid-template-rows: subgrid;
+      row-gap: 0.75rem;
+    }
+
+    .rule-standard-card-content {
+      display: grid;
+      height: auto;
+      grid-row: span 7;
+      grid-template-rows: subgrid;
+      row-gap: 0.75rem;
+    }
+
+    .rule-standard-card-transfer,
+    .rule-standard-card-transfer > .rule-standard-transfer-sections {
+      display: grid;
+      min-width: 0;
+      grid-row: span 3;
+      grid-template-rows: subgrid;
+      row-gap: 0.375rem;
+    }
+
+    .rule-standard-card-content > .action-card-footer {
+      align-self: end;
+      margin-top: 0;
+    }
+  }
+
   .card-mode-transition {
     animation: card-mode-transition-in 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
     will-change: opacity, transform;

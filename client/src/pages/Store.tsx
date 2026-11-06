@@ -13,8 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { planDescription, planResourceText } from "@/lib/planDisplay";
+import { planDescription, planResourceText, planPortCountText } from "@/lib/planDisplay";
 import { PlanDetails } from "@/components/PlanDetails";
+import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
 import { MeteredRuleLimitBadge, ProductStockBadge } from "@/components/ProductStock";
 import { productStock } from "@shared/productStock";
 import { trpc } from "@/lib/trpc";
@@ -90,7 +91,7 @@ function effectiveBillingPriceMilliCents(config: any) {
 
 function planBenefitItems(plan: any) {
   const items = [
-    translateText("连续端口 {0} 个", [plan.portCount || 0]),
+    Number(plan.portCount) === 0 ? translateText("端口不限") : translateText("连续端口 {0} 个", [plan.portCount || 0]),
     translateText("套餐流量 {0}", [bytes(plan.trafficLimit)]),
     translateText("限速 {0}", [speed(plan.rateLimitMbps)]),
     translateText("规则 {0} · 连接 {1} · 单 IP {2}", [plan.maxRules || translateText("不限"), plan.maxConnections || translateText("不限"), plan.maxIPs || translateText("不限")]),
@@ -136,7 +137,7 @@ export function StorePlanCard({
           </Badge>
         </div>
 
-        <div><ProductStockBadge product={plan} /></div>
+        <div className="flex flex-wrap items-center gap-2"><ProductStockBadge product={plan} /><PlanTrafficModeBadge mode={plan.trafficMode} /></div>
         {description ? (
           <div className="pearl-store-plan-details flex-1 rounded-md border border-border/40 p-4">
             <PlanDetails description={description} />
@@ -149,7 +150,7 @@ export function StorePlanCard({
           </div>
           <div className="rounded-[6px] px-3 py-2">
             <div className="text-[11px] font-medium text-muted-foreground">{translateText("端口")}</div>
-            <div className="mt-1 truncate text-sm font-semibold text-foreground">{plan.portCount || 0}{translateText(" 个")}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-foreground">{planPortCountText(plan.portCount)}</div>
           </div>
         </div>
 

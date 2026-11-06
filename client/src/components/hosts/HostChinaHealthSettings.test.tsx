@@ -259,6 +259,10 @@ test("provider interval is editable in minutes and defaults to 60 without losing
   const draft = { ...createChinaHealthDraft(), enabled: true, notify: false };
   assert.equal(draft.cooldownSeconds, 3600);
   const html = renderToStaticMarkup(<HostChinaHealthSettings value={draft} onChange={() => {}} />);
-  assert.match(html, /<input type="number"[^>]*id="china-cooldownSeconds"[^>]*min="5"[^>]*max="1440"[^>]*value="60"/);
+  const input = html.match(/<input\b[^>]*\bid="china-cooldownSeconds"[^>]*>/)?.[0];
+  assert.ok(input, "provider interval input is present");
+  for (const attribute of ['type="number"', 'min="5"', 'max="1440"', 'value="60"']) {
+    assert.ok(input.includes(attribute), `provider interval retains ${attribute}`);
+  }
   assert.equal(chinaHealthPayload({ ...draft, cooldownSeconds: 90 * 60 }).cooldownSeconds, 5400);
 });

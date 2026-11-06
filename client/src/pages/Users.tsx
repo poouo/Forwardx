@@ -9,6 +9,7 @@ import { PersistentPagination, usePersistentPageRequest, useServerPagination } f
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 import { migrateLegacyAvatarValue } from "@/lib/avatar";
+import { subscriptionPortRangeText } from "@/lib/planDisplay";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1665,7 +1666,7 @@ function UsersContent() {
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">
                             <p className="text-muted-foreground">{translateText("端口段")}</p>
                             <p className="mt-1 truncate font-medium tabular-nums">
-                              {sub.portRangeStart && sub.portRangeEnd ? `${sub.portRangeStart}-${sub.portRangeEnd}` : "-"}
+                              {subscriptionPortRangeText(sub)}
                             </p>
                           </div>
                           <div className="min-w-0 rounded-md bg-muted/25 p-2">

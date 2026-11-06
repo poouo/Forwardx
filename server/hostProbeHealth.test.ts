@@ -162,3 +162,12 @@ test("observed IP changes recover across restarts and refresh every linked entry
     assert.equal(result.status, 0, result.stderr || result.stdout);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("confirmed IP changes rearm continuous unhealthy detection while retaining cooldown, daily limits and request deduplication", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-ip-repeat-"));
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "server/hostIpSwitchRepeat.fixture.ts"], { cwd: process.cwd(), encoding: "utf8", timeout: 60000,
+      env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: path.join(directory, "test.db"), FORWARDX_LOG_DIR: path.join(directory, "logs"), JWT_SECRET: "ip-repeat-test-secret-only-32-characters" } });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

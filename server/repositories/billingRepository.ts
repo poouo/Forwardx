@@ -40,6 +40,7 @@ import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingReposito
 import { getSetting, setSetting } from "./settingsRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { withKeyedTaskLock, withTrafficBillingUserLock } from "../keyedTaskLock";
+import { normalizePlanTrafficMode, rulePlanTrafficMode, type PlanTrafficMode, type PlanTrafficEntitlement } from "../../shared/planTraffic";
 import {
   getUserForwardRuleIdsDisabledByAccess,
   scheduleUserForwardRulesAfterAccessRecovery,
@@ -335,6 +336,7 @@ function buildPlanSnapshot(plan: any) {
     name: plan?.name || null,
     portCount: Number(plan?.portCount ?? 20),
     trafficLimit: Number(plan?.trafficLimit || 0),
+    trafficMode: normalizePlanTrafficMode(plan?.trafficMode),
     rateLimitMbps: Number(plan?.rateLimitMbps || 0),
     maxRules: Number(plan?.maxRules ?? 20),
     maxConnections: Number(plan?.maxConnections ?? 2000),
@@ -354,6 +356,7 @@ function parsePlanSnapshot(value: unknown) {
       name: typeof parsed.name === "string" ? parsed.name : null,
       portCount: Number(parsed.portCount ?? 20),
       trafficLimit: Number(parsed.trafficLimit || 0),
+      trafficMode: normalizePlanTrafficMode(parsed.trafficMode),
       rateLimitMbps: Number(parsed.rateLimitMbps || 0),
       maxRules: Number(parsed.maxRules ?? 20),
       maxConnections: Number(parsed.maxConnections ?? 2000),
@@ -413,6 +416,7 @@ async function attachSubscriptionSnapshots<T extends { planId: number; planSnaps
       planName: snapshot?.name || subscription.planName,
       portCount: snapshot?.portCount ?? subscription.portCount,
       trafficLimit: snapshot?.trafficLimit ?? subscription.trafficLimit,
+      trafficMode: snapshot?.trafficMode ?? normalizePlanTrafficMode(subscription.trafficMode),
       rateLimitMbps: snapshot?.rateLimitMbps ?? subscription.rateLimitMbps,
       maxRules: snapshot?.maxRules ?? subscription.maxRules,
       maxConnections: snapshot?.maxConnections ?? subscription.maxConnections,
@@ -713,12 +717,24 @@ export async function syncPlanSubscribers(planId: number) {
   }
   const affectedUserIds = Array.from(subscriptionIdsByUser.keys());
   for (const [userId, subscriptionIds] of subscriptionIdsByUser) {
-    await withTrafficBillingUserTransaction(userId, async () => {
+    await withTrafficBillingUserTransaction(userId, () => withSubscriptionPortAllocationLock(async () => {
       for (const subscriptionId of subscriptionIds) {
-        await updateUserSubscription(subscriptionId, { planSnapshot: JSON.stringify(snapshot) } as any);
+        const current = await getUserSubscriptionById(subscriptionId);
+        if (!current || current.status !== "active") continue;
+        let block = { start: current.portRangeStart, end: current.portRangeEnd };
+        if (snapshot.portCount === 0) {
+          block = { start: null, end: null };
+        } else if (!block.start || !block.end) {
+          const allocated = await findAvailableSubscriptionPortBlock(snapshot.portCount, snapshot.hostIds, snapshot.tunnelIds, snapshot.forwardGroupIds);
+          if (!allocated) throw new Error("套餐可用端口不足，无法分配连续端口段");
+          block = allocated;
+        }
+        await updateUserSubscription(subscriptionId, {
+          planSnapshot: JSON.stringify(snapshot), portRangeStart: block.start, portRangeEnd: block.end,
+        } as any);
       }
       await syncUserSubscriptionEntitlementsUnlocked(userId);
-    });
+    }));
   }
   return affectedUserIds;
 }
@@ -790,6 +806,7 @@ function userSubscriptionsListQuery(db: any) {
       durationDays: subscriptionPlans.durationDays,
       portCount: subscriptionPlans.portCount,
       trafficLimit: subscriptionPlans.trafficLimit,
+      trafficMode: subscriptionPlans.trafficMode,
       rateLimitMbps: subscriptionPlans.rateLimitMbps,
       maxRules: subscriptionPlans.maxRules,
       maxConnections: subscriptionPlans.maxConnections,
@@ -1009,6 +1026,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
         planName: subscriptionPlans.name,
         portCount: subscriptionPlans.portCount,
         trafficLimit: subscriptionPlans.trafficLimit,
+        trafficMode: subscriptionPlans.trafficMode,
         rateLimitMbps: subscriptionPlans.rateLimitMbps,
         maxRules: subscriptionPlans.maxRules,
         maxConnections: subscriptionPlans.maxConnections,
@@ -1029,6 +1047,56 @@ export async function createUserSubscription(data: InsertUserSubscription) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   return insertAndGetId("user_subscriptions", data as any);
+}
+
+/** Live, batched accounting lookup. Never use a cross-request entitlement cache
+ * or the UI's summary reads (which also load add-ons) on every traffic report. */
+export async function getPlanTrafficModesForRules(rules: Array<Parameters<typeof rulePlanTrafficMode>[0] & { id: number }>) {
+  const modes = new Map<number, PlanTrafficMode>(rules.map(rule => [Number(rule.id), "both"]));
+  const userIds = normalizeNumericIds(rules.map(rule => rule.userId));
+  if (!userIds.length) return modes;
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const rows: any[] = [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (let offset = 0; offset < userIds.length; offset += 400) {
+    rows.push(...await db.select({
+      userId: userSubscriptions.userId, planId: userSubscriptions.planId,
+      planSnapshot: userSubscriptions.planSnapshot, trafficMode: subscriptionPlans.trafficMode, portCount: subscriptionPlans.portCount,
+      portRangeStart: userSubscriptions.portRangeStart, portRangeEnd: userSubscriptions.portRangeEnd,
+    }).from(userSubscriptions).leftJoin(subscriptionPlans, eq(subscriptionPlans.id, userSubscriptions.planId))
+      .where(and(inArray(userSubscriptions.userId, userIds.slice(offset, offset + 400)),
+        eq(userSubscriptions.status, "active"), sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`)));
+  }
+  const parsed = rows.map(row => ({ ...row, snapshot: parsePlanSnapshot(row.planSnapshot) }));
+  const legacyIds = normalizeNumericIds(parsed.filter(row => !row.snapshot).map(row => row.planId));
+  const resources = new Map<number, { hostIds: number[]; tunnelIds: number[]; forwardGroupIds: number[] }>();
+  for (let offset = 0; offset < legacyIds.length; offset += 400) {
+    const ids = legacyIds.slice(offset, offset + 400);
+    const [hosts, tunnels, groups] = await Promise.all([
+      db.select({ planId: subscriptionPlanHosts.planId, id: subscriptionPlanHosts.hostId }).from(subscriptionPlanHosts).where(inArray(subscriptionPlanHosts.planId, ids)),
+      db.select({ planId: subscriptionPlanTunnels.planId, id: subscriptionPlanTunnels.tunnelId }).from(subscriptionPlanTunnels).where(inArray(subscriptionPlanTunnels.planId, ids)),
+      db.select({ planId: subscriptionPlanForwardGroups.planId, id: subscriptionPlanForwardGroups.forwardGroupId }).from(subscriptionPlanForwardGroups).where(inArray(subscriptionPlanForwardGroups.planId, ids)),
+    ]);
+    for (const id of ids) resources.set(id, { hostIds: [], tunnelIds: [], forwardGroupIds: [] });
+    for (const row of hosts) resources.get(Number(row.planId))!.hostIds.push(Number(row.id));
+    for (const row of tunnels) resources.get(Number(row.planId))!.tunnelIds.push(Number(row.id));
+    for (const row of groups) resources.get(Number(row.planId))!.forwardGroupIds.push(Number(row.id));
+  }
+  const byUser = new Map<number, PlanTrafficEntitlement[]>();
+  for (const row of parsed) {
+    const source = row.snapshot || resources.get(Number(row.planId));
+    if (!source) continue;
+    const userId = Number(row.userId);
+    const list = byUser.get(userId) || [];
+    list.push({ userId, portRangeStart: Number(row.portRangeStart), portRangeEnd: Number(row.portRangeEnd),
+      portCount: row.snapshot?.portCount ?? Number(row.portCount),
+      trafficMode: row.snapshot?.trafficMode ?? normalizePlanTrafficMode(row.trafficMode),
+      hostIds: source.hostIds, tunnelIds: source.tunnelIds, forwardGroupIds: source.forwardGroupIds });
+    byUser.set(userId, list);
+  }
+  for (const rule of rules) modes.set(Number(rule.id), rulePlanTrafficMode(rule, byUser.get(Number(rule.userId)) || []));
+  return modes;
 }
 
 export async function updateUserSubscription(id: number, data: Partial<InsertUserSubscription>) {
@@ -2232,12 +2300,14 @@ export async function getUserPlanPortRanges(userId: number, hostId?: number, tun
   const active = await getActiveUserSubscriptions(userId);
   const ranges: SubscriptionPortRange[] = [];
   for (const sub of active as any[]) {
-    if (!sub.portRangeStart || !sub.portRangeEnd) continue;
     const matches = tunnelId
       ? (Array.isArray(sub.tunnelIds) && sub.tunnelIds.includes(tunnelId))
         || (!!hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId))
       : !!hostId && Array.isArray(sub.hostIds) && sub.hostIds.includes(hostId);
-    if (matches) ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
+    if (matches) {
+      if (Number(sub.portCount) === 0) return [{ start: 1, end: 65535 }];
+      if (sub.portRangeStart && sub.portRangeEnd) ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
+    }
   }
   return mergeSubscriptionPortRanges(ranges);
 }
@@ -2250,9 +2320,9 @@ export async function getUserForwardGroupPlanPortRanges(userId: number, forwardG
   const active = await getActiveUserSubscriptions(userId);
   const ranges: SubscriptionPortRange[] = [];
   for (const sub of active as any[]) {
-    if (!sub.portRangeStart || !sub.portRangeEnd) continue;
     if (Array.isArray(sub.forwardGroupIds) && sub.forwardGroupIds.includes(forwardGroupId)) {
-      ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
+      if (Number(sub.portCount) === 0) return [{ start: 1, end: 65535 }];
+      if (sub.portRangeStart && sub.portRangeEnd) ranges.push({ start: Number(sub.portRangeStart), end: Number(sub.portRangeEnd) });
     }
   }
   return mergeSubscriptionPortRanges(ranges);
@@ -2271,7 +2341,11 @@ export function isPortAllowedByUserPlanRange(port: number, range: UserPlanPortRa
 export async function findAvailableSubscriptionPortBlock(portCount: number, hostIds: number[], tunnelIds: number[], forwardGroupIds: number[] = []) {
   const db = await getDb();
   if (!db) return null;
-  const count = Math.max(1, portCount);
+  // Unlimited subscriptions do not reserve the entire port space (or one
+  // arbitrary port). Resource policies and per-listener conflicts still apply.
+  if (portCount === 0) return { start: null, end: null };
+  if (!Number.isInteger(portCount) || portCount < 0 || portCount > 65535) return null;
+  const count = portCount;
   const ranges: Array<{ start: number; end: number }> = [];
   for (const hostId of hostIds) {
     const host = await getHostById(hostId);
@@ -2359,7 +2433,7 @@ async function applySubscriptionToUserUnlocked(
       : await getUserSubscriptionByPaymentOrderNo(paymentOrderNo);
     if (existing) {
       if (Number(existing.userId) !== userId || Number(existing.planId) !== planId) throw new Error("套餐订单不匹配");
-      return { subscriptionId: Number(existing.id), portRangeStart: Number(existing.portRangeStart), portRangeEnd: Number(existing.portRangeEnd), expiresAt: existing.expiresAt, extended: !!targetSubscriptionId };
+      return { subscriptionId: Number(existing.id), portRangeStart: existing.portRangeStart, portRangeEnd: existing.portRangeEnd, expiresAt: existing.expiresAt, extended: !!targetSubscriptionId };
     }
   }
   const plan = await getSubscriptionPlanById(planId);
@@ -2427,8 +2501,8 @@ async function applySubscriptionToUserUnlocked(
       nextTrafficResetAt = null;
     }
 
-    let portRangeStart = Number(sameActiveSubscription.portRangeStart || 0);
-    let portRangeEnd = Number(sameActiveSubscription.portRangeEnd || 0);
+    let portRangeStart: number | null = sameActiveSubscription.portRangeStart;
+    let portRangeEnd: number | null = sameActiveSubscription.portRangeEnd;
     const updateData: Partial<InsertUserSubscription> = {
       status: "active",
       expiresAt,
@@ -2438,8 +2512,8 @@ async function applySubscriptionToUserUnlocked(
     if (paymentOrderNo) {
       (updateData as any).paymentOrderNo = paymentOrderNo;
     }
-    if (!portRangeStart || !portRangeEnd) {
-      const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
+    if (Number(plan.portCount) === 0 || !portRangeStart || !portRangeEnd) {
+      const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount), hostIds, tunnelIds, forwardGroupIds);
       if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
       portRangeStart = block.start;
       portRangeEnd = block.end;
@@ -2464,7 +2538,7 @@ async function applySubscriptionToUserUnlocked(
       await updatePaymentOrder(paymentOrderNo, { stockReserved: true });
     }
   } else await reservePlanStock(planId);
-  const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
+  const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount), hostIds, tunnelIds, forwardGroupIds);
   if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const expiresAt = durationDays > 0 ? addSubscriptionDays(now, durationDays) : null;
   const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0
@@ -2948,7 +3022,7 @@ export async function listBillingLedger(options?: {
       kind: "subscription",
       category: "套餐记录",
       title: `${subscriptionSourceLabel(sub.source)}：${sub.planName || `套餐 #${sub.planId}`}`,
-      description: sub.portRangeStart && sub.portRangeEnd ? `端口段 ${sub.portRangeStart}-${sub.portRangeEnd}` : "-",
+      description: Number(sub.portCount) === 0 ? "端口不限" : sub.portRangeStart && sub.portRangeEnd ? `端口段 ${sub.portRangeStart}-${sub.portRangeEnd}` : "-",
       userId: sub.userId,
       username: sub.username,
       name: sub.name,

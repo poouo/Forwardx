@@ -4,14 +4,14 @@
 
 | 组件 | 源码标识 |
 | --- | --- |
-| 面板 | 2.3.296 |
-| Android / iOS | 2.4.14 |
+| 面板 | 2.3.297 |
+| Android / iOS | 2.4.15 |
 | Agent | 2.2.209 |
 | FXP 运行时 | 2.2.122 |
 
-`2.3.296` 于 2026-11-03 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
+`2.3.297` 于 2026-11-07 启动正式发布，各平台安装包由 GitHub Actions 构建。旧版面板不一定具备下列功能；是否可以升级以 Release 实际附件为准。
 
-本次优化面板日常内存占用，完善自动换 IP 后的转发与 DDNS 同步，兼容 Epusdt v2 支付，并增加主机每页显示数量设置。升级前请先备份；见 [升级和备份](./upgrade-backup.md)、[Agent](./agent.md) 和 [数据库](./database.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+本次完善规则卡片的 IPv6 展示和排版，增加批量管理主机筛选、套餐单双向流量计费与不限端口配置，并修复自动换 IP 的重复触发问题，新增主题管理。本次 Agent 与 FXP 未改动，无需为本次更新升级 Agent。升级前请先备份；见 [升级和备份](./upgrade-backup.md)、[Agent](./agent.md) 和 [数据库](./database.md)。最近版本见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 该表反映仓库中的版本字段，不证明对应 Release 已构建完成。安装或升级时，以实际 Release 附件和构建任务结果为准；各平台安装包可能先后完成。
 

@@ -2,6 +2,20 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+## [2.3.297] - 2026-11-07
+
+- Filter bulk rule actions by entry host and show host names and addresses in the rule list.
+- Fix automatic IP switching stopping when a newly assigned IP remains unreachable.
+- Keep compact rule card entries/exits on one line, with ellipses for long addresses and complete text on hover.
+- Show IPv6 entries on standard rule cards, with individual address copying.
+- Align entry, exit and statistics sections across standard rule cards in each row.
+- Add one-way or two-way traffic accounting options for store plans.
+- Plans support unlimited ports with 0 and no longer have a 1,024-port cap.
+- Add site-wide theme management with custom theme import, preview and switching.
+- Versions: panel `2.3.297`, Android / iOS `2.4.15`, Agent `2.2.209` and ForwardX FXP runtime `2.2.122` (both unchanged). No Agent upgrade is required for this release.
+
 ## [2.3.296] - 2026-11-03
 
 - Reduce routine panel memory use with on-demand dependencies and automatic cleanup of idle IP databases and expired caches.
