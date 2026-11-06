@@ -408,18 +408,24 @@ func TestV3PoolSkipsStaleSessions(t *testing.T) {
 	target, _ := v3TestListener(t, func(conn net.Conn) { _, _ = io.Copy(conn, conn) })
 	port, _ := v3TestListener(t, func(conn net.Conn) { _ = handleExitSession(conn, cfg) })
 	pool := v3TestPool(t)
-	conn, sec := v3TestBusiness(t, pool, cfg, port, target)
-	v3TestEcho(t, sec, []byte("before-age"))
-	conn.Close()
-
 	key := v3PoolKey("127.0.0.1", port, cfg)
+	// Use an idle physical session with no queued writes. Closing an echoed
+	// business stream enqueues CLOSE/credit frames asynchronously; those may
+	// legitimately refresh lastWrite after AgeLastWrite and undo the fixture's
+	// artificial staleness before the pool sees it.
+	physical, peer := net.Pipe()
+	t.Cleanup(func() { peer.Close() })
+	stale := v3.NewSession(physical, v3.SessionOptions{Client: true, WriteTimeout: time.Second})
+	stale.AgeLastWrite(time.Hour)
+	bucket := &v3PoolBucket{sessions: []*v3.Session{stale}, changed: make(chan struct{})}
 	pool.mu.Lock()
-	stale := pool.buckets[key].sessions[0]
+	pool.buckets[key] = bucket
+	pool.count++
 	pool.mu.Unlock()
+	go pool.releaseWhenClosed(key, bucket, stale)
 
 	// Age the recorded write beyond the stale threshold. The session still
 	// advertises slots, which is exactly the half-open case the pool must catch.
-	stale.AgeLastWrite(time.Hour)
 	if stale.Alive(v3SessionStaleAge) {
 		t.Fatal("aged session still reported alive")
 	}
