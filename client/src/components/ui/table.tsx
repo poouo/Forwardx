@@ -6,7 +6,7 @@ const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableE
   const scroller = React.useRef<HTMLDivElement>(null)
   const scrollerId = React.useId()
   return <>
-    <div ref={scroller} id={scrollerId} className="pearl-table-scroll relative w-full overflow-auto"><table ref={ref} className={cn("pearl-table w-full caption-bottom text-sm", className)} {...props} /></div>
+    <div ref={scroller} id={scrollerId} className="pearl-table-scroll relative w-full overflow-auto"><table data-theme-part="table" ref={ref} className={cn("pearl-table w-full caption-bottom text-sm", className)} {...props} /></div>
     {floatingScrollbar && <FloatingTableScrollbar target={scroller} enabled={floatingScrollbar} />}
   </>
 })

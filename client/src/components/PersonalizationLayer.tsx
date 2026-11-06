@@ -1,10 +1,12 @@
 import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
-import { applyPersonalizationTheme, clearPersonalizationTheme } from "@/lib/personalizationTheme";
+import { applyManagedTheme, clearManagedTheme, isThemeSafeMode, leaveThemeSafeMode } from "@/lib/managedTheme";
+import { t } from "@/i18n";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { applySiteFavicon } from "@/lib/siteFavicon";
 import { watchMobileAppIcon } from "@/lib/mobileAppIcon";
 import { saveSiteBranding } from "@/lib/siteBranding";
+import { setThemeRuntime } from "@/lib/themeRuntime";
 
 const MOBILE_BACKGROUND_MEDIA = "(max-width: 767px), (pointer: coarse)";
 
@@ -23,6 +25,13 @@ export default function PersonalizationLayer() {
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const [themeSafeMode, setThemeSafeMode] = useState(isThemeSafeMode);
+  const activeTheme = data?.activeTheme;
+  const customTheme = trpc.themes.styles.useQuery({ id: activeTheme?.id || "ink", revision: activeTheme?.revision && !activeTheme.builtin ? activeTheme.revision : "0".repeat(64) }, {
+    enabled: !!activeTheme && !activeTheme.builtin && !themeSafeMode,
+    staleTime: 60_000, retry: false, refetchOnWindowFocus: false,
   });
   const [reduceMobileBackground, setReduceMobileBackground] = useState(shouldReduceMobileBackground);
   const background = data?.personalizationBackground;
@@ -82,16 +91,22 @@ export default function PersonalizationLayer() {
   useLayoutEffect(() => {
     const root = document.documentElement;
     const applyTheme = () => {
-      applyPersonalizationTheme(personalizationTheme, root);
+      const definition = customTheme.data?.revision === activeTheme?.revision ? customTheme.data : null;
+      applyManagedTheme(themeSafeMode ? "ink" : personalizationTheme, themeSafeMode ? null : definition, root);
     };
     applyTheme();
     const observer = new MutationObserver(applyTheme);
     observer.observe(root, { attributes: true, attributeFilter: ["class"] });
     return () => {
       observer.disconnect();
-      clearPersonalizationTheme(root);
+      clearManagedTheme(root);
     };
-  }, [personalizationTheme]);
+  }, [personalizationTheme, activeTheme?.revision, customTheme.data, themeSafeMode]);
+
+  useLayoutEffect(() => {
+    setThemeRuntime(!themeSafeMode && !activeTheme?.builtin && customTheme.data?.revision === activeTheme?.revision ? customTheme.data ?? null : null);
+    return () => setThemeRuntime(null);
+  }, [activeTheme?.builtin, activeTheme?.revision, customTheme.data, themeSafeMode]);
 
   useLayoutEffect(() => {
     if (!data) return;
@@ -111,9 +126,13 @@ export default function PersonalizationLayer() {
     return watchMobileAppIcon(document.documentElement);
   }, [!!data]);
 
-  if (!showVideo) return null;
-
   return (
+    <>
+    {themeSafeMode && <div role="status" className="fixed bottom-4 left-1/2 z-[9999] flex w-[min(94vw,640px)] -translate-x-1/2 items-center gap-3 rounded-lg border bg-card p-3 text-sm text-card-foreground shadow-lg">
+      <span className="flex-1">{t("主题安全模式：已暂时恢复内置主题，可在主题管理中切换主题。")}</span>
+      <button type="button" className="shrink-0 underline" onClick={() => { leaveThemeSafeMode(); setThemeSafeMode(false); }}>{t("退出安全模式")}</button>
+    </div>}
+    {showVideo && (
     <video
       key={effectiveUrl}
       className="personalization-video-background"
@@ -125,5 +144,7 @@ export default function PersonalizationLayer() {
       preload="metadata"
       aria-hidden="true"
     />
+    )}
+    </>
   );
 }

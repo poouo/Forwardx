@@ -40,7 +40,7 @@ function isRestrictedIPv6(value: string, allowPrivate: boolean) {
   return !allowPrivate && (ip.startsWith("fc") || ip.startsWith("fd"));
 }
 
-function isRestrictedIp(value: string, allowPrivate: boolean) {
+export function isRestrictedIp(value: string, allowPrivate: boolean) {
   const version = isIP(value);
   if (version === 4) return isRestrictedIPv4(value, allowPrivate);
   if (version === 6) return isRestrictedIPv6(value, allowPrivate);

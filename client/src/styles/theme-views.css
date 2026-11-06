@@ -1,0 +1,44 @@
+/* Stable, deliberately low-specificity defaults; package CSS is appended last. */
+[data-theme-part="theme-group"] { display:flex; flex-direction:column; min-width:0; }
+[data-theme-part="theme-group"][data-theme-direction="row"] { flex-direction:row; align-items:center; flex-wrap:wrap; }
+[data-theme-direction="row"] > * { flex:1 1 120px; }
+[data-theme-part="theme-group"][data-theme-direction="grid"], [data-theme-host-grid="true"] { display:grid; grid-template-columns:repeat(var(--theme-columns-mobile, 1),minmax(0,1fr)); }
+[data-theme-part="theme-group"] > * { min-width:0; grid-column:span min(var(--theme-node-span, 1),var(--theme-columns-mobile, 1)); }
+[data-theme-part="theme-field"] { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 12px; min-width:0; overflow-wrap:anywhere; }
+[data-theme-part="theme-label"] { color:var(--muted-foreground); font-size:12px; }
+[data-theme-part="theme-value"] { font-size:14px; font-variant-numeric:tabular-nums; }
+[data-theme-display="stat"] { flex-direction:column; align-items:flex-start; }
+[data-theme-display="stat"] > [data-theme-part="theme-value"] { font-size:22px; font-weight:600; letter-spacing:-0.02em; }
+[data-theme-display="badge"] > [data-theme-part="theme-value"] { border:1px solid var(--border); border-radius:99px; padding:2px 10px; background:var(--muted); font-size:12px; }
+[data-theme-tone="muted"], [data-theme-variant="muted"] { color:var(--muted-foreground); }
+[data-theme-tone="success"] { color:var(--chart-2); }
+[data-theme-tone="warning"] { color:var(--chart-4); }
+[data-theme-tone="danger"] { color:var(--destructive); }
+[data-theme-variant="title"] { font-size:20px; font-weight:600; }
+.theme-field-progress { flex-basis:100%; height:6px; overflow:hidden; border-radius:99px; background:var(--muted); }
+.theme-field-progress > span { display:block; height:100%; border-radius:inherit; background:var(--primary); }
+[data-theme-part="host-actions"] { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+[data-theme-host-grid="true"] > * { min-width:0; }
+[data-theme-host-grid="true"] .host-card-shell { height:100%; }
+[data-theme-hosts-configured="true"] { display:flex; flex-direction:column; gap:16px; }
+[data-theme-hosts-configured="true"] > * { margin-block:0; }
+[data-theme-spacing="compact"] [data-theme-part="content"] { padding:12px; }
+[data-theme-content-width] [data-theme-part="content"] { width:100%; max-width:var(--theme-content-width); margin-inline:auto; }
+[data-theme-login-layout="centered"] .auth-login-visual { display:none; }
+[data-theme-login-layout="centered"] .auth-login-frame { grid-template-columns:minmax(0,1fr); max-width:520px; }
+[data-theme-login-artwork="false"] .auth-network-art, [data-theme-login-features="false"] .auth-login-features { display:none; }
+@media(min-width:768px) {
+  [data-theme-part="theme-group"][data-theme-direction="grid"], [data-theme-host-grid="true"] { grid-template-columns:repeat(var(--theme-columns-tablet,1),minmax(0,1fr)); }
+  [data-theme-part="theme-group"] > * { grid-column:span min(var(--theme-node-span,1),var(--theme-columns-tablet,1)); }
+  [data-theme-navigation="right"] [data-theme-part="shell"] { flex-direction:row-reverse; }
+  [data-theme-navigation="right"] [data-theme-part="sidebar"] { left:auto; right:0; border-right-width:0; border-left:1px solid var(--sidebar-border); }
+}
+@media(min-width:1024px) {
+  [data-theme-login-layout="reversed"] .auth-login-frame { grid-template-columns:440px minmax(0,1fr); }
+  [data-theme-login-layout="reversed"] .auth-login-visual { order:2; }
+  [data-theme-login-layout="reversed"] .auth-login-form-panel { order:1; }
+}
+@media(min-width:1280px) {
+  [data-theme-part="theme-group"][data-theme-direction="grid"], [data-theme-host-grid="true"] { grid-template-columns:repeat(var(--theme-columns-desktop,1),minmax(0,1fr)); }
+  [data-theme-part="theme-group"] > * { grid-column:span min(var(--theme-node-span,1),var(--theme-columns-desktop,1)); }
+}

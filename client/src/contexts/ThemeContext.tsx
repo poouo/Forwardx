@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 
 type Theme = "dark" | "light" | "system";
 
@@ -38,7 +38,16 @@ export function ThemeProvider({
     () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
   );
 
-  const resolvedTheme = getResolvedTheme(theme);
+  const [systemTheme, setSystemTheme] = useState(() => getResolvedTheme("system"));
+  const resolvedTheme = theme === "system" ? systemTheme : getResolvedTheme(theme);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const sync = () => setSystemTheme(media.matches ? "dark" : "light");
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
 
   useLayoutEffect(() => {
     const root = window.document.documentElement;

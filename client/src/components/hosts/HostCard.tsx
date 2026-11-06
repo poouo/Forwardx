@@ -34,6 +34,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { hostThemeValues, type ThemeValues } from "@shared/themeFields";
+import type { ThemeViews } from "@shared/themeViews";
+import ThemeBlocks from "@/components/themes/ThemeBlocks";
 import {
   formatBytes,
   formatUptime,
@@ -107,6 +110,8 @@ type HostCardProps = {
   compact?: boolean;
   dragHandle?: ReactNode;
   sortableClassName?: string;
+  theme?: ThemeViews["hosts"];
+  themeValues?: ThemeValues;
 };
 
 type HostActionButtonsProps = Pick<
@@ -143,7 +148,7 @@ export function HostActionButtons({
   };
 
   return (
-    <div className={className}>
+    <div data-theme-part="host-actions" className={className}>
       {onViewProbeLatency && (
         <Button
           variant="ghost"
@@ -233,6 +238,8 @@ export default function HostCard({
   compact = false,
   dragHandle,
   sortableClassName,
+  theme,
+  themeValues,
 }: HostCardProps) {
   const hasExternalMetrics = externalMetrics !== undefined;
   const { data: queriedMetrics } = trpc.hosts.metrics.useQuery(
@@ -454,8 +461,22 @@ export default function HostCard({
     writeCachedHostMetrics(host.id, metrics);
   }, [host.id, metrics]);
 
+  if (theme?.card) {
+    const actions = <div data-theme-part="host-actions">
+      <div className="flex min-w-0 items-center gap-2"><span className="sr-only">{hostName}</span>{dragHandle}</div>
+      <HostActionButtons host={host} onEdit={onEdit} onDelete={onDelete} onUpgrade={onUpgrade} onResetTraffic={onResetTraffic} onCorrectTraffic={onCorrectTraffic} onViewProbeLatency={onViewProbeLatency} resetTrafficPending={resetTrafficPending} canUpgrade={canUpgrade} />
+    </div>;
+    return <Card data-theme-host-card="true" data-theme-host-status={isOnline ? "online" : "offline"} data-theme-card-mode={compact ? "compact" : "standard"} aria-label={hostName} className={cn("host-card-shell min-w-0 overflow-hidden border-border/40 bg-card/60", dragHandle && "group/sortable", sortableClassName)}>
+      {theme.actionsPlacement !== "footer" && <CardHeader className="pb-2">{actions}</CardHeader>}
+      <CardContent data-theme-part="host-card" className={theme.actionsPlacement === "footer" ? "pt-6" : undefined}>
+        <ThemeBlocks node={theme.card} values={{ ...themeValues, ...hostThemeValues(host, displayMetrics, traffic) }} />
+      </CardContent>
+      {theme.actionsPlacement === "footer" && <div className="px-6 pb-4">{actions}</div>}
+    </Card>;
+  }
+
   return (
-    <Card interactive={isOnline} className={`${cardMinHeightClass} host-card-shell ${dragHandle ? "group/sortable" : ""} ${sortableClassName || ""} transition-[min-height,border-color,background-color,box-shadow,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+    <Card interactive={isOnline} data-theme-host-card="true" data-theme-host-status={isOnline ? "online" : "offline"} data-theme-card-mode={compact ? "compact" : "standard"} className={`${cardMinHeightClass} host-card-shell ${dragHandle ? "group/sortable" : ""} ${sortableClassName || ""} transition-[min-height,border-color,background-color,box-shadow,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
@@ -499,7 +520,7 @@ export default function HostCard({
           </div>
         )}
       </CardHeader>
-      <CardContent className={`host-card-mode-content ${compact ? "host-card-mode-content-compact space-y-2 px-3.5 pb-3.5" : "host-card-mode-content-standard space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
+      <CardContent data-theme-part="host-card" className={`host-card-mode-content ${compact ? "host-card-mode-content-compact space-y-2 px-3.5 pb-3.5" : "host-card-mode-content-standard space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
         {compact ? (
           <div className="space-y-2">
             <div className={`min-w-0 rounded-md border px-2.5 py-1.5 ${infoPanelClass}`}>

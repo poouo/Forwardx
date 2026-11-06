@@ -1,6 +1,7 @@
 import { getFormatLocale, getLanguage } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { useThemeDefinition } from "@/lib/themeRuntime";
 import LanguageSelector from "@/components/LanguageSelector";
 import PearlSidebarContent from "@/components/PearlSidebarContent";
 import DiscordAccountCard from "@/components/DiscordAccountCard";
@@ -378,7 +379,7 @@ function DashboardShell({
 
   return (
     <DashboardShellContext.Provider value={true}>
-      <SidebarProvider className="pearl-shell">
+      <SidebarProvider data-theme-part="shell" className="pearl-shell">
         <DashboardLayoutContent>
           {children}
         </DashboardLayoutContent>
@@ -393,6 +394,7 @@ function DashboardLayoutContent({
   children: React.ReactNode;
 }) {
   const { user, logout } = useAuth();
+  const managedTheme = useThemeDefinition();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar, isMobile, openMobile, setOpenMobile } = useSidebar();
   const openMobileRef = useRef(openMobile);
@@ -1434,7 +1436,7 @@ function DashboardLayoutContent({
 
   return (
     <>
-      <Sidebar collapsible="icon" className="pearl-sidebar border-r border-sidebar-border/60">
+      <Sidebar data-theme-part="sidebar" side={managedTheme?.manifest.views?.shell?.navigation || "left"} collapsible="icon" className="pearl-sidebar border-r border-sidebar-border/60">
         <SidebarHeader className="h-16 md:h-[var(--pearl-header-height)] justify-center mobile-sidebar-header">
           <div className={cn("flex w-full items-center gap-3", isDesktopCollapsed ? "justify-center px-0" : "px-2")}>
             {!isDesktopCollapsed ? (
@@ -1667,9 +1669,9 @@ function DashboardLayoutContent({
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="pearl-workspace">
+      <SidebarInset data-theme-part="workspace" className="pearl-workspace">
         {!isMobile && (
-          <header className="pearl-topbar">
+          <header data-theme-part="header" className="pearl-topbar">
             <div className="pearl-topbar-crumb">
               <span className="text-muted-foreground">{siteTitle}</span>
               <span className="text-muted-foreground/50" aria-hidden="true">/</span>
@@ -1709,7 +1711,7 @@ function DashboardLayoutContent({
             </button>
           </div>
         )}
-        <main data-mobile-main="true" className="min-w-0 flex-1 px-3 pb-3 pt-3 sm:p-6">
+        <main data-theme-part="content" data-mobile-main="true" className="min-w-0 flex-1 px-3 pb-3 pt-3 sm:p-6">
           <div key={location} className="route-content-enter min-w-0">
             {children}
           </div>

@@ -9,6 +9,7 @@ import { RuleGroupBar, RuleGroupMultiSelect, RuleGroupBulkEditor, RuleGroupBulkP
 import { RuleCardControls } from "@/components/rules/RuleCardControls";
 import { RulePersonalGroupBadges } from "@/components/rules/RulePersonalGroupBadges";
 import { RuleCardMetadata } from "@/components/rules/RuleCardMetadata";
+import { RuleEntryAddresses } from "@/components/rules/RuleEntryAddresses";
 import ListSettings from "@/components/ListSettings";
 import ColumnResizeHandle from "@/components/ColumnResizeHandle";
 import { useRuleTableLayout } from "@/hooks/useRuleTableLayout";
@@ -101,7 +102,9 @@ import {
 } from "@/lib/ruleTransfer";
 import { parseCompatibleRuleTransferText, validateNyanpassImportTarget, type CompatibleRuleFile } from "@/lib/nyanpassImport";
 import {
+  appendRuleEntryIpv6Addresses,
   filterRuleEntryAddressesForDisplay,
+  formatRuleEntryAddress as formatAddressWithPort,
   getEntryAddressFamily as addressFamily,
   resolveRuleEntryHost,
   type EntryAddressFamily,
@@ -947,14 +950,6 @@ function getHostEntryAddress(host: any | null | undefined): string {
   return getHostEntryAddresses(host)[0]?.value || "";
 }
 
-function formatAddressWithPort(address: string, port: number | string): string {
-  const value = String(address || "").trim();
-  if (!value) return "";
-  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
-    return `[${value}]:${port}`;
-  }
-  return `${value}:${port}`;
-}
 
 function normalizeForwardGroupModeForRule(group: any | null | undefined) {
   const mode = String(group?.groupMode || "failover");
@@ -5551,13 +5546,14 @@ function RulesContent() {
       ? forwardGroupById.get(Number(tunnel.entryGroupId)) || tunnel.entryGroup
       : null;
     const entryGroupDomain = String(entryGroup?.domain || "").trim();
-    if (entryGroupDomain) {
-      pushUniqueEntryAddress(rows, "入口组", entryGroupDomain);
-      return rows;
-    }
     const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
       ? enabledHostMembers(entryGroup)
       : [];
+    if (entryGroupDomain) {
+      pushUniqueEntryAddress(rows, "入口组", entryGroupDomain);
+      return appendRuleEntryIpv6Addresses(rows, entryMembers.flatMap((member: any) =>
+        getHostEntryAddresses(getTunnelEntryHostForDisplay(tunnel, Number(member.hostId || 0)))));
+    }
     if (entryMembers.length > 0) {
       const memberEntries = entryMembers.flatMap((member: any) => {
         const host = getTunnelEntryHostForDisplay(tunnel, Number(member.hostId || 0));
@@ -5567,7 +5563,7 @@ function RulesContent() {
         || memberEntries.find((entry) => addressFamily(entry.value) === "hostname");
       if (memberDomain) {
         pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
-        return rows;
+        return appendRuleEntryIpv6Addresses(rows, memberEntries);
       }
       const firstEntryHost = getTunnelEntryHostForDisplay(tunnel, Number(entryMembers[0]?.hostId || 0));
       for (const entry of getHostEntryAddresses(firstEntryHost)) {
@@ -5623,7 +5619,6 @@ function RulesContent() {
     const domain = String(group?.domain || (parallel ? entryDomainForForwardGroup(group) : "")).trim();
     if (domain) {
       pushUniqueEntryAddress(rows, getForwardGroupRouteLabel(group), domain);
-      if (!parallel) return rows;
     }
     const activeMemberId = Number(group?.activeMemberId || 0);
     const members = [...(group?.members || [])]
@@ -5636,6 +5631,11 @@ function RulesContent() {
         return Number(a.priority || 0) - Number(b.priority || 0);
       });
     for (const member of members) {
+      if (domain && !parallel) {
+        const memberEntries: EntryAddress[] = [];
+        pushMemberEntryAddresses(memberEntries, member);
+        return appendRuleEntryIpv6Addresses(rows, memberEntries);
+      }
       pushMemberEntryAddresses(rows, member);
       if (rows.length > 0 && !parallel) return rows;
     }
@@ -5649,20 +5649,24 @@ function RulesContent() {
       ? forwardGroupById.get(Number(group.entryGroupId)) || group.entryGroup
       : null;
     const domain = entryDomainForForwardGroup(group);
-    if (domain) {
-      pushUniqueEntryAddress(rows, "入口组", domain);
-      return rows;
-    }
     const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
       ? enabledHostMembers(entryGroup)
       : [];
+    if (domain) {
+      pushUniqueEntryAddress(rows, "入口组", domain);
+      const alternatives: EntryAddress[] = [];
+      for (const member of entryMembers.length ? entryMembers : (group.members || []).slice(0, 1)) {
+        pushMemberEntryAddresses(alternatives, member);
+      }
+      return appendRuleEntryIpv6Addresses(rows, alternatives);
+    }
     if (entryMembers.length > 0) {
       const memberDomain = entryMembers
         .map((member: any) => getHostEntryAddresses(getMemberEntryHost(member)).find((entry) => addressFamily(entry.value) === "hostname"))
         .find(Boolean);
       if (memberDomain) {
         pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
-        return rows;
+        return appendRuleEntryIpv6Addresses(rows, entryMembers.flatMap((member: any) => getHostEntryAddresses(getMemberEntryHost(member))));
       }
       const firstEntryMember = entryMembers[0];
       pushMemberEntryAddresses(rows, firstEntryMember);
@@ -5775,15 +5779,11 @@ function RulesContent() {
       : [{ label: translateText("入口"), value: "", text: translateText("入口地址暂不可用"), copyable: false }];
     const entryAddress = resolvedEntryAddresses.map((entry) => entry.text).join(" / ");
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
-    const entryTitle = rule.forwardGroupId
-      ? translateText("复制{0}入口: {1}", [groupRouteLabel, entryAddress])
-      : translateText("复制入口地址: {0}", [entryAddress]);
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     return {
       entryAddresses,
       entryAddress,
       targetAddress,
-      entryTitle,
       failoverCount,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
@@ -5794,7 +5794,6 @@ function RulesContent() {
     const {
       entryAddresses,
       targetAddress,
-      entryTitle,
       failoverCount,
       failoverEnabled,
       failoverStrategy,
@@ -5817,21 +5816,7 @@ function RulesContent() {
       <div className="pearl-transfer min-w-0 space-y-1.5 font-mono text-xs">
         <div className={panelClass}>
           <div className={labelClass}>{translateText("入口")}</div>
-          <div className="flex min-w-0 flex-col gap-1">
-            {entryAddresses.map((entry) => (
-              <button
-                key={`${entry.label}:${entry.value}`}
-                type="button"
-                onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
-                disabled={!entry.copyable}
-                className="group flex max-w-full min-w-0 items-start justify-between gap-1.5 rounded bg-muted/35 px-1.5 py-1 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
-                title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
-              >
-                <code className={valueClass}>{entry.text}</code>
-                {entry.copyable && <Copy className="mt-0.5 h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
-              </button>
-            ))}
-          </div>
+          <RuleEntryAddresses entries={entryAddresses} compact={compact} onCopy={value => copyEntryAddress(rule, value)} />
         </div>
         <div className="flex justify-center">
           <span aria-hidden="true" className="pearl-transfer-connector inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/50 bg-card text-primary shadow-sm">
@@ -5852,25 +5837,8 @@ function RulesContent() {
   };
 
   const renderTableTransferEntry = (rule: any) => {
-    const { entryAddresses, entryTitle } = getRuleTransferDisplay(rule);
-    return (
-      <div className="flex min-w-0 items-center gap-1 overflow-hidden font-mono text-[11px] leading-5">
-        {entryAddresses.map((entry) => (
-          <button
-            key={`${entry.label}:${entry.value}`}
-            type="button"
-            onClick={() => entry.copyable && copyEntryAddress(rule, entry.value)}
-            disabled={!entry.copyable}
-            className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
-            title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
-          >
-            {entryAddresses.length > 1 && <span className="shrink-0 text-[10px] text-muted-foreground">{entry.label}</span>}
-            <code className="min-w-0 truncate">{entry.text}</code>
-            {entry.copyable && <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
-          </button>
-        ))}
-      </div>
-    );
+    const { entryAddresses } = getRuleTransferDisplay(rule);
+    return <RuleEntryAddresses entries={entryAddresses} table onCopy={value => copyEntryAddress(rule, value)} />;
   };
 
   const renderTableTransferExit = (rule: any) => {

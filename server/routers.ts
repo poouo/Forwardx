@@ -1,4 +1,5 @@
 import { systemRouter } from "./_core/systemRouter";
+import { themesRouter } from "./routers/themes";
 import { paymentRouter } from "./payment";
 import { router } from "./_core/trpc";
 import { agentTokensRouter } from "./routers/agentTokens";
@@ -26,6 +27,7 @@ import { usersRouter } from "./routers/users";
 
 export const appRouter = router({
   system: systemRouter,
+  themes: themesRouter,
   setup: setupRouter,
   payment: paymentRouter,
   billing: billingRouter,

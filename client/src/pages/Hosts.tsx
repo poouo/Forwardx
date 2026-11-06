@@ -15,6 +15,11 @@ import DateTimePickerInput, {
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
 import HostCard, { HostActionButtons } from "@/components/hosts/HostCard";
+import ThemeBlocks, { themeColumnStyles } from "@/components/themes/ThemeBlocks";
+import { useThemeDefinition } from "@/lib/themeRuntime";
+import { themeText } from "@shared/themeViews";
+import type { ThemeValues } from "@shared/themeFields";
+import { getLanguage } from "@/i18n";
 import HostLoad from "@/components/hosts/HostLoad";
 import HostConnectionCount from "@/components/hosts/HostConnectionCount";
 import HostDeleteDialog from "@/components/hosts/HostDeleteDialog";
@@ -1256,10 +1261,15 @@ function HostGroupFilterBar({
 
 function HostsContent() {
   const { user } = useAuth();
+  const managedTheme = useThemeDefinition();
+  const themeHosts = managedTheme?.manifest.views?.hosts;
   const tableLayout = useHostTableLayout(user);
   const utils = trpc.useUtils();
   const pageVisible = usePageVisible();
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
+  useEffect(() => {
+    setViewMode(themeHosts?.defaultView || getStoredHostViewMode());
+  }, [managedTheme?.revision]);
   const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
     values: user?.role === "admin" ? HOST_MANAGE_TABS_ADMIN : HOST_MANAGE_TABS_USER,
     defaultValue: "hosts",
@@ -2112,6 +2122,8 @@ function HostsContent() {
       compact={options.compact ?? viewMode === "compact-card"}
       dragHandle={options.dragHandle}
       sortableClassName={options.sortableClassName}
+      theme={themeHosts}
+      themeValues={themePageValues}
     />
   );
   const requestResetHostTraffic = (host: any) => {
@@ -2276,12 +2288,28 @@ function HostsContent() {
       />;
     }
   };
+  const themePageValues: ThemeValues = {
+    "site.title": systemSettings?.siteTitle || "ForwardX", "site.version": systemSettings?.version || null,
+    "viewer.name": user?.name || user?.username || null, "viewer.role": user?.role || null,
+    "fleet.total": effectiveHostSummary?.totalHosts ?? displayedHostTotal,
+    "fleet.online": effectiveHostSummary?.onlineHosts ?? onlineCount,
+    "fleet.offline": Math.max(0, (effectiveHostSummary?.totalHosts ?? displayedHostTotal) - (effectiveHostSummary?.onlineHosts ?? onlineCount)),
+    "fleet.networkInSpeed": effectiveHostSummary?.currentTrafficIn ?? null, "fleet.networkOutSpeed": effectiveHostSummary?.currentTrafficOut ?? null,
+    "fleet.trafficIn": effectiveHostSummary?.totalTrafficIn ?? null, "fleet.trafficOut": effectiveHostSummary?.totalTrafficOut ?? null,
+  };
+  const themeSectionStyle = (section: "intro" | "summary" | "groups" | "list" | "outro") => themeHosts?.sections ? { order: themeHosts.sections.indexOf(section) } : undefined;
+  const themeGridConfigured = !!themeHosts && !!(themeHosts.cardLayout || themeHosts.columns || themeHosts.gap !== undefined);
+  const themeGridProps = {
+    "data-theme-part": "host-grid",
+    "data-theme-host-grid": themeGridConfigured ? "true" : undefined,
+    style: themeGridConfigured ? { ...themeColumnStyles(themeHosts?.cardLayout === "rows" ? { mobile: 1, tablet: 1, desktop: 1 } : themeHosts?.columns), gap: themeHosts?.gap ?? 16 } : undefined,
+  };
   return (
-    <div className="space-y-6">
+    <div data-theme-part="hosts" className="space-y-6">
       {/* Header */}
-      <div className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div data-theme-part="hosts-toolbar" className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("主机管理")}</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{themeText(themeHosts?.title, getLanguage(), translateText("主机管理"))}</h1>
         </div>
         <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
@@ -2513,8 +2541,9 @@ function HostsContent() {
       >
         <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} onValueChange={setActiveManageTab} ariaLabel={translateText("主机管理")} minItemWidthRem={7.5} />
 
-        <TabsContent value="hosts" className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <TabsContent value="hosts" data-theme-part="hosts-page" data-theme-hosts-configured={themeHosts ? "true" : undefined} className="space-y-4">
+        {themeHosts?.intro && <div data-theme-part="hosts-intro" style={themeSectionStyle("intro")}><ThemeBlocks node={themeHosts.intro} values={themePageValues} /></div>}
+        {themeHosts?.showSummary !== false && <div data-theme-part="hosts-summary" style={themeSectionStyle("summary")} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           <HostSummaryCard
             title={translateText("在线状态")}
             value={`${effectiveHostSummary?.onlineHosts ?? onlineCount} / ${effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length}`}
@@ -2553,8 +2582,9 @@ function HostsContent() {
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.totalTraffic"
           />
-        </div>
+        </div>}
         {user?.role === "admin" && (
+          <div data-theme-part="hosts-groups" style={themeSectionStyle("groups")}>
           <HostGroupFilterBar
             groups={hostGroups as HostGroupView[]}
             totalHosts={Number(hostPageQuery.data?.scopeTotalItems || 0)}
@@ -2562,8 +2592,10 @@ function HostsContent() {
             selectedGroupId={selectedHostGroupId}
             onSelectGroup={setSelectedHostGroupId}
           />
+          </div>
         )}
       {/* Content */}
+      <div data-theme-part="hosts-list" className="min-w-0 space-y-4" style={themeSectionStyle("list")}>
       {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label={translateText("正在加载主机数据")} minHeight="min-h-[260px]" />
       ) : isError ? (
@@ -2622,6 +2654,7 @@ function HostsContent() {
             <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="rect">
               <div
                 key={`host-card-mode-sortable-${hostCardListMotionKey}`}
+                {...themeGridProps}
                 className={viewMode === "compact-card" ? "standard-card-grid-compact gap-3" : "standard-card-grid gap-4"}
               >
                 {pagedHosts.map((host) => (
@@ -2642,6 +2675,7 @@ function HostsContent() {
           ) : (
             <AutoAnimateContainer
               key={`host-card-mode-${hostCardListMotionKey}`}
+              {...themeGridProps}
               duration={220}
               layout={false}
               className={
@@ -2753,6 +2787,8 @@ function HostsContent() {
           </CardContent>
         </Card>
       )}
+        </div>
+        {themeHosts?.outro && <div data-theme-part="hosts-outro" style={themeSectionStyle("outro")}><ThemeBlocks node={themeHosts.outro} values={themePageValues} /></div>}
         </TabsContent>{user?.role === "admin" && (
           <TabsContent value="tokens" className="space-y-4">
             <AgentTokenManager
