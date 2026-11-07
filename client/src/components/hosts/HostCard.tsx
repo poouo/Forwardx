@@ -35,6 +35,7 @@ import {
 import { useEffect, useMemo, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { hostThemeValues, type ThemeValues } from "@shared/themeFields";
+import { hostNetworkSpeed } from "@shared/hostNetworkSpeed";
 import type { ThemeViews } from "@shared/themeViews";
 import ThemeBlocks from "@/components/themes/ThemeBlocks";
 import {
@@ -299,22 +300,7 @@ export default function HostCard({
       ? `Swap ${formatBytes(swapUsed ?? 0)} / ${formatBytes(swapTotal ?? 0)} (${swapUsage}%)`
       : translateText("Swap 未上报"),
   ].join("\n");
-  const networkSpeed = useMemo(() => {
-    if (!latestMetric) return { in: null as number | null, out: null as number | null };
-    if (latestMetric.networkSpeedIn != null || latestMetric.networkSpeedOut != null) {
-      return {
-        in: latestMetric.networkSpeedIn == null ? null : Number(latestMetric.networkSpeedIn),
-        out: latestMetric.networkSpeedOut == null ? null : Number(latestMetric.networkSpeedOut),
-      };
-    }
-    if (!previousMetric) return { in: null as number | null, out: null as number | null };
-    const latestAt = new Date(latestMetric.recordedAt).getTime();
-    const previousAt = new Date(previousMetric.recordedAt).getTime();
-    const seconds = Math.max(1, (latestAt - previousAt) / 1000);
-    const inDelta = Math.max(0, Number(latestMetric.networkIn || 0) - Number(previousMetric.networkIn || 0));
-    const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
-    return { in: inDelta / seconds, out: outDelta / seconds };
-  }, [latestMetric, previousMetric]);
+  const networkSpeed = hostNetworkSpeed(latestMetric, previousMetric, { isOnline: !!host.isOnline });
   const systemNetworkIn = metricBytesOrNull(latestMetric?.networkIn);
   const systemNetworkOut = metricBytesOrNull(latestMetric?.networkOut);
   const systemNetworkTotal = systemNetworkIn === null && systemNetworkOut === null ? null : (systemNetworkIn ?? 0) + (systemNetworkOut ?? 0);

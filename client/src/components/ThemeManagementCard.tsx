@@ -1,18 +1,16 @@
 import { useRef, useState } from "react";
-import { CheckCircle2, Download, Eye, Loader2, Palette, RotateCcw, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, Download, Loader2, Palette, RotateCcw, Trash2, Upload } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { t } from "@/i18n";
 import { toast } from "@/lib/localizedToast";
 import { downloadBlobFile } from "@/lib/fileDownload";
-import ThemePreviewFrame from "./themes/ThemePreviewFrame";
 import ThemeFieldReference from "./themes/ThemeFieldReference";
 import { getPersonalizationThemePreset } from "@shared/personalization";
-import { THEME_LIMITS, type ThemeSummary } from "@shared/themes";
+import { THEME_LIMITS } from "@shared/themes";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { useConfirmDialog } from "./ui/confirm-dialog";
 
 export default function ThemeManagementCard() {
@@ -24,22 +22,17 @@ export default function ThemeManagementCard() {
   const [reading, setReading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [importUrl, setImportUrl] = useState("");
-  const [preview, setPreview] = useState<ThemeSummary | null>(null);
-  const [darkPreview, setDarkPreview] = useState(false);
-  const [previewKind, setPreviewKind] = useState<"workspace" | "hosts" | "login">("workspace");
-  const [previewViewport, setPreviewViewport] = useState<"desktop" | "mobile">("desktop");
-  const previewQuery = trpc.themes.preview.useQuery({ id: preview?.id || "ink" }, { enabled: !!preview && !preview.builtin, retry: false });
   const refresh = () => Promise.all([utils.themes.list.invalidate(), utils.system.publicInfo.invalidate(), utils.system.getSettings.invalidate()]);
   const activate = trpc.themes.activate.useMutation({
     onSuccess: async () => { await refresh(); toast.success(t("全站主题已切换")); },
     onError: error => toast.error(error.message),
   });
   const install = trpc.themes.install.useMutation({
-    onSuccess: async () => { await utils.themes.list.invalidate(); toast.success(t("主题已安装，可预览后启用")); },
+    onSuccess: async () => { await utils.themes.list.invalidate(); toast.success(t("主题已安装，可点击应用主题启用")); },
     onError: error => toast.error(error.message),
   });
   const importLink = trpc.themes.importUrl.useMutation({
-    onSuccess: async () => { setImportUrl(""); await utils.themes.list.invalidate(); toast.success(t("主题已安装，可预览后启用")); },
+    onSuccess: async () => { setImportUrl(""); await utils.themes.list.invalidate(); toast.success(t("主题已安装，可点击应用主题启用")); },
     onError: error => toast.error(error.message),
   });
   const remove = trpc.themes.remove.useMutation({
@@ -50,7 +43,7 @@ export default function ThemeManagementCard() {
 
   async function upload(file: File | undefined) {
     if (!file) return;
-    if (file.size > THEME_LIMITS.archiveBytes) { toast.error(t("请选择不超过 3MB 的主题压缩包")); return; }
+    if (file.size > THEME_LIMITS.archiveBytes) { toast.error(t("请选择不超过 {0}MB 的主题压缩包", [THEME_LIMITS.archiveBytes / 1024 ** 2])); return; }
     setReading(true);
     try {
       const encoded = await new Promise<string>((resolve, reject) => {
@@ -94,7 +87,7 @@ export default function ThemeManagementCard() {
         <Button type="submit" variant="outline" className="shrink-0 gap-2" disabled={busy || !list.data || !importUrl.trim()}>{importLink.isPending && <Loader2 className="h-4 w-4 animate-spin" />}{t("从链接导入")}</Button>
       </form>
       <label className="flex items-center gap-2 text-sm text-muted-foreground"><input type="checkbox" checked={replace} disabled={busy} onChange={event => setReplace(event.target.checked)} />{t("替换相同 ID 的已安装主题（需先停用）")}</label>
-      <p className="text-xs leading-5 text-muted-foreground">{t("支持 ZIP、RAR、TAR、TAR.GZ、TGZ，最大 3MB，根目录需包含 theme.json 和样式表；安装后不会自动启用。")}</p>
+      <p className="text-xs leading-5 text-muted-foreground">{t("支持 ZIP、RAR、TAR、TAR.GZ、TGZ，最大 {0}MB，单个图片或字体不超过 {1}MB；根目录需包含 theme.json 和样式表，安装后不会自动启用。", [THEME_LIMITS.archiveBytes / 1024 ** 2, THEME_LIMITS.fileBytes / 1024 ** 2])}</p>
       {list.isLoading && <p role="status" className="text-sm text-muted-foreground">{t("正在加载主题")}</p>}
       {list.error && <div role="alert" className="flex items-center gap-3 text-sm text-destructive"><span>{list.error.message}</span><Button variant="outline" size="sm" onClick={() => list.refetch()}>{t("重试")}</Button></div>}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -107,7 +100,6 @@ export default function ThemeManagementCard() {
             <div className="flex items-center gap-2">{preset.swatches.map(color => <span key={color} className="h-6 w-6 rounded-full border border-border/50" style={{ backgroundColor: color }} />)}<span className="ml-auto truncate text-xs text-muted-foreground" title={theme.author}>{theme.author} · {theme.version}</span></div>
             <div className="mt-auto flex flex-wrap gap-2">
               <Button type="button" size="sm" variant={active ? "secondary" : "default"} disabled={busy || active} onClick={() => activate.mutate({ id: theme.id })}>{activate.isPending && activate.variables?.id === theme.id && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}{t(active ? "使用中" : "应用主题")}</Button>
-              <Button type="button" size="sm" variant="outline" onClick={() => setPreview(theme)} className="gap-1"><Eye className="h-3.5 w-3.5" />{t("预览")}</Button>
               {!theme.builtin && <Button type="button" size="sm" variant="ghost" disabled={busy || active} aria-label={`${t("删除主题")} ${theme.name}`} onClick={async () => {
                 if (await confirm({ title: t("删除主题"), description: `${t("确认删除此主题？")} ${theme.name}`, tone: "destructive" })) remove.mutate({ id: theme.id });
               }}><Trash2 className="h-3.5 w-3.5" /></Button>}
@@ -117,15 +109,5 @@ export default function ThemeManagementCard() {
       </div>
       <p className="text-xs leading-5 text-muted-foreground">{t("主题异常时，在面板地址后加 ?themeSafe=1 可进入安全模式，再恢复默认主题。开发接口与规范见教程「主题开发与接口」。")}</p>
     </CardContent>
-    <Dialog open={!!preview} onOpenChange={open => { if (!open) setPreview(null); }}>
-      <DialogContent className="max-w-4xl">
-        <DialogHeader><DialogTitle>{t("主题预览")} · {preview?.builtin ? t(preview.name) : preview?.name}</DialogTitle><DialogDescription>{t("示例预览独立于当前面板，不会修改全站主题。")}</DialogDescription></DialogHeader>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant={darkPreview ? "outline" : "default"} onClick={() => setDarkPreview(false)}>{t("浅色")}</Button><Button size="sm" variant={darkPreview ? "default" : "outline"} onClick={() => setDarkPreview(true)}>{t("深色")}</Button></div>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant={previewKind === "workspace" ? "default" : "outline"} onClick={() => setPreviewKind("workspace")}>{t("工作空间")}</Button><Button size="sm" variant={previewKind === "hosts" ? "default" : "outline"} onClick={() => setPreviewKind("hosts")}>{t("主机管理")}</Button><Button size="sm" variant={previewKind === "login" ? "default" : "outline"} onClick={() => setPreviewKind("login")}>{t("登录页")}</Button></div>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant={previewViewport === "desktop" ? "default" : "outline"} onClick={() => setPreviewViewport("desktop")}>{t("桌面预览")}</Button><Button size="sm" variant={previewViewport === "mobile" ? "default" : "outline"} onClick={() => setPreviewViewport("mobile")}>{t("移动端预览")}</Button></div>
-        {preview && (!preview.builtin && previewQuery.isLoading ? <p role="status">{t("正在加载主题")}</p> : !preview.builtin && previewQuery.error ? <p role="alert" className="text-destructive">{previewQuery.error.message}</p> : <ThemePreviewFrame theme={preview} dark={darkPreview} kind={previewKind} viewport={previewViewport} definition={preview.builtin ? undefined : previewQuery.data} />)}
-        <div className="flex justify-end"><Button disabled={busy || preview?.id === list.data?.active.id || (!preview?.builtin && !previewQuery.data)} onClick={() => { if (preview) activate.mutate({ id: preview.id }); }}>{t(preview?.id === list.data?.active.id ? "使用中" : "应用主题")}</Button></div>
-      </DialogContent>
-    </Dialog>
   </Card>;
 }

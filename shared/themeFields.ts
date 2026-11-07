@@ -1,3 +1,4 @@
+import { hostNetworkSpeed } from "./hostNetworkSpeed";
 /** Explicit presentation data contract. Never spread database rows into a theme model. */
 export const THEME_FIELDS = {
   "host.id": { label: "ID", format: "number", scope: "host" },
@@ -79,14 +80,7 @@ export function hostThemeValues(host: Record<string, any>, metrics: readonly Rec
   const used = mode === "outbound" ? outBytes : mode === "max" ? (inBytes === null || outBytes === null ? null : Math.max(inBytes, outBytes)) : (inBytes === null || outBytes === null ? null : inBytes + outBytes);
   const limit = number(host.trafficLimit);
   const expires = date(host.stoppedAt);
-  const speed = (direction: "In" | "Out") => {
-    const explicit = live(metric[`networkSpeed${direction}`]);
-    if (explicit !== null) return explicit;
-    const latestAt = date(metric.recordedAt), previousAt = date(previous?.recordedAt);
-    const currentBytes = live(metric[`network${direction}`]), previousBytes = number(previous?.[`network${direction}`]);
-    if (latestAt === null || previousAt === null || latestAt <= previousAt || currentBytes === null || previousBytes === null) return null;
-    return Math.max(0, currentBytes - previousBytes) / ((latestAt - previousAt) / 1000);
-  };
+  const networkSpeed = hostNetworkSpeed(metric, previous, { now, isOnline: online });
   const connection = (protocol: "tcp" | "udp", key: "total" | "inUse" | "timeWait") => {
     const snapshot = host.connectionStats, count = snapshot?.stats?.[protocol];
     if (!online || !snapshot || count?.status !== "ok" || !Number.isFinite(snapshot.receivedAt) || !Number.isFinite(snapshot.stats.sampledAt)
@@ -106,7 +100,7 @@ export function hostThemeValues(host: Record<string, any>, metrics: readonly Rec
     "host.memoryUsage": live(metric.memoryUsage), "host.memoryUsed": live(metric.memoryUsed), "host.memoryTotal": number(host.memoryTotal),
     "host.swapUsage": live(metric.swapUsage), "host.swapUsed": live(metric.swapUsed), "host.swapTotal": live(metric.swapTotal),
     "host.diskUsage": live(metric.diskUsage), "host.diskUsed": live(metric.diskUsed), "host.diskTotal": number(metric.diskTotal),
-    "host.networkInSpeed": speed("In"), "host.networkOutSpeed": speed("Out"), "host.systemNetworkIn": live(metric.networkIn), "host.systemNetworkOut": live(metric.networkOut),
+    "host.networkInSpeed": networkSpeed.in, "host.networkOutSpeed": networkSpeed.out, "host.systemNetworkIn": live(metric.networkIn), "host.systemNetworkOut": live(metric.networkOut),
     "host.trafficIn": inBytes, "host.trafficOut": outBytes, "host.trafficUsed": used, "host.trafficLimit": limit,
     "host.trafficRemaining": limit && used !== null ? Math.max(0, limit - used) : null,
     "host.trafficPercent": limit && used !== null ? used / limit * 100 : null,

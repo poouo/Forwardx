@@ -338,7 +338,7 @@ export async function getHostsPage(input: HostListQuery) {
 
 export async function getHostSummaryScope(input: Omit<HostListQuery, keyof PageRequest>) {
   const db = await getDb();
-  if (!db) return { hostIds: [] as number[], totalHosts: 0, onlineHosts: 0 };
+  if (!db) return { hostIds: [] as number[], onlineHostIds: [] as number[], totalHosts: 0, onlineHosts: 0 };
   const condition = hostListCondition(input);
   const cutoffSeconds = Math.floor((Date.now() - HOST_ONLINE_TTL_MS) / 1000);
   const onlineExpression = sql<number>`CASE
@@ -352,13 +352,14 @@ export async function getHostSummaryScope(input: Omit<HostListQuery, keyof PageR
       onlineHosts: sql<number>`COALESCE(SUM(${onlineExpression}), 0)`,
     })
     .from(hosts);
-  const idsQuery = db.select({ id: hosts.id }).from(hosts);
+  const idsQuery = db.select({ id: hosts.id, isOnline: hosts.isOnline, lastHeartbeat: hosts.lastHeartbeat }).from(hosts);
   const [totals, idRows] = await Promise.all([
     condition ? aggregate.where(condition) : aggregate,
     condition ? idsQuery.where(condition) : idsQuery,
   ]);
   return {
     hostIds: idRows.map((row: any) => Number(row.id)).filter((id: number) => id > 0),
+    onlineHostIds: idRows.filter((row: any) => withComputedOnline(row).isOnline).map((row: any) => Number(row.id)),
     totalHosts: Number(totals[0]?.totalHosts || 0),
     onlineHosts: Number(totals[0]?.onlineHosts || 0),
   };

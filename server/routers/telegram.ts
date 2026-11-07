@@ -53,6 +53,7 @@ async function getTelegramRuntimeSettings() {
   return {
     token,
     enabled,
+    loginEnabled: settings.telegramLoginEnabled !== "false",
     configured: !!token,
     botUsername: settings.telegramBotUsername || "",
     panelPublicUrl: String(settings.panelPublicUrl || "").trim().replace(/\/+$/, ""),
@@ -201,6 +202,7 @@ export const telegramRouter = router({
     const settings = await getTelegramSettings();
     return {
       enabled: settings.enabled,
+      loginEnabled: settings.loginEnabled,
       configured: settings.configured,
       botUsername: settings.botUsername,
       panelPublicUrl: settings.panelPublicUrl,

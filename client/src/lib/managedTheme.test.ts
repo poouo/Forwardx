@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyManagedTheme, clearManagedTheme } from "./managedTheme";
 import { getPersonalizationThemePreset } from "@shared/personalization";
-import { BUILTIN_THEMES, themeTemplateFiles, type ThemeDefinition } from "@shared/themes";
-import { themePreviewDocument } from "./themePreview";
+import { themeTemplateFiles, type ThemeDefinition } from "@shared/themes";
 
 function fakeRoot() {
   const styles = new Map<string, string>(), attributes = new Map<string, string>(), nodes: any[] = [];
@@ -44,13 +43,4 @@ test("switching custom themes and color modes clears old variables, aliases and 
   assert.equal(dom.attributes.get("data-forwardx-theme"), "sakura");
   clearManagedTheme(dom.root);
   assert.equal(dom.styles.size, 0); assert.equal(dom.attributes.size, 0);
-});
-
-test("isolated preview escapes theme metadata and contains no scripts or external requests", () => {
-  const html = themePreviewDocument({ ...BUILTIN_THEMES[0], name: "<script>" }, false, undefined, { title: '</header><script>alert(1)</script>', navigation: "Dashboard", card: "Card", button: "Save", input: '" onfocus="alert(1)' });
-  assert.match(html, /Content-Security-Policy/);
-  assert.match(html, /default-src 'none'/);
-  assert.doesNotMatch(html, /<script|<\/header><script/);
-  assert.match(html, /&lt;script&gt;/);
-  assert.match(html, /data-theme-part="table"/);
 });

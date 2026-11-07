@@ -29,6 +29,7 @@ import { scopedTrafficSource } from "./trafficQueryScope";
 import { dashboardSummaries } from "../backgroundSummaryCache";
 import { billingStartOfCalendarDay } from "../../shared/billingTime";
 import { writeMysqlTrafficCounters } from "../mysqlTrafficCounters";
+import { hostNetworkSpeed } from "../../shared/hostNetworkSpeed";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -249,17 +250,11 @@ export async function getLatestHostMetricRows(hostIds?: number[]) {
     const latest = sorted[0];
     const previous = sorted[1];
     if (!latest) return null;
-    let networkSpeedIn: number | null = null;
-    let networkSpeedOut: number | null = null;
-    if (latest && previous) {
-      const elapsedSeconds = Math.max(1, (latest.recordedAt.getTime() - previous.recordedAt.getTime()) / 1000);
-      networkSpeedIn = Math.max(0, numeric(latest.networkIn) - numeric(previous.networkIn)) / elapsedSeconds;
-      networkSpeedOut = Math.max(0, numeric(latest.networkOut) - numeric(previous.networkOut)) / elapsedSeconds;
-    }
+    const speed = hostNetworkSpeed(latest, previous);
     return {
       ...latest,
-      networkSpeedIn,
-      networkSpeedOut,
+      networkSpeedIn: speed.in,
+      networkSpeedOut: speed.out,
     };
   }).filter(Boolean);
 }
@@ -267,8 +262,9 @@ export async function getLatestHostMetricRows(hostIds?: number[]) {
 type LatestHostMetricSnapshot = {
   id: number;
   hostId: number;
-  networkIn: number;
-  networkOut: number;
+  networkIn: number | null;
+  networkOut: number | null;
+  uptime?: number | null;
   recordedAt: Date;
   rn: number;
 };
@@ -277,8 +273,9 @@ function mapLatestHostMetricSnapshot(row: any): LatestHostMetricSnapshot {
   return {
     id: Number(row?.id || 0),
     hostId: Number(row?.hostId || 0),
-    networkIn: numeric(row?.networkIn),
-    networkOut: numeric(row?.networkOut),
+    networkIn: row?.networkIn == null ? null : numeric(row.networkIn),
+    networkOut: row?.networkOut == null ? null : numeric(row.networkOut),
+    uptime: row?.uptime == null ? null : numeric(row.uptime),
     recordedAt: rowDate(row?.recordedAt),
     rn: Math.max(1, Math.floor(Number(row?.rn || 0))),
   };
@@ -293,7 +290,7 @@ export async function getLatestHostMetricSnapshots(hostIds?: number[]) {
   if (ids.length === 0) return [];
   const rows = await queryLatestHostMetricRows(
     ids,
-    ["id", "hostId", "networkIn", "networkOut", "recordedAt"],
+    ["id", "hostId", "networkIn", "networkOut", "uptime", "recordedAt"],
   ).catch(() => []);
   return (rows as any[]).map(mapLatestHostMetricSnapshot).filter((row) => row.hostId > 0);
 }
@@ -312,22 +309,24 @@ export function summarizeHostInstantTraffic(rows: LatestHostMetricSnapshot[]) {
   let currentTrafficIn = 0;
   let currentTrafficOut = 0;
   let measuredHosts = 0;
+  let measuredIn = 0;
+  let measuredOut = 0;
 
   for (const bucket of byHost.values()) {
     if (bucket.length < 2) continue;
-    const [latest, previous] = bucket;
-    const elapsedSeconds = Math.max(1, (new Date(latest.recordedAt).getTime() - new Date(previous.recordedAt).getTime()) / 1000);
-    const inDelta = Math.max(0, Number(latest.networkIn || 0) - Number(previous.networkIn || 0));
-    const outDelta = Math.max(0, Number(latest.networkOut || 0) - Number(previous.networkOut || 0));
-    currentTrafficIn += inDelta / elapsedSeconds;
-    currentTrafficOut += outDelta / elapsedSeconds;
-    if (inDelta > 0 || outDelta > 0) measuredHosts += 1;
+    const [latest, previous] = bucket.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime() || b.id - a.id);
+    const speed = hostNetworkSpeed(latest, previous);
+    currentTrafficIn += speed.in ?? 0;
+    currentTrafficOut += speed.out ?? 0;
+    if (speed.in !== null) measuredIn += 1;
+    if (speed.out !== null) measuredOut += 1;
+    if (speed.in !== null || speed.out !== null) measuredHosts += 1;
   }
 
   return {
-    currentTrafficIn,
-    currentTrafficOut,
-    currentTrafficTotal: currentTrafficIn + currentTrafficOut,
+    currentTrafficIn: measuredIn ? currentTrafficIn : null,
+    currentTrafficOut: measuredOut ? currentTrafficOut : null,
+    currentTrafficTotal: measuredHosts ? currentTrafficIn + currentTrafficOut : null,
     measuredHosts,
   };
 }
