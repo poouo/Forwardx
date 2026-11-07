@@ -2911,6 +2911,27 @@ function paymentOrderTypeLabel(type: string | null | undefined) {
   return "余额充值";
 }
 
+export function canDeletePaymentOrder(order: { status: string; orderType?: string | null; paidAt?: unknown }) {
+  if (["paid", "processing"].includes(order.status)) return false;
+  if (order.orderType === "test") return ["pending", "completed", "expired", "cancelled", "failed"].includes(order.status);
+  return !order.paidAt && ["pending", "expired", "cancelled", "failed"].includes(order.status);
+}
+
+/** Dismiss from lists, retaining the order for verified late payment recovery. */
+export async function deletePaymentOrder(outTradeNo: string) {
+  return withDatabaseTransaction(async () => {
+    const order = await getPaymentOrderByOutTradeNoForUpdate(outTradeNo);
+    if (!order) throw new Error("订单不存在");
+    if (!canDeletePaymentOrder(order)) throw new Error("仅支持删除测试订单或未支付订单，支付处理中的订单请稍后再试");
+    if (order.adminDismissedAt) return;
+    if (order.status === "pending") {
+      if (order.discountCodeId && order.discountConsumed) await releaseDiscountCode(Number(order.discountCodeId));
+      await updatePaymentOrder(outTradeNo, { status: "cancelled", discountConsumed: false });
+    }
+    await updatePaymentOrder(outTradeNo, { adminDismissedAt: nowDate() });
+  });
+}
+
 function balanceTypeLabel(type: string) {
   if (type === "admin_recharge") return "管理员充值";
   if (type === "admin_adjust") return "管理员修改";
@@ -2995,6 +3016,7 @@ export async function listBillingLedger(options?: {
       id: `payment-${order.id}`,
       sourceId: order.id,
       kind: "payment",
+      canDelete: !!options?.isAdmin && canDeletePaymentOrder(order),
       category: paymentOrderTypeLabel(order.orderType),
       title: order.subject || paymentOrderTypeLabel(order.orderType),
       description: order.outTradeNo,
@@ -3059,6 +3081,7 @@ function billingLedgerUnion(input: BillingLedgerOptions, upperIds?: Map<BillingL
     const conditions: string[] = [];
     if (targetUserId !== undefined) { conditions.push(`${q("userId")} = ?`); parameters.push(targetUserId); }
     if (upperIds) { conditions.push(`${q("id")} <= ?`); parameters.push(upperIds.get(kind) ?? 0); }
+    if (kind === "payment") conditions.push(`${q("adminDismissedAt")} IS NULL`);
     if (kind === "subscription") {
       conditions.push(`${q("adminDismissedAt")} IS NULL`);
       if (!input.isAdmin) conditions.push(`${q("userDismissedAt")} IS NULL`);
@@ -3531,7 +3554,7 @@ export async function listPaymentOrders(limit = 100, userId?: number, selectedId
     })
     .from(paymentOrders)
     .leftJoin(users, eq(paymentOrders.userId, users.id));
-  const conditions = [];
+  const conditions = [isNull(paymentOrders.adminDismissedAt)];
   if (userId !== undefined) conditions.push(eq(paymentOrders.userId, userId));
   if (selectedIds) conditions.push(inArray(paymentOrders.id, selectedIds));
   return base.where(and(...conditions)).orderBy(desc(paymentOrders.createdAt), desc(paymentOrders.id)).limit(limit);
@@ -3637,6 +3660,7 @@ export async function markPaymentOrderPaid(outTradeNo: string, data: { tradeNo?:
          ${quoteDbIdentifier("rawNotify")} = COALESCE(?, ${quoteDbIdentifier("rawNotify")}),
          ${quoteDbIdentifier("currency")} = COALESCE(?, ${quoteDbIdentifier("currency")}),
          ${quoteDbIdentifier("paidAt")} = ?,
+         ${quoteDbIdentifier("adminDismissedAt")} = CASE WHEN ${quoteDbIdentifier("orderType")} = 'test' THEN ${quoteDbIdentifier("adminDismissedAt")} ELSE NULL END,
          ${quoteDbIdentifier("updatedAt")} = ?
      WHERE ${quoteDbIdentifier("outTradeNo")} = ?
        AND ${quoteDbIdentifier("status")} IN (${verifiedRecovery ? "?, ?, ?, ?" : "?"})`,
@@ -3714,7 +3738,7 @@ export async function getPaymentOrderStats() {
       paidOrders: sql<number>`SUM(CASE WHEN ${paymentOrders.status} IN ('paid', 'processing', 'completed') THEN 1 ELSE 0 END)`,
       paidAmountCents: sql<number>`COALESCE(SUM(CASE WHEN ${paymentOrders.status} IN ('paid', 'processing', 'completed') THEN ${paymentOrders.amountCents} ELSE 0 END), 0)`,
     })
-    .from(paymentOrders);
+    .from(paymentOrders).where(isNull(paymentOrders.adminDismissedAt));
   const row = rows[0];
   return {
     totalOrders: Number(row?.totalOrders || 0),

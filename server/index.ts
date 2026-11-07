@@ -30,6 +30,7 @@ import { serveClient } from "./clientStatic";
 import { mcpHttpRouter } from "./mcpRoutes";
 import { billingExportRouter } from "./billingExportRoutes";
 import { createBoundedBodyParser } from "./requestBodyParser";
+import { createThemeUploadBodyParser } from "./themeUpload";
 
 installPanelLogger();
 
@@ -142,9 +143,9 @@ async function startServer() {
   app.use(paymentCallbackRouter);
   // Bound MCP JSON before the larger plugin upload parser; authentication is token-only.
   app.use(mcpHttpRouter);
-  // Plugin archives are accepted as base64 JSON and can expand beyond the 5 MB binary limit.
-  app.use(createBoundedBodyParser());
   app.use(cookieParser());
+  // Theme archives use an authenticated, bounded upload budget; other APIs keep 10MB JSON.
+  app.use(createThemeUploadBodyParser(createBoundedBodyParser()));
   app.use(billingExportRouter);
   registerGoogleAuthRoutes(app);
   app.use(authCapRouter);

@@ -69,7 +69,7 @@ function readZipArchive(buffer: Buffer): Promise<Map<string, Buffer>> {
           return fail(new Error(`主题包含不支持的文件：${name}`));
         }
         if (entry.uncompressedSize > THEME_LIMITS.fileBytes || total + entry.uncompressedSize > THEME_LIMITS.expandedBytes) {
-          return fail(new Error("主题解压后过大（单文件 2MB、合计 6MB）"));
+          return fail(new Error(`主题解压后过大（单文件 ${THEME_LIMITS.fileBytes / 1024 ** 2}MB、合计 ${THEME_LIMITS.expandedBytes / 1024 ** 2}MB）`));
         }
         zip.openReadStream(entry, (streamError, stream) => {
           if (streamError || !stream) return fail(streamError || new Error("主题文件读取失败"));
@@ -117,7 +117,7 @@ async function readTarArchive(buffer: Buffer, gzip: boolean) {
       extract.destroy(new Error(`主题包含不支持的文件：${name}`)); return;
     }
     if ((header.size || 0) > THEME_LIMITS.fileBytes || total + (header.size || 0) > THEME_LIMITS.expandedBytes) {
-      extract.destroy(new Error("主题解压后过大（单文件 2MB、合计 6MB）")); return;
+      extract.destroy(new Error(`主题解压后过大（单文件 ${THEME_LIMITS.fileBytes / 1024 ** 2}MB、合计 ${THEME_LIMITS.expandedBytes / 1024 ** 2}MB）`)); return;
     }
     let size = 0;
     const chunks: Buffer[] = [];
@@ -141,7 +141,7 @@ async function readTarArchive(buffer: Buffer, gzip: boolean) {
 }
 
 export function readThemeArchive(buffer: Buffer): Promise<Map<string, Buffer>> {
-  if (!buffer.length || buffer.length > THEME_LIMITS.archiveBytes) throw new Error("主题压缩包不能超过 3MB");
+  if (!buffer.length || buffer.length > THEME_LIMITS.archiveBytes) throw new Error(`主题压缩包不能超过 ${THEME_LIMITS.archiveBytes / 1024 ** 2}MB`);
   if (buffer[0] === 0x50 && buffer[1] === 0x4b) return readZipArchive(buffer);
   if (buffer.subarray(0, 6).equals(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]))) return readRarThemeArchive(buffer);
   if (buffer[0] === 0x1f && buffer[1] === 0x8b) return readTarArchive(buffer, true);
@@ -174,7 +174,7 @@ function rewriteValue(value: string, stylesheet: string, files: Map<string, Buff
         if (!safePath(asset) || !bytes || !mime) throw new Error(`主题资源不存在或不支持：${relative}`);
         if (budget) {
           budget.bytes += 4 * Math.ceil(bytes.length / 3) + mime.length + 32;
-          if (budget.bytes > THEME_LIMITS.compiledCssBytes) throw new Error("主题引用资源展开后超过 3MB，请减少资源");
+          if (budget.bytes > THEME_LIMITS.compiledCssBytes) throw new Error(`主题引用资源展开后超过 ${THEME_LIMITS.compiledCssBytes / 1024 ** 2}MB，请减少资源`);
         }
         node.nodes = [{ type: "string", quote: '"', value: `data:${mime};base64,${bytes.toString("base64")}`, sourceIndex: 0, sourceEndIndex: 0 }];
         return false;
@@ -206,7 +206,7 @@ export function compileTheme(manifest: ThemeManifest, source: string, files: Map
     }
   }
   const compiled = css.toString();
-  if (Buffer.byteLength(compiled) > THEME_LIMITS.compiledCssBytes) throw new Error("主题引用资源展开后超过 3MB，请减少资源");
+  if (Buffer.byteLength(compiled) > THEME_LIMITS.compiledCssBytes) throw new Error(`主题引用资源展开后超过 ${THEME_LIMITS.compiledCssBytes / 1024 ** 2}MB，请减少资源`);
   return compiled;
 }
 

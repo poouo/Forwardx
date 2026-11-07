@@ -845,7 +845,7 @@ export default function Login() {
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
   const isTelegramPending = telegramLoginMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
-  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && !getTelegramWebAppInitData();
+  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && publicInfo?.telegramLoginEnabled === true && !getTelegramWebAppInitData();
   const captchaCooldownSeconds = Math.max(0, Math.ceil((captchaCooldownUntil - Date.now()) / 1000));
   const activeCaptchaImage = captchaChallenge?.purpose === captchaPurpose ? captchaChallenge.imageDataUrl : undefined;
   const captchaRefreshTitle = captchaCooldownSeconds > 0

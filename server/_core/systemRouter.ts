@@ -1736,6 +1736,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     },
     telegram: {
       enabled: false,
+      loginEnabled: all.telegramLoginEnabled !== "false",
       configured: false,
       botUsername: "",
       tokenMasked: "",
@@ -1774,6 +1775,7 @@ export const systemRouter = router({
     return db.getAllSettings().then((all) => ({
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,
+      telegramLoginEnabled: all.telegramLoginEnabled !== "false",
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
@@ -1921,6 +1923,7 @@ export const systemRouter = router({
       },
       telegram: {
         enabled: all.telegramBotEnabled === "true" || (!!ENV.telegramBotToken.trim() && all.telegramBotEnabled !== "false"),
+        loginEnabled: all.telegramLoginEnabled !== "false",
         configured: !!(ENV.telegramBotToken.trim() || String(all.telegramBotToken || "").trim()),
         botUsername: all.telegramBotUsername ?? "",
         tokenMasked: (() => {
@@ -2100,6 +2103,7 @@ export const systemRouter = router({
         }).optional(),
         telegram: z.object({
           enabled: z.boolean().optional(),
+          loginEnabled: z.boolean().optional(),
           botToken: z.string().max(256).optional(),
           clearToken: z.boolean().optional(),
           expiryReminder: z.boolean().optional(),
@@ -2364,6 +2368,7 @@ export const systemRouter = router({
           throw new Error("请先配置并启用 Telegram 机器人");
         }
         if (input.telegram.enabled !== undefined) next.telegramBotEnabled = input.telegram.enabled ? "true" : "false";
+        if (input.telegram.loginEnabled !== undefined) next.telegramLoginEnabled = input.telegram.loginEnabled ? "true" : "false";
         if (input.telegram.expiryReminder !== undefined) next.telegramExpiryReminder = input.telegram.expiryReminder && nextEnabled && !!effectiveToken ? "true" : "false";
         if (input.telegram.trafficReminder !== undefined) next.telegramTrafficReminder = input.telegram.trafficReminder && nextEnabled && !!effectiveToken ? "true" : "false";
         if (input.telegram.trafficReminderThreshold !== undefined) next.telegramTrafficReminderThreshold = String(input.telegram.trafficReminderThreshold);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
 import { zipSync, strToU8 } from "fflate";
 import tar from "tar-stream";
 import { parseThemePackage, readThemeArchive } from "./themePackage";
@@ -73,7 +74,7 @@ test("rejects traversal, case collisions, executable files, symlinks and unsuppo
 });
 
 test("bounds archive, entry, entry count and decompressed TAR bytes", async () => {
-  await assert.rejects(async () => readThemeArchive(Buffer.alloc(THEME_LIMITS.archiveBytes + 1)), /3MB/);
+  await assert.rejects(async () => readThemeArchive(Buffer.alloc(THEME_LIMITS.archiveBytes + 1)), /30MB/);
   await assert.rejects(parseThemePackage(zip({ ...files(), "big.txt": new Uint8Array(THEME_LIMITS.fileBytes + 1) })), /单文件/);
   await assert.rejects(readThemeArchive(zip(Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`${index}.txt`, ""])) )), /过多文件/);
   await assert.rejects(readThemeArchive(gzipSync(Buffer.alloc(THEME_LIMITS.expandedBytes + 100_000))), /超过限制|Unexpected end/i);
@@ -99,6 +100,17 @@ test("local asset URLs are embedded and normal child selectors/media ranges work
   assert.match(result.css, /data:image\/png;base64,/);
   assert.match(result.css, /width > 800px/);
   assert.doesNotMatch(result.css, /url\("assets/);
-  const hugeReference = 'body { background: ' + Array.from({ length: 10 }, () => 'url("assets/a.png")').join(",") + '}';
+  const hugeReference = 'body { background: ' + Array.from({ length: 32 }, () => 'url("assets/a.png")').join(",") + '}';
   await assert.rejects(parseThemePackage(zip({ ...files(), "assets/a.png": new Uint8Array(1024 * 1024), "theme.css": hugeReference })), /展开后/);
+});
+
+test("image-heavy themes above the old archive, single-file and compiled limits can be imported", async () => {
+  const image = randomBytes(8 * 1024 * 1024);
+  const archive = zip({ ...files(), "assets/background.webp": image, "theme.css": 'body { background-image: url("assets/background.webp"); }' });
+  assert.ok(archive.length > 3 * 1024 * 1024);
+  const theme = await parseThemePackage(archive);
+  const embedded = theme.css.split("base64,")[1].split('"')[0];
+  assert.deepEqual(Buffer.from(embedded, "base64"), image);
+  assert.ok(Buffer.byteLength(theme.css) > 10 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(theme.css) <= THEME_LIMITS.compiledCssBytes);
 });

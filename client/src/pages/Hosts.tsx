@@ -1,4 +1,5 @@
 import { getFormatLocale } from "@/i18n";
+import { hostNetworkSpeed } from "@shared/hostNetworkSpeed";
 import { t as translateText } from "@/i18n";
 import { HintSwitch } from "@/components/ui/hint-switch";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -2276,7 +2277,10 @@ function HostsContent() {
         const inText = formatBytes(Number(traffic?.bytesIn || 0)), outText = formatBytes(Number(traffic?.bytesOut || 0));
         return <HostListFlowPair inValue={inText} outValue={outText} inTitle={translateText("累计入向：{0}", [inText])} outTitle={translateText("累计出向：{0}", [outText])} />;
       }
-      case "network": return <HostListFlowPair inValue={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} outValue={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} inTitle={translateText("实时入向")} outTitle={translateText("实时出向")} />;
+      case "network": {
+        const speed = hostNetworkSpeed(metric, undefined, { isOnline: !!host.isOnline });
+        return <HostListFlowPair inValue={formatOptionalBytesPerSecond(speed.in)} outValue={formatOptionalBytesPerSecond(speed.out)} inTitle={translateText("实时入向")} outTitle={translateText("实时出向")} />;
+      }
       case "system": return <HostListFlowPair inValue={formatOptionalBytes(metric?.networkIn)} outValue={formatOptionalBytes(metric?.networkOut)} inTitle={systemNetworkTotalTitle(metric)} outTitle={systemNetworkTotalTitle(metric)} />;
       case "actions": return <HostActionButtons
         host={host} onEdit={openEdit} onDelete={setDeletingHostId} onUpgrade={requestAgentUpgrade}
@@ -2563,8 +2567,8 @@ function HostsContent() {
           />
           <HostTrafficSummaryCard
             title={translateText("当前瞬时流量")}
-            inValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
-            outValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
+            inValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
+            outValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
             tone="bg-gradient-to-br from-chart-1/10 to-transparent"
             iconTone="bg-chart-1/10 text-chart-1"

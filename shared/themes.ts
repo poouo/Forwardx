@@ -4,14 +4,14 @@ import { themeHostCardExample, type ThemeViews } from "./themeViews";
 export const THEME_API_VERSION = 1;
 export const THEME_ARCHIVE_FORMATS = ["zip", "rar", "tar", "tar.gz", "tgz"] as const;
 export const THEME_LIMITS = {
-  archiveBytes: 3 * 1024 * 1024,
-  expandedBytes: 6 * 1024 * 1024,
-  fileBytes: 2 * 1024 * 1024,
+  archiveBytes: 30 * 1024 * 1024,
+  expandedBytes: 60 * 1024 * 1024,
+  fileBytes: 10 * 1024 * 1024,
   cssBytes: 128 * 1024,
-  compiledCssBytes: 3 * 1024 * 1024,
+  compiledCssBytes: 40 * 1024 * 1024,
   files: 64,
   installed: 12,
-  registryBytes: 16 * 1024 * 1024,
+  registryBytes: 128 * 1024 * 1024,
 } as const;
 
 export type ThemeManifest = {

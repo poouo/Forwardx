@@ -40,6 +40,12 @@
 
 Telegram 请求优先使用 IPv4；连接尚未建立时，最多等待 5 秒再尝试 IPv6。若地址明确连接失败则提前尝试下一地址；仅有 IPv6 地址的环境直接使用 IPv6。此策略仅用于 Telegram，不需要为此启用 Docker IPv6 或修改宿主机网络配置。
 
+### 登录页入口开关
+
+Telegram 机器人配置中的「TG 登录」默认开启。关闭并保存后，登录页不再展示 Telegram 快捷登录入口；再次开启即可恢复。此开关仅控制入口显示，不影响机器人通知、账户绑定、机器人生成的登录链接及 Bot WebApp 直接登录。WebApp 仍需启用并配置机器人，且 Telegram 账号已绑定面板账号。
+
+接口配置：管理员通过 `system.updateSettings` 提交 `{ telegram: { loginEnabled: false } }`。`system.getSettings` 返回 `telegram.loginEnabled`，`system.publicInfo` 返回 `telegramLoginEnabled`，`telegram.loginStatus` 返回 `loginEnabled`；数据库未配置该项时均按 `true` 处理。
+
 ### 用户绑定
 
 在个人中心或账号菜单打开 Telegram 绑定，生成一次性绑定码后跳转机器人并点击 Start，也可在私聊发送：

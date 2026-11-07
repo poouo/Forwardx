@@ -977,6 +977,7 @@ export const paymentOrders = table("payment_orders", {
   merchantIdentity: text("merchantIdentity"), // Non-secret merchant/app snapshot; never signing keys.
   failureReason: text("failureReason"),
   lastPaymentCheckAt: epoch("lastPaymentCheckAt"),
+  adminDismissedAt: epoch("adminDismissedAt"),
   expiresAt: epoch("expiresAt"),
   paidAt: epoch("paidAt"),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),

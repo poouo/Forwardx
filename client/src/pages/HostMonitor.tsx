@@ -178,20 +178,28 @@ function calculateMonitorSummary(hosts: any[], metricsByHostId: Map<number, any>
   let currentTrafficOut = 0;
   let totalTrafficIn = 0;
   let totalTrafficOut = 0;
+  let measuredIn = 0;
+  let measuredOut = 0;
   for (const host of hosts) {
     const hostId = Number(host.id);
     const metric = metricsByHostId.get(hostId);
     const traffic = trafficByHostId.get(hostId);
-    currentTrafficIn += Math.max(0, Number(metric?.networkSpeedIn) || 0);
-    currentTrafficOut += Math.max(0, Number(metric?.networkSpeedOut) || 0);
+    if (host.isOnline && metric?.networkSpeedIn != null) {
+      currentTrafficIn += Math.max(0, Number(metric.networkSpeedIn) || 0);
+      measuredIn += 1;
+    }
+    if (host.isOnline && metric?.networkSpeedOut != null) {
+      currentTrafficOut += Math.max(0, Number(metric.networkSpeedOut) || 0);
+      measuredOut += 1;
+    }
     totalTrafficIn += Math.max(0, Number(traffic?.bytesIn) || 0);
     totalTrafficOut += Math.max(0, Number(traffic?.bytesOut) || 0);
   }
   return {
     totalHosts: hosts.length,
     onlineHosts: hosts.filter((host) => !!host.isOnline).length,
-    currentTrafficIn,
-    currentTrafficOut,
+    currentTrafficIn: measuredIn ? currentTrafficIn : null,
+    currentTrafficOut: measuredOut ? currentTrafficOut : null,
     totalTrafficIn,
     totalTrafficOut,
   };

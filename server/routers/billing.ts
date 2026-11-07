@@ -30,6 +30,14 @@ async function billingFeatureStatus() {
 }
 
 export const billingRouter = router({
+  deletePaymentOrder: adminProcedure
+    .input(z.object({ outTradeNo: z.string().min(1).max(64) }))
+    .mutation(async ({ input, ctx }) => {
+      await db.deletePaymentOrder(input.outTradeNo);
+      appendPanelLog("info", `[Payment] order deleted order=${input.outTradeNo} operator=${ctx.user.id}`);
+      return { success: true };
+    }),
+
   summary: adminProcedure.query(async () => db.getBillingAdminSummary()),
 
   featureStatus: protectedProcedure.query(billingFeatureStatus),

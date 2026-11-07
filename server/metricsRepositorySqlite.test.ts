@@ -58,6 +58,38 @@ test("SQLite host metric summaries seek only the latest two rows per host", asyn
       [[1, 1], [1, 2], [2, 1], [2, 2]],
     );
 
+    assert.deepEqual(metrics.summarizeHostInstantTraffic([...snapshots].reverse()), {
+      currentTrafficIn: 6, currentTrafficOut: 8, currentTrafficTotal: 14, measuredHosts: 2,
+    });
+    await runtime.withSqliteExclusive((sqlite) => {
+      const insert = sqlite.prepare('INSERT INTO host_metrics (hostId,networkIn,networkOut,uptime,recordedAt) VALUES (?,?,?,?,?)');
+      // Missing baseline, counter reset, reboot, duplicate timestamp, stale data,
+      // arrival jitter, legitimate idle host, long reporting gap.
+      insert.run(11, null, 0, 100, now - 3); insert.run(11, 9_000_000, 0, 103, now);
+      insert.run(12, 9000, 0, 100, now - 3); insert.run(12, 0, 0, 103, now);
+      insert.run(13, 100, 100, 100, now - 3); insert.run(13, 10_000, 10_000, 1, now);
+      insert.run(14, 0, 0, 100, now); insert.run(14, 9000, 9000, 101, now);
+      insert.run(15, 0, 0, 100, now - 303); insert.run(15, 9000, 9000, 103, now - 300);
+      insert.run(16, 0, 0, 100, now - 1); insert.run(16, 3000, 6000, 103, now);
+      insert.run(17, 100, 100, 100, now - 3); insert.run(17, 100, 100, 103, now);
+      insert.run(18, 0, 0, 100, now - 300); insert.run(18, 9000, 9000, 400, now);
+    });
+    const regressionIds = [11,12,13,14,15,16,17,18];
+    const regressionRows = await metrics.getLatestHostMetricRows(regressionIds);
+    const byId = new Map(regressionRows.map((row: any) => [row.hostId, row]));
+    assert.equal(byId.get(11)?.networkSpeedIn, null, "missing baseline must not create a spike");
+    assert.equal(byId.get(12)?.networkSpeedIn, null, "reset counters are unknown, not idle");
+    for (const id of [13,14,15,18]) assert.equal(byId.get(id)?.networkSpeedIn, null);
+    assert.equal(byId.get(16)?.networkSpeedIn, 1000, "collection uptime avoids arrival jitter");
+    assert.equal(byId.get(17)?.networkSpeedIn, 0, "real idle samples remain measured");
+    const regressionSummary = metrics.summarizeHostInstantTraffic(await metrics.getLatestHostMetricSnapshots(regressionIds));
+    assert.equal(regressionSummary.currentTrafficIn, 1000);
+    assert.equal(regressionSummary.currentTrafficOut, 2000);
+    assert.equal(regressionSummary.measuredHosts, 4, "two partially valid and two fully valid hosts");
+    assert.deepEqual(metrics.summarizeHostInstantTraffic([]), {
+      currentTrafficIn: null, currentTrafficOut: null, currentTrafficTotal: null, measuredHosts: 0,
+    }, "no samples must stay unknown rather than looking like idle zero traffic");
+
     const reverseHostIds = Array.from({ length: 101 }, (_, index) => 1_100 - index);
     const crossBatchSnapshots = await metrics.getLatestHostMetricSnapshots(reverseHostIds);
     assert.deepEqual(

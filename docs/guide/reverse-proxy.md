@@ -44,6 +44,7 @@ server {
 
     ssl_certificate /path/to/fullchain.pem;
     ssl_certificate_key /path/to/privkey.pem;
+    client_max_body_size 45m;
 
     location / {
         proxy_pass http://127.0.0.1:9810;
@@ -63,6 +64,8 @@ server {
 ~~~
 
 这是单层边缘反代示例；前面还有 CDN 或其他代理时，应按真实信任链配置来源地址，不能直接信任访客传入的转发头。宝塔站点可以参考同样原则，不要用页面缓存覆盖 API。
+
+`client_max_body_size 45m` 用于容纳主题上传：30MB 压缩包经 Base64 编码后请求体约为 40MB。已有站点或前置 CDN 也需要允许相应大小，否则会先返回 413；面板其他接口的请求体上限保持原有设置。主题图片、字体与打包规范见[主题开发与接口](./themes.md)。
 
 ## 可信代理
 

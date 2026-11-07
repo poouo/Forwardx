@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
+import { hostNetworkSpeed } from "../../shared/hostNetworkSpeed";
 import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
@@ -459,7 +460,8 @@ function compactHostStatus(host: any) {
   };
 }
 
-function compactHostMetricSummary(row: any) {
+function compactHostMetricSummary(row: any, isOnline = true) {
+  const speed = hostNetworkSpeed(row, undefined, { isOnline });
   return {
     hostId: Number(row?.hostId || 0),
     cpuUsage: row?.cpuUsage ?? null,
@@ -471,10 +473,10 @@ function compactHostMetricSummary(row: any) {
     swapUsage: row?.swapUsage ?? null,
     swapUsed: row?.swapUsed ?? null,
     swapTotal: row?.swapTotal ?? null,
-    networkSpeedIn: row?.networkSpeedIn == null ? null : Math.round(Number(row.networkSpeedIn) || 0),
+    networkSpeedIn: speed.in == null ? null : Math.round(speed.in),
     networkIn: row?.networkIn == null ? null : Math.max(0, Number(row.networkIn) || 0),
     networkOut: row?.networkOut == null ? null : Math.max(0, Number(row.networkOut) || 0),
-    networkSpeedOut: row?.networkSpeedOut == null ? null : Math.round(Number(row.networkSpeedOut) || 0),
+    networkSpeedOut: speed.out == null ? null : Math.round(speed.out),
     diskUsage: row?.diskUsage ?? null,
     diskUsed: row?.diskUsed ?? null,
     diskTotal: row?.diskTotal ?? null,
@@ -666,7 +668,8 @@ export const hostsRouter = router({
           .map((group) => compactPublicMonitorGroup(group, visibleHostIds))
           .filter((group) => group.id > 0 && group.name && group.hostIds.length > 0)
           .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
-        const compactMetrics = (metricRows as any[]).map(compactHostMetricSummary).filter((row) => row.hostId > 0);
+        const onlineHostIds = new Set(hosts.filter((host) => host.isOnline).map((host) => host.id));
+        const compactMetrics = (metricRows as any[]).map((row) => compactHostMetricSummary(row, onlineHostIds.has(Number(row.hostId)))).filter((row) => row.hostId > 0);
         const compactTraffic = (trafficRows as any[]).map(compactHostTrafficSummary).filter((row) => row.hostId > 0);
         let currentTrafficIn = 0;
         let currentTrafficOut = 0;
@@ -690,8 +693,8 @@ export const hostsRouter = router({
           summary: {
             totalHosts: hosts.length,
             onlineHosts: hosts.filter((host) => !!host.isOnline).length,
-            currentTrafficIn,
-            currentTrafficOut,
+            currentTrafficIn: compactMetrics.some((row) => row.networkSpeedIn !== null) ? currentTrafficIn : null,
+            currentTrafficOut: compactMetrics.some((row) => row.networkSpeedOut !== null) ? currentTrafficOut : null,
             totalTrafficIn,
             totalTrafficOut,
           },
@@ -732,7 +735,7 @@ export const hostsRouter = router({
           path: configuredPath,
           refreshedAt: new Date().toISOString(),
           host,
-          metric: (metricRows as any[]).map(compactHostMetricSummary).find((row) => row.hostId === host.id) || null,
+          metric: (metricRows as any[]).map((row) => compactHostMetricSummary(row, host.isOnline)).find((row) => row.hostId === host.id) || null,
           traffic: (trafficRows as any[]).map(compactHostTrafficSummary).find((row) => row.hostId === host.id) || compactHostTrafficSummary({ hostId: host.id }),
           services: services.map((service) => compactPublicProbeService(service, latestByService.get(Number(service.id))))
             .filter((service) => service.id > 0 && service.name),
@@ -895,7 +898,7 @@ export const hostsRouter = router({
         });
         const hostIds = summaryScope.hostIds;
         const [metricSnapshots, trafficRows] = await Promise.all([
-          db.getLatestHostMetricSnapshots(hostIds),
+          db.getLatestHostMetricSnapshots(summaryScope.onlineHostIds),
           db.getHostTrafficSummary(hostIds),
         ]);
         const instantTraffic = db.summarizeHostInstantTraffic(metricSnapshots);
@@ -1432,8 +1435,12 @@ export const hostsRouter = router({
           .filter((id) => Number.isInteger(id) && id > 0)));
         if (hostIds.length === 0) return [];
         await requireHostsAccess(ctx, hostIds);
-        const rows = await displayQueries.metrics("hosts.metrics", hostIds, () => db.getLatestHostMetricRows(hostIds));
-        return (rows as any[]).map(compactHostMetricSummary).filter((row) => row.hostId > 0);
+        const [rows, statuses] = await Promise.all([
+          displayQueries.metrics("hosts.metrics", hostIds, () => db.getLatestHostMetricRows(hostIds)),
+          db.getHostStatusRows({ hostIds }),
+        ]);
+        const onlineHostIds = new Set(statuses.filter((host: { isOnline?: boolean }) => host.isOnline).map((host: { id: number }) => Number(host.id)));
+        return (rows as any[]).map((row) => compactHostMetricSummary(row, onlineHostIds.has(Number(row.hostId)))).filter((row) => row.hostId > 0);
       }),
     traffic: protectedProcedure
       .input(z.object({ hostId: z.number() }))

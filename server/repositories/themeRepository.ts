@@ -60,7 +60,7 @@ export async function installTheme(archive: Buffer, replace: boolean) {
       themes.push(parsed);
     }
     const encoded = JSON.stringify(themes);
-    if (Buffer.byteLength(encoded) > THEME_LIMITS.registryBytes) throw new TRPCError({ code: "BAD_REQUEST", message: "主题总存储超过 16MB，请删除部分主题" });
+    if (Buffer.byteLength(encoded) > THEME_LIMITS.registryBytes) throw new TRPCError({ code: "BAD_REQUEST", message: `主题总存储超过 ${THEME_LIMITS.registryBytes / 1024 ** 2}MB，请删除部分主题` });
     await setSettings({ [REGISTRY]: encoded });
     return summary(parsed);
   });

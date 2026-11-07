@@ -2230,6 +2230,7 @@ function TelegramBotSettingsCard() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramLoginEnabled, setTelegramLoginEnabled] = useState(true);
   const [telegramBotTokenInput, setTelegramBotTokenInput] = useState("");
   const [telegramExpiryReminder, setTelegramExpiryReminder] = useState(false);
   const [telegramTrafficReminder, setTelegramTrafficReminder] = useState(false);
@@ -2240,6 +2241,7 @@ function TelegramBotSettingsCard() {
   useEffect(() => {
     if (settings) {
       setTelegramEnabled(!!settings.telegram?.enabled);
+      setTelegramLoginEnabled(settings.telegram?.loginEnabled !== false);
       const telegramReady = !!settings.telegram?.enabled && !!settings.telegram?.configured;
       setTelegramExpiryReminder(telegramReady && !!settings.telegram?.expiryReminder);
       setTelegramTrafficReminder(telegramReady && !!settings.telegram?.trafficReminder);
@@ -2252,6 +2254,8 @@ function TelegramBotSettingsCard() {
     onSuccess: () => {
       utils.system.getSettings.invalidate();
       toast.success(translateText("Telegram 机器人配置已保存"));
+      utils.system.publicInfo.invalidate();
+      utils.telegram.loginStatus.invalidate();
     },
     onError: (err) => toast.error(err.message || translateText("保存失败")),
   });
@@ -2276,6 +2280,7 @@ function TelegramBotSettingsCard() {
     updateSettingsMutation.mutate({
       telegram: {
         enabled: telegramEnabled,
+        loginEnabled: telegramLoginEnabled,
         botToken: nextToken || undefined,
         expiryReminder: remindersReady ? telegramExpiryReminder : false,
         trafficReminder: remindersReady ? telegramTrafficReminder : false,
@@ -2382,6 +2387,15 @@ function TelegramBotSettingsCard() {
               <AlertTitle>{translateText("快捷登录需要域名")}</AlertTitle>
               <AlertDescription>{translateText("在系统配置填写公开地址，并在 @BotFather 绑定同一域名。")}</AlertDescription>
             </Alert>
+            <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label htmlFor="telegram-login-enabled">{translateText("TG 登录")}</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">{translateText("默认开启；关闭后隐藏登录页的 Telegram 登录入口，不影响机器人 WebApp 直接登录。")}</p>
+                </div>
+                <Switch id="telegram-login-enabled" checked={telegramLoginEnabled} onCheckedChange={setTelegramLoginEnabled} />
+              </div>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">

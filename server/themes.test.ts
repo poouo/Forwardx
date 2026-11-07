@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { zipSync, strToU8 } from "fflate";
+import { randomBytes } from "node:crypto";
 import { themeTemplateFiles } from "../shared/themes";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-themes-"));
@@ -34,7 +35,7 @@ test("theme administration is denied to anonymous and ordinary users", async () 
   for (const role of [undefined, "user"]) {
     const caller = router.createCaller(context(role));
     const expected = role ? "FORBIDDEN" : "UNAUTHORIZED";
-    for (const action of [() => caller.list(), () => caller.install({ archiveBase64: archive() }), () => caller.activate({ id: "ink" }), () => caller.remove({ id: "ink" }), () => caller.preview({ id: "ink" }), () => caller.template(), () => caller.capabilities(), () => caller.importUrl({ url: "http://127.0.0.1/private" })]) {
+    for (const action of [() => caller.list(), () => caller.install({ archiveBase64: archive() }), () => caller.activate({ id: "ink" }), () => caller.remove({ id: "ink" }), () => caller.template(), () => caller.capabilities(), () => caller.importUrl({ url: "http://127.0.0.1/private" })]) {
       await assert.rejects(action(), error => (error as any).code === expected);
     }
   }
@@ -51,7 +52,6 @@ test("install, activate, replace and delete preserve the live theme until explic
   assert.equal((await caller.list()).themes.length, 7);
   await assert.rejects(caller.install({ archiveBase64: archive() }), error => (error as any).code === "CONFLICT");
   await assert.rejects(anonymous.styles({ id: installed.id, revision: installed.revision }), error => (error as any).code === "NOT_FOUND");
-  assert.equal((await caller.preview({ id: installed.id })).manifest.id, installed.id);
   await caller.activate({ id: installed.id });
   const publicTheme = await anonymous.styles({ id: installed.id, revision: installed.revision });
   assert.equal(publicTheme.manifest.id, installed.id);
@@ -81,4 +81,21 @@ test("capabilities and templates expose usable versioned development contracts",
   assert.equal(parsed.manifest.base, "forest");
   assert.ok(parsed.manifest.views?.hosts?.card);
   await assert.rejects(caller.install({ archiveBase64: "!!!!" }), error => (error as any).code === "BAD_REQUEST");
+});
+
+test("large Base64 archives can be installed, persisted and served after activation", async () => {
+  const caller = router.createCaller(context("admin"));
+  const values: Record<string, Uint8Array> = Object.fromEntries(Object.entries(themeTemplateFiles()).map(([name, text]) => [name, strToU8(text)]));
+  values["assets/background.webp"] = randomBytes(8 * 1024 * 1024);
+  values["assets/interface.woff2"] = randomBytes(5 * 1024 * 1024);
+  values["theme.css"] = strToU8('body { background-image: url("assets/background.webp"); } @font-face { font-family: Theme; src: url("assets/interface.woff2"); }');
+  const encoded = Buffer.from(zipSync(values)).toString("base64");
+  assert.ok(encoded.length > 10 * 1024 * 1024);
+  const installed = await caller.install({ archiveBase64: encoded });
+  await caller.activate({ id: installed.id });
+  const theme = await router.createCaller(context()).styles({ id: installed.id, revision: installed.revision });
+  assert.ok(theme.css.length > 16 * 1024 * 1024, "embedded images and fonts may exceed the old total registry limit");
+  assert.ok(theme.css.includes("data:image/webp;base64,"));
+  await caller.activate({ id: "ink" });
+  await caller.remove({ id: installed.id });
 });

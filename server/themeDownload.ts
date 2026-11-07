@@ -4,7 +4,7 @@ import https from "node:https";
 import { assertSafeOutboundUrl, isRestrictedIp } from "./ssrf";
 import { THEME_LIMITS } from "../shared/themes";
 
-export const THEME_DOWNLOAD_TIMEOUT_MS = 20_000;
+export const THEME_DOWNLOAD_TIMEOUT_MS = 120_000;
 export const THEME_DOWNLOAD_REDIRECTS = 3;
 let activeDownloads = 0;
 
@@ -68,7 +68,7 @@ export async function downloadThemeArchive(rawUrl: string, dependencies: {
         response.destroy(); throw new Error("主题直链服务器必须支持原始文件下载（identity 编码）");
       }
       if (Number(response.headers["content-length"]) > THEME_LIMITS.archiveBytes) {
-        response.destroy(); throw new Error("主题压缩包不能超过 3MB");
+        response.destroy(); throw new Error(`主题压缩包不能超过 ${THEME_LIMITS.archiveBytes / 1024 ** 2}MB`);
       }
       const chunks: Buffer[] = [];
       let size = 0;
@@ -76,7 +76,7 @@ export async function downloadThemeArchive(rawUrl: string, dependencies: {
         signal.throwIfAborted();
         const bytes = Buffer.from(chunk);
         size += bytes.length;
-        if (size > THEME_LIMITS.archiveBytes) { response.destroy(); throw new Error("主题压缩包不能超过 3MB"); }
+        if (size > THEME_LIMITS.archiveBytes) { response.destroy(); throw new Error(`主题压缩包不能超过 ${THEME_LIMITS.archiveBytes / 1024 ** 2}MB`); }
         chunks.push(bytes);
       }
       return Buffer.concat(chunks);

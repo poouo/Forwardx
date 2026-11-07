@@ -33,12 +33,21 @@ test("local destinations, embedded credentials and redirect-to-private URLs are 
 test("header and streamed sizes, status errors and redirect loops are bounded", async () => {
   const validate = async (url: string) => new URL(url);
   for (const res of [response(200, { "content-length": String(THEME_LIMITS.archiveBytes + 1) }), response(200, {}, [Buffer.alloc(THEME_LIMITS.archiveBytes), Buffer.from("x")])]) {
-    await assert.rejects(downloadThemeArchive("https://themes.example/a", { validate, request: async () => res }), /3MB/);
+    await assert.rejects(downloadThemeArchive("https://themes.example/a", { validate, request: async () => res }), /30MB/);
   }
   await assert.rejects(downloadThemeArchive("https://themes.example/a", { validate, request: async () => response(404) }), /HTTP 404/);
   await assert.rejects(downloadThemeArchive("https://themes.example/a", { validate, request: async () => response(302, { location: "/a" }) }), /重定向/);
   await assert.rejects(downloadThemeArchive("https://themes.example/a", { validate, request: async () => response(200, { "content-encoding": "gzip" }) }), /identity/);
   await assert.rejects(downloadThemeArchive("https://themes.example/a", { signal: AbortSignal.abort() }), /超时|取消/);
+});
+
+test("external import accepts an image-heavy archive up to the 30MB boundary", async () => {
+  const part = Buffer.alloc(1024 * 1024, 0x61);
+  const result = await downloadThemeArchive("https://themes.example/images.zip", {
+    validate: async url => new URL(url),
+    request: async () => response(200, { "content-length": String(THEME_LIMITS.archiveBytes) }, Array.from({ length: 30 }, () => part)),
+  });
+  assert.equal(result.length, THEME_LIMITS.archiveBytes);
 });
 
 test("the total deadline also covers a stalled DNS/address validation", async () => {
