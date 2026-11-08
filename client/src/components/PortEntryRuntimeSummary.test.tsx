@@ -10,6 +10,7 @@ const summary: Summary = {expectedHostCount:1,runningHostCount:0,nodes:[{
     memberId:1,hostId:1,hostName:"host1",online:true,status:"pending",expectedRuleCount:2,runningRuleCount:0,configuredRuleCount:1,
     syncDiagnostic:{attempts:3,failedRuleCount:1,firstFailedAt:1000,lastFailedAt:2000,nextRetryAt:62000,errors:[{ruleId:100,message:"port occupied"}]},
     runtimeErrors:[{ruleId:200,runtimeRuleId:201,message:"listener not ready",reportedAt:2000,consecutiveFailures:2,retryNotBefore:32000}],
+    unconfirmedRules:[{ruleId:100,name:"game",sourcePort:10000,state:"not-synced"},{ruleId:200,name:"proxy",sourcePort:10001,state:"unconfirmed"}],
   }]};
 
 test("entry cards render only a dialog trigger, not inline diagnostic content", () => {
@@ -29,6 +30,9 @@ test("dialog body distinguishes sync attempts from Agent execution failures and 
   assert.match(html,/连续失败 2 次/);
   assert.match(html,/Agent 最早重试/);
   assert.match(html,/不代表端到端业务探测/);
+  assert.match(html,/规则尚未同步/);
+  assert.match(html,/等待 Agent 确认运行状态/);
+  assert.match(html,/10001/);
   assert.match(html,/min-h-0.*overflow-y-auto/);
   assert.match(html,/overflow-wrap:anywhere/);
 });

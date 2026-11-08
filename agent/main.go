@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.209"
+var Version = "2.2.210"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2359,6 +2359,7 @@ type action struct {
 	HandoffOnly               bool                `json:"-"`
 
 	PortAccessLimits []portAccessLimitSpec `json:"portAccessLimits,omitempty"`
+	IPAccessLimits   []ipAccessLimitSpec   `json:"ipAccessLimits,omitempty"`
 }
 
 type desiredState struct {
@@ -5005,6 +5006,23 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 			}
 			return true
 		}
+		if a.ForwardType == "ip-access-limit-sync" {
+			err := configureIPAccessLimits(a.IPAccessLimits, false)
+			ok = err == nil
+			rememberRuntimeActionResult(a, ok)
+			if err != nil {
+				actionMessage.set("IP限制未生效: %v", err)
+				if shouldLogAgentReport("ip-access-limit-sync", agentReportLogInterval) {
+					logf("%s", actionMessage.get())
+				}
+			} else {
+				actionMessage.set("IP限制已同步 users=%d; different source IPs share entry-host quota; probation=5s bidirectionalBytes>=512", len(a.IPAccessLimits))
+			}
+			if a.ReportStatus != nil && *a.ReportStatus {
+				reportActionStatus(cfg, a, ok, actionMessage.get())
+			}
+			return ok
+		}
 		if a.ForwardType == "port-access-limit-sync" {
 			err := syncPortAccessLimits(systemPortLimitFirewall{}, a.PortAccessLimits, false)
 			ok = err == nil
@@ -5699,6 +5717,9 @@ func runtimeActionServicesHealthy(a action) bool {
 	if a.ForwardType == "port-access-limit-sync" {
 		return portAccessLimitsReady(a)
 	}
+	if a.ForwardType == "ip-access-limit-sync" {
+		return configureIPAccessLimits(a.IPAccessLimits, true) == nil
+	}
 	if isWireGuardRuntimeAction(a) {
 		if a.Op == "remove" {
 			return !wireGuardRuntimeReady(a.TunnelID, nil)
@@ -6216,6 +6237,11 @@ func actionCommandSignature(a action) string {
 	if len(a.PortAccessLimits) > 0 {
 		if raw, err := json.Marshal(a.PortAccessLimits); err == nil {
 			write(string(raw))
+		}
+	}
+	if len(a.IPAccessLimits) > 0 {
+		if raw, err := json.Marshal(a.IPAccessLimits); err == nil {
+			write("ip-access-limits:" + string(raw))
 		}
 	}
 	if a.ForceRuntimeSync {
@@ -10193,17 +10219,7 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 		actionMessage.set("fxp create runtime dir failed: %v", err)
 		return false
 	}
-	if spec.Role == "entry" {
-		spec.PanelURL = currentPanelURL(cfg)
-		spec.Token = cfg.Token
-		spec.InstallationID = currentAgentInstallationID()
-	} else if isFXPEntryGroup(spec) {
-		for index := range spec.Entries {
-			spec.Entries[index].PanelURL = currentPanelURL(cfg)
-			spec.Entries[index].Token = cfg.Token
-			spec.Entries[index].InstallationID = currentAgentInstallationID()
-		}
-	}
+	spec = withFXPAgentIdentity(spec, cfg)
 	if isFXPEntryGroup(spec) || spec.Role == "exit" {
 		spec.ControlSocket = configPath + ".sock"
 	}
@@ -13655,6 +13671,7 @@ func postHeartbeatAfterStart(client *http.Client, cfg Config, path string, paylo
 	if path == "/api/agent/heartbeat" {
 		if fields, ok := payload.(map[string]any); ok {
 			fields["portAccessLimitsSupported"] = true
+			fields["ipAccessLimitsSupported"] = true
 			fields["trafficShutdownSupported"] = trafficShutdownSupported()
 		}
 	}

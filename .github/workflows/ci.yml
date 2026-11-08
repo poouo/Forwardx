@@ -167,10 +167,10 @@ jobs:
           (cd agent && go test ./... && go vet ./...)
           (cd forwardx-fxp && go test ./... && go vet ./...)
 
-      - name: Verify TCP port limits in an isolated Linux network namespace
+      - name: Verify connection and IP limits in isolated Linux network namespaces
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq iptables iproute2 util-linux
+          sudo apt-get install -y -qq iptables iproute2 util-linux ipset conntrack
           port_limit_test_dir=$(mktemp -d)
           (cd agent && go test -c -o "$port_limit_test_dir/agent.test")
-          sudo env FORWARDX_TEST_PORT_LIMITS=1 "$port_limit_test_dir/agent.test" -test.run '^TestPortAccessLimitsNetworkNamespace$' -test.v -test.timeout=90s
+          sudo env FORWARDX_TEST_PORT_LIMITS=1 "$port_limit_test_dir/agent.test" -test.run '^Test(IPAccessLimits|PortAccessLimits)NetworkNamespace$' -test.v -test.timeout=90s

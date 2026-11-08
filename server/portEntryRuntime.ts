@@ -26,6 +26,11 @@ export function summarizePortEntryRuntime(input: {group: any; members: any[]; te
     const runtimeErrors = children.filter((child) => !enabled(child.isRunning) && enabled(child.isEnabled))
       .map((child) => ({ ruleId:Number(child.forwardGroupRuleId), runtimeRuleId:Number(child.id), ...parseRuleRuntimeDiagnostic(child.runtimeDiagnostic) }))
       .filter((error) => !!error.message).sort((a,b) => Number(b.reportedAt || 0)-Number(a.reportedAt || 0)).slice(0,3);
+    const unconfirmedRules = nodeDisabled ? [] : templates.filter(template => !running.has(Number(template.id))).slice(0,3).map(template => {
+      const child = children.find(child => Number(child.forwardGroupRuleId) === Number(template.id));
+      return {ruleId:Number(template.id),name:String(template.name || ""),sourcePort:Number(template.sourcePort || 0),
+        state:!child ? "not-synced" as const : !enabled(child.isEnabled) ? "disabled" as const : "unconfirmed" as const};
+    });
     const online = enabled(member.host?.isOnline);
     const excluded = hostTrafficExcluded(member.host);
     const status: PortEntryNodeRuntime["status"] = nodeDisabled ? "disabled" : expectedRuleCount === 0 ? "idle"
@@ -33,7 +38,7 @@ export function summarizePortEntryRuntime(input: {group: any; members: any[]; te
         : runningRuleCount > 0 ? "degraded" : "pending";
     return {memberId:Number(member.id),hostId,hostName:String(member.host?.name || ""),status,online,
       expectedRuleCount,runningRuleCount,configuredRuleCount:configured.size,
-      syncDiagnostic,runtimeErrors};
+      syncDiagnostic,runtimeErrors,unconfirmedRules};
   });
   return { expectedHostCount:nodes.filter((node) => node.status !== "disabled").length,
     runningHostCount:nodes.filter((node) => node.status === "running").length,nodes };

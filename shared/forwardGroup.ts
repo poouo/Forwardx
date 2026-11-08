@@ -21,7 +21,8 @@ export function forwardGroupRouteMembers(group: any): any[] {
 }
 
 /** A completed/pending test describes its own route, not today's active member. */
-export function forwardGroupSelfTestSource(test: { requestMessage?: unknown; hostId?: unknown } | null | undefined) {
+export function forwardGroupSelfTestSource(test: { requestMessage?: unknown; hostId?: unknown; batchId?: unknown } | null | undefined) {
+  if (String(test?.batchId || "").startsWith("pe-")) return null;
   try {
     const request = JSON.parse(String(test?.requestMessage || ""));
     const hostId = Number(test?.hostId || 0);

@@ -5,6 +5,7 @@ import { quoteIdentifier } from "../dbCompat";
 import { selfTestSweepActivity, SELF_TEST_MAX_LIFETIME_SECONDS, selfTestTimeoutSeconds } from "../selfTestTiming";
 import { deleteExpiredHistoryRows } from "./historyRetention";
 import { buildRuleTunnelProbeResult } from "../ruleTunnelProbeResult";
+import { buildPortEntrySelfTestResult } from "../portEntrySelfTest";
 
 // ==================== Forward Tests ====================
 
@@ -158,11 +159,11 @@ export async function getLatestForwardTest(ruleId: number, options: { includeAct
   const [newest] = await queryRaw<any>(
     `SELECT ${quoteIdentifier("batchId")} FROM ${table} WHERE ${ruleCol} = ? ORDER BY ${createdCol} DESC, ${idCol} DESC LIMIT 1`, [ruleId],
   );
-  if (String(newest?.batchId || "").startsWith("rt-")) {
+  if (/^(rt|pe)-/.test(String(newest?.batchId || ""))) {
     const batchRows = await queryRaw<any>(
       `SELECT * FROM ${table} WHERE ${quoteIdentifier("batchId")} = ? ORDER BY ${idCol}`, [newest.batchId],
     );
-    return buildRuleTunnelProbeResult(batchRows);
+    return String(newest.batchId).startsWith("pe-") ? buildPortEntrySelfTestResult(batchRows) : buildRuleTunnelProbeResult(batchRows);
   }
   if (options.includeActive !== false) {
     const pendingRows = await queryRaw<any>(

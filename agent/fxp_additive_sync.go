@@ -25,6 +25,27 @@ func cloneFXPSpecForAdditive(spec fxpSpec) fxpSpec {
 	return spec
 }
 
+// Full starts and additive updates must bind the same Agent identity. Runtime
+// compares existing entries exactly and uses these fields for authenticated
+// reports. Clone first: credentials belong to the runtime config, not the plan.
+func withFXPAgentIdentity(spec fxpSpec, cfg Config) fxpSpec {
+	spec = cloneFXPSpecForAdditive(spec)
+	panelURL, installationID := currentPanelURL(cfg), currentAgentInstallationID()
+	bind := func(entry *fxpSpec) {
+		entry.PanelURL = panelURL
+		entry.Token = cfg.Token
+		entry.InstallationID = installationID
+	}
+	if spec.Role == "entry" {
+		bind(&spec)
+	} else if isFXPEntryGroup(spec) {
+		for index := range spec.Entries {
+			bind(&spec.Entries[index])
+		}
+	}
+	return spec
+}
+
 // An apply snapshot is not a deletion instruction. Concurrent batch creates
 // can be queued with different group snapshots; preserve members already added
 // by a sibling batch. Explicit remove/handoff actions retire their own members.
@@ -134,12 +155,7 @@ func syncFXPAdditive(cfg Config, existing *fxpProcess, desired fxpSpec, persiste
 		}
 	}
 	prepared.ControlSocket = previous.ControlSocket
-	if isFXPEntryGroup(prepared) {
-		for index := range prepared.Entries {
-			prepared.Entries[index].PanelURL = currentPanelURL(cfg)
-			prepared.Entries[index].Token = cfg.Token
-		}
-	}
+	prepared = withFXPAgentIdentity(prepared, cfg)
 	payload, err := json.Marshal(prepared)
 	if err != nil {
 		if refID != "" {

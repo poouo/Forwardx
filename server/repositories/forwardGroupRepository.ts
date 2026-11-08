@@ -80,7 +80,7 @@ import { repairPortForwardRuleHostReferences } from "../portForwardRuleHosts";
 import { summarizeForwardGroupRuntime } from "../forwardGroupRuntimeStatus";
 import { summarizePortEntryRuntime } from "../portEntryRuntime";
 import { nextPortEntrySyncDiagnostic, parsePortEntrySyncDiagnostic } from "../../shared/portEntryDiagnostics";
-import { portForwardToolPreflight, missingPortForwardToolMessage } from "../portForwardToolPreflight";
+import { portForwardToolPreflight, missingPortForwardToolMessage, MissingPortForwardToolError } from "../portForwardToolPreflight";
 import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { MAX_FORWARD_GROUP_MEMBERS, forwardGroupRouteMembers } from "../../shared/forwardGroup";
@@ -399,7 +399,7 @@ type MemberAgentLiveness = {
   signature: string;
 };
 
-async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Promise<MemberAgentLiveness> {
+export async function resolveMemberAgentLiveness(member: any, nowMs = Date.now()): Promise<MemberAgentLiveness> {
   const hostId = await memberEntryHostId(member).catch(() => 0);
   const host = hostId > 0 ? await getHostById(hostId).catch(() => null) : null;
   let trafficExcluded = hostTrafficExcluded(host);
@@ -840,6 +840,8 @@ export async function getForwardGroups(userId?: number, options: { includeRuntim
       forwardGroupId: forwardRules.forwardGroupId,
       isEnabled: forwardRules.isEnabled,
       pendingDelete: forwardRules.pendingDelete,
+      name: forwardRules.name,
+      sourcePort: forwardRules.sourcePort,
     })
     .from(forwardRules)
     .where(and(
@@ -1847,9 +1849,22 @@ async function memberDdnsValue(member: any, recordType: ForwardGroupRecordType) 
   return "";
 }
 
+function forwardGroupDdnsSelectionSignature(group: any) {
+  return JSON.stringify([groupModeOf(group), dbBool(group?.isEnabled), String(group?.domain || ""),
+    normalizeForwardGroupRecordType(group?.recordType), Number(group?.activeMemberId || 0), group?.ddnsAutoResolveEnabled,
+    (group?.members || []).map((member: any) => [Number(member.id), member.memberType,
+      Number(member.hostId || 0), Number(member.tunnelId || 0), dbBool(member.isEnabled), Number(member.priority || 0)])
+      .sort((left: any[], right: any[]) => Number(left[0]) - Number(right[0]))]);
+}
+
+async function forwardGroupDdnsSelectionStillCurrent(group: any) {
+  const latest = await getForwardGroupById(Number(group?.id || 0)).catch(() => null);
+  return !!latest && forwardGroupDdnsSelectionSignature(latest) === forwardGroupDdnsSelectionSignature(group);
+}
+
 async function failoverAgentSelectionStillCurrent(group: any, active: any, next: any) {
   const latest = await getForwardGroupById(Number(group?.id || 0)).catch(() => null) as any;
-  if (!latest || Number(latest.activeMemberId || 0) !== Number(group?.activeMemberId || 0)) return false;
+  if (!latest || forwardGroupDdnsSelectionSignature(latest) !== forwardGroupDdnsSelectionSignature(group)) return false;
   const enabledMemberIds = new Set((latest.members || [])
     .filter((member: any) => dbBool(member?.isEnabled))
     .map((member: any) => Number(member.id || 0)));
@@ -2405,6 +2420,7 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
       .map((rule: any) => Number(rule.id))
       .filter((id: number) => Number.isInteger(id) && id > 0)
     : [];
+  const portEntryHosts: any[] = [];
   for (const member of portCheckMembers) {
     if (!dbBool(member?.isEnabled)) continue;
     const hostId = await memberEntryHostId(member);
@@ -2412,8 +2428,7 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
     await assertEntryPortAllowed(member, sourcePort);
     if (groupMode === "port") {
       const host = await getHostById(hostId);
-      const message = host ? missingPortForwardToolMessage(portForwardToolPreflight([host], group.forwardType), group.forwardType) : null;
-      if (message) throw new Error(message);
+      if (host) portEntryHosts.push(host);
     }
     const childMemberId = groupMode === "chain" && chainEntries.length > 0 && firstChainMember
       ? Number(firstChainMember.id)
@@ -2433,6 +2448,10 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
     );
     if (used) throw new Error(`Entry agent port ${sourcePort} is already used`);
   }
+  // Finish every entry's range/conflict check before reporting missing tools.
+  // A free listener and an unavailable runtime are different conditions.
+  const toolMessage = missingPortForwardToolMessage(portForwardToolPreflight(portEntryHosts, group.forwardType), group.forwardType);
+  if (toolMessage) throw new MissingPortForwardToolError(toolMessage);
   return group;
 }
 
@@ -3780,6 +3799,16 @@ export async function replaceForwardGroupMembers(
       });
     }
   }
+  // A removed/disabled member is not an active route, even while its historical
+  // DNS value is waiting to be reconciled. Never leave a dangling selection.
+  const remainingMembers = await db.select({ id: forwardGroupMembers.id, isEnabled: forwardGroupMembers.isEnabled })
+    .from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, groupId));
+  if (Number((group as any)?.activeMemberId || 0) > 0 && !remainingMembers.some((member: any) =>
+    Number(member.id) === Number((group as any).activeMemberId) && dbBool(member.isEnabled))) {
+    await db.update(forwardGroups).set({ activeMemberId: null, updatedAt: nowDate() }).where(and(
+      eq(forwardGroups.id, groupId), eq(forwardGroups.activeMemberId, Number((group as any).activeMemberId)),
+    ));
+  }
   if (options.skipSync) return;
   if (isCollectionGroupMode(groupMode)) {
     await runForwardGroupFailover(groupId, { forceSync: true, manual: true });
@@ -4178,15 +4207,19 @@ function rememberExactDdnsReconciliation(group: any, value: string) {
 }
 
 async function forwardGroupDdnsFallbackValue(group: any, recordType: ForwardGroupRecordType) {
-  const previousValues = splitForwardGroupDdnsValues(String(group?.lastDdnsValue || ""));
-  const previous = forwardGroupDdnsRecordSets(recordType, previousValues)
-    .flatMap(record => record.values.slice(0, 1)).join(",");
-  if (previous) return previous;
+  const previousValues = new Set(splitForwardGroupDdnsValues(String(group?.lastDdnsValue || "")));
+  const candidates: Array<{value: string; available: boolean}> = [];
   for (const member of sortedMembers(group, true) as any[]) {
     const value = await memberDdnsValue(member, recordType).catch(() => "");
-    if (value) return value;
+    if (!value) continue;
+    const liveness = await resolveMemberAgentLiveness(member);
+    if (liveness.trafficExcluded) continue;
+    // History is not a candidate list: it may refer to a removed member or a
+    // host's former IP. Retain it only via a current enabled member's address.
+    if (splitForwardGroupDdnsValues(value).some(address => previousValues.has(address))) return value;
+    candidates.push({value, available:liveness.available});
   }
-  return "";
+  return candidates.find(candidate => candidate.available)?.value || candidates[0]?.value || "";
 }
 
 async function preserveForwardGroupDdns(
@@ -4199,6 +4232,12 @@ async function preserveForwardGroupDdns(
   const groupId = Number(group.id);
   const domain = String(group.domain || "").trim();
   const recordType = normalizeForwardGroupRecordType(group.recordType);
+  const stillCurrent = async () => {
+    if (await forwardGroupDdnsSelectionStillCurrent(group)) return true;
+    scheduleForwardGroupFailover([groupId]);
+    return false;
+  };
+  if (!(await stillCurrent())) return;
   const quotaExcluded = await getTrafficExcludedHostIds();
   const enabledMembers = sortedMembers(group, true);
   const quotaBlocked = [];
@@ -4213,9 +4252,11 @@ async function preserveForwardGroupDdns(
       }
     }
     const retainedValues = String(group.lastDdnsValue || "").split(",").map((value) => value.trim()).filter((value) => value && allowedValues.has(value));
+    if (!(await stillCurrent())) return;
     if (ddnsSettings.enabled && ddnsSettings.provider !== "disabled" && group.ddnsAutoResolveEnabled !== false) {
       await updateForwardGroupDdnsRecordValues({ groupId, domain, recordType, values: retainedValues, ttl: Number(ddnsSettings.ttl || 600) });
     }
+    if (!(await stillCurrent())) return;
     await updateForwardGroupRuntimeIfChanged(db, group, {
       activeMemberId: null,
       lastDdnsValue: retainedValues.join(",") || null,
@@ -4225,12 +4266,13 @@ async function preserveForwardGroupDdns(
     return;
   }
   const retainedValue = await forwardGroupDdnsFallbackValue(group, recordType);
+  if (!(await stillCurrent())) return;
   const shouldReconcile = !!options.forceSync
     || (!!retainedValue && exactDdnsReconciliationDue(group, retainedValue));
 
   if (!ddnsSettings.enabled || ddnsSettings.provider === "disabled") {
     await updateForwardGroupRuntimeIfChanged(db, group, {
-      lastDdnsValue: retainedValue || group.lastDdnsValue || null,
+      lastDdnsValue: retainedValue || null,
       lastStatus: "down",
       lastMessage: retainedValue
         ? `${reason}；保留最后一条解析 ${retainedValue}，系统 DDNS 未启用`
@@ -4240,9 +4282,19 @@ async function preserveForwardGroupDdns(
   }
 
   if (!retainedValue) {
+    // No current member owns the old address. Keeping it at the provider would
+    // leave a retired host serving the group's domain indefinitely.
+    if (group.ddnsAutoResolveEnabled !== false && String(group.lastDdnsValue || "").trim()) {
+      await updateForwardGroupDdnsRecordValues({groupId,domain,recordType,values:[],ttl:Number(ddnsSettings.ttl || 600)});
+      if (!(await stillCurrent())) return;
+    }
     await updateForwardGroupRuntimeIfChanged(db, group, {
+      activeMemberId: null,
+      lastDdnsValue: null,
       lastStatus: "down",
-      lastMessage: `${reason}；无法确定保底地址，未修改服务商解析`,
+      lastMessage: group.ddnsAutoResolveEnabled === false
+        ? `${reason}；当前成员没有可用地址，自动解析已关闭`
+        : `${reason}；当前成员没有可用地址，已清理失效解析`,
     });
     return;
   }
@@ -4264,6 +4316,7 @@ async function preserveForwardGroupDdns(
       values: [retainedValue],
       ttl: Number(ddnsSettings.ttl || 600),
     });
+    if (!(await stillCurrent())) return;
     rememberExactDdnsReconciliation(group, retainedValue);
     await db.update(forwardGroups).set({
       lastDdnsValue: retainedValue,
@@ -4785,7 +4838,7 @@ async function runForwardGroupFailoverForGroups(
             successMessage: "DDNS 已切换",
             currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
             suppressSwitchNotify: true,
-            beforeCommit: () => memberAgentSelectionStillCurrent(firstMember),
+            beforeCommit: () => failoverAgentSelectionStillCurrent(group, null, firstMember),
           });
           if (committed === false) scheduleForwardGroupFailover([Number(group.id)]);
         } else if (agentFailurePending) {

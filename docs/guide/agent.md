@@ -75,9 +75,13 @@ fwxm agent info
 fwxm agent proxy show
 fwxm agent proxy set
 fwxm agent proxy off
+fwxm agent tools
+fwxm agent tools install realm
 ```
 
 `proxy set` 支持隐藏输入，`set/off` 保存后重启 Agent。信息/代理查看会隐藏凭据，不建议用 `cat config.json` 向他人提供排障数据。
+
+新版菜单 **9）转发环境** 可查看已安装的转发组件和路径，并选择单独安装 Realm、ForwardX Runtime（GOST）、iptables、nftables、socat 或 Nginx。`fwxm agent tools install` 不指定名称时进入选择菜单；安装沿用该 Agent 的面板地址和代理，不重装 Agent。完整条件与权限限制见 [SSH 管理](./ssh-management.md#agent-转发环境)。
 
 旧部署没有管理命令时可用原生命令：
 

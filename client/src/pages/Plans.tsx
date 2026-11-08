@@ -256,7 +256,7 @@ function PlanCard({
         </MobileInfoRow>
         <MobileInfoRow label={translateText("端口")}>{planPortCountText(plan.portCount)}</MobileInfoRow>
         <MobileInfoRow label={translateText("规则/流量")}>{translateText("规则 ")}{plan.maxRules || translateText("不限")}{translateText(" · 流量 ")}{bytes(plan.trafficLimit)}</MobileInfoRow>
-        <MobileInfoRow label={translateText("连接/IP")}>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · 单 IP ")}{plan.maxIPs || translateText("不限")}</MobileInfoRow>
+        <MobileInfoRow label={translateText("连接/IP")}>{translateText("连接 ")}{plan.maxConnections || translateText("不限")}{translateText(" · IP ")}{plan.maxIPs || translateText("不限")}</MobileInfoRow>
         <MobileInfoRow label={translateText("限速")}>{speed(plan.rateLimitMbps)}</MobileInfoRow>
         <MobileInfoRow label={translateText("附加流量")}>{plan.trafficAddons?.length || 0}{translateText(" 档")}</MobileInfoRow>
         </PlanDetails>
@@ -1175,9 +1175,10 @@ export default function Plans() {
               <p className="text-xs text-muted-foreground">{translateText("按主机或隧道聚合。")}</p>
             </div>
             <div className="space-y-2">
-              <Label>{translateText("单 IP 接入限制")}</Label>
+              <Label>{translateText("IP 限制")}</Label>
               <Input type="number" min={0} value={form.maxIPs} onChange={(e) => setForm({ ...form, maxIPs: e.target.value })} />
-              <p className="text-xs text-muted-foreground">{translateText("同组规则共享限制。")}</p>
+              <p className="text-xs text-muted-foreground">{translateText("同时在线来源 IP 数，0 为不限；同用户、同入口主机的规则共享。")}</p>
+              <p className="text-xs text-muted-foreground">{translateText("持续至少 5 秒且双向累计流量达到 512 字节后计入，短时扫描不占名额。")}</p>
             </div>
             <div className="space-y-2">
               <Label>{translateText("排序")}</Label>

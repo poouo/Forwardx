@@ -31,6 +31,17 @@ test("disabled dependencies, disabled members and empty resources do not claim h
   assert.ok(idle.nodes.every((node) => node.status==="idle"));
 });
 
+test("partial nodes name unsynchronized and unconfirmed rules instead of hiding missing counts", () => {
+  const summary=summarizePortEntryRuntime({group,members:members.slice(0,1),
+    templates:[{id:100,name:"ready",sourcePort:10000,isEnabled:true},{id:200,name:"waiting",sourcePort:10001,isEnabled:true},{id:400,name:"missing",sourcePort:10002,isEnabled:true}],
+    children:[child(1,100),child(1,200,false)]});
+  assert.equal(summary.nodes[0].status,"degraded");
+  assert.deepEqual(summary.nodes[0].unconfirmedRules,[
+    {ruleId:200,name:"waiting",sourcePort:10001,state:"unconfirmed"},
+    {ruleId:400,name:"missing",sourcePort:10002,state:"not-synced"},
+  ]);
+});
+
 test("sync attempts survive repeated failures, bound examples and reset on recovery", () => {
   const errors = Array.from({length:20},(_,ruleId)=>({ruleId,message:"port occupied"}));
   const first = nextPortEntrySyncDiagnostic(null,errors,1000)!;

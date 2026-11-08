@@ -58,6 +58,45 @@ export const selfTestRulesRouter = router({
       let message: string | null = null;
       if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
         const group = await db.getForwardGroupById(Number((rule as any).forwardGroupId)) as any;
+        if (group?.groupMode === "port") {
+          if (!group.isEnabled) throw new Error("转发组不存在或已停用");
+          if (Number(group.entryGroupId) > 0) {
+            const entryGroup = await db.getForwardGroupById(Number(group.entryGroupId));
+            if (!entryGroup?.isEnabled) throw new Error("入口组不存在或已停用");
+          }
+          const enabled = (value: unknown) => value === true || Number(value) === 1;
+          const members = (group.members || []).filter((member: any) => member.memberType === "host" && enabled(member.isEnabled));
+          if (!members.length) throw new Error("端口转发没有可测试的入口");
+          const children = await db.getForwardGroupChildRulesForTemplate(Number(rule.id)) as any[];
+          const batchId = `pe-${randomUUID()}`;
+          const testHostIds = new Set<number>();
+          let firstTestId = 0;
+          await db.withDatabaseTransaction(async () => {
+            for (const member of members) {
+              const entryHostId = Number(member.hostId);
+              const sourceHost = await db.getHostById(entryHostId);
+              const liveness = await db.resolveMemberAgentLiveness(member);
+              const child = children.find(child => Number(child.forwardGroupMemberId) === Number(member.id)
+                && Number(child.hostId) === entryHostId && !enabled(child.pendingDelete) && enabled(child.isEnabled));
+              const error = liveness.trafficExcluded ? "入口主机流量达量，已暂停参与转发"
+                : !liveness.available ? "入口主机离线，无法执行探测" : !child ? "入口规则尚未同步，请检查节点运行详情" : null;
+              if (child) await requireRuleProtocolEnabled(child);
+              const snapshot = child || rule;
+              const requestMessage = JSON.stringify({ kind: "forward-group", groupId: group.id, memberId: member.id,
+                runtimeRuleId: child?.id || 0, forwardType: snapshot.forwardType, sourcePort: snapshot.sourcePort,
+                targetIp: snapshot.targetIp, targetPort: snapshot.targetPort, method: linkProbeMethodForRule(snapshot),
+                sourceLabel: sourceHost?.name || `主机 #${entryHostId}`, targetLabel: rule.name });
+              const id = await db.createForwardTest({ruleId: rule.id, hostId: entryHostId, userId: rule.userId,
+                batchId, requestMessage, message: error || requestMessage, status: error ? "failed" : "pending",
+                listenOk:false, targetReachable:false, forwardOk:false});
+              if (!firstTestId) firstTestId = Number(id);
+              if (!error) testHostIds.add(entryHostId);
+            }
+          });
+          for (const id of testHostIds) pushAgentRefresh(id, "port-entry-selftest", {urgent:true});
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} port-group=${group.id} batch=${batchId} entries=${members.length} dispatchedHosts=${testHostIds.size}`);
+          return {id:firstTestId,queued:members.length};
+        }
         if (String(group?.groupMode || "failover") === "chain") {
           await db.syncForwardGroupRules(Number(group.id));
           const probes = await db.getForwardGroupChainProbes(Number(group.id), { includeFinalTarget: true, templateRule: rule });

@@ -8,9 +8,106 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestFXPAdditiveSyncPreservesInstallationIdentity(t *testing.T) {
+	isolateAgentInstallation(t)
+	usePersistentRuntimeTestDirs(t)
+	previousPanelURL, _ := runtimePanelURL.Load().(string)
+	runtimePanelURL.Store("")
+	t.Cleanup(func() { runtimePanelURL.Store(previousPanelURL) })
+	dir, err := os.MkdirTemp("", "fxp-id-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	cfg := Config{PanelURL: "https://panel.example.test", Token: "test-panel-token"}
+	if err := initializeAgentInstallation(filepath.Join(dir, "agent.json"), cfg.Token); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"v1", "v3"} {
+		t.Run(version, func(t *testing.T) {
+			first := testV1EntrySpec(17, 1, 24001)
+			first.TransportVersion = version
+			initial, _ := buildSharedFXPEntryGroup([]fxpSpec{first}, 17, version)
+			path := filepath.Join(dir, version+".json")
+			// Match the full-start path: Runtime already holds an installation-
+			// bound entry, but the desired/persisted plan has no Agent credentials.
+			committed := cloneFXPSpecForAdditive(initial)
+			committed.ControlSocket = path + ".sock"
+			committed.Entries[0].PanelURL = currentPanelURL(cfg)
+			committed.Entries[0].Token = cfg.Token
+			committed.Entries[0].InstallationID = currentAgentInstallationID()
+			raw, _ := json.Marshal(committed)
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("unix", committed.ControlSocket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				var next fxpSpec
+				if err := json.NewDecoder(request.Body).Decode(&next); err != nil {
+					http.Error(w, "invalid config", http.StatusBadRequest)
+					return
+				}
+				next = normalizeFXPSpec(next)
+				// Emulate Runtime's strict existing-entry comparison, rather than
+				// accepting every request as the original additive API fixture did.
+				for index, entry := range committed.Entries {
+					if len(next.Entries) <= index || !reflect.DeepEqual(entry, next.Entries[index]) {
+						http.Error(w, "existing entry changed or removed", http.StatusConflict)
+						return
+					}
+				}
+				for _, entry := range next.Entries {
+					if entry.InstallationID != currentAgentInstallationID() || entry.PanelURL != currentPanelURL(cfg) || entry.Token != cfg.Token {
+						http.Error(w, "new entry missing Agent identity", http.StatusConflict)
+						return
+					}
+				}
+				committed = next
+				w.WriteHeader(http.StatusNoContent)
+			})}
+			defer server.Close()
+			go server.Serve(listener)
+			process := &fxpProcess{configPath: path, spec: initial, signature: fxpServerSignature(initial)}
+			for count := 2; count <= 4; count++ {
+				entries := []fxpSpec{first}
+				for id := 2; id <= count; id++ {
+					entry := first
+					entry.RuleID, entry.ListenPort = id, 24000+id
+					entries = append(entries, entry)
+				}
+				desired, _ := buildSharedFXPEntryGroup(entries, 17, version)
+				message := newActionMessage()
+				if !syncFXPAdditive(cfg, process, desired, true, message) {
+					t.Fatalf("add entry %d failed: %s", count, message.get())
+				}
+				// Retrying a committed batch must also preserve its identity.
+				if !syncFXPAdditive(cfg, process, desired, true, message) {
+					t.Fatalf("retry failed: %s", message.get())
+				}
+				for _, plan := range []fxpSpec{desired, process.spec} {
+					for _, entry := range plan.Entries {
+						if entry.PanelURL != "" || entry.Token != "" || entry.InstallationID != "" {
+							t.Fatal("runtime identity leaked into the desired plan")
+						}
+					}
+				}
+				data, err := os.ReadFile(path)
+				var saved fxpSpec
+				if err != nil || json.Unmarshal(data, &saved) != nil || len(saved.Entries) != count || saved.Entries[0].InstallationID != currentAgentInstallationID() {
+					t.Fatal("runtime config did not retain installation identity")
+				}
+			}
+		})
+	}
+}
 
 func TestFXPAdditionPlanPreservesExistingV1AndV2Members(t *testing.T) {
 	for _, version := range []string{"v1", forwardXWireGuardVersion} {
@@ -35,6 +132,11 @@ func TestFXPAdditionPlanPreservesExistingV1AndV2Members(t *testing.T) {
 
 func TestFXPV2AdditiveSyncKeepsExistingProxiesAndBoundsReferences(t *testing.T) {
 	usePersistentRuntimeTestDirs(t)
+	isolateAgentInstallation(t)
+	cfg := Config{PanelURL: "https://panel.example.test", Token: "v2-add-test-token"}
+	if err := initializeAgentInstallation(filepath.Join(t.TempDir(), "config.json"), cfg.Token); err != nil {
+		t.Fatal(err)
+	}
 	const tunnelID = 98521
 	runtime := &wireGuardRuntime{spec: wireGuardSpec{TunnelID: tunnelID}, peers: map[string]wireGuardPeerSpec{
 		"exit-a": {ID: "exit-a", Address: "100.110.0.2"},
@@ -51,6 +153,7 @@ func TestFXPV2AdditiveSyncKeepsExistingProxiesAndBoundsReferences(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared = withFXPAgentIdentity(prepared, cfg)
 	dir, err := os.MkdirTemp("", "fxp-v2-add-")
 	if err != nil {
 		t.Fatal(err)
@@ -96,10 +199,15 @@ func TestFXPV2AdditiveSyncKeepsExistingProxiesAndBoundsReferences(t *testing.T) 
 	})
 	for _, entries := range [][]fxpSpec{{first, second}, {first, second, third}} {
 		desired, _ := buildSharedFXPEntryGroup(entries, tunnelID, forwardXWireGuardVersion)
-		if !syncFXPAdditive(Config{}, process, desired, true, newActionMessage()) {
+		if !syncFXPAdditive(cfg, process, desired, true, newActionMessage()) {
 			t.Fatal("V2 sync failed")
 		}
 		actual := <-requests
+		for _, entry := range actual.Entries {
+			if entry.InstallationID != currentAgentInstallationID() || entry.PanelURL != currentPanelURL(cfg) || entry.Token != cfg.Token {
+				t.Fatal("V2 additive entry lost its Agent identity")
+			}
+		}
 		if actual.Entries[0].ExitPort != prepared.Entries[0].ExitPort {
 			t.Fatal("old proxy was replaced")
 		}

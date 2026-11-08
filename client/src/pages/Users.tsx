@@ -1378,7 +1378,7 @@ function UsersContent() {
                     <span>{translateText("规则: ")}{u.maxRules ? translateText("{0} 条", [u.maxRules]) : translateText("不限")}</span>
                     <span>{translateText("端口: ")}{u.maxPorts ? translateText("{0} 个", [u.maxPorts]) : translateText("不限")}</span>
                     <span>{translateText("连接: ")}{u.maxConnections ? `${u.maxConnections}` : translateText("不限")}</span>
-                    <span>{translateText("单 IP: ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
+                    <span>{translateText("IP: ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
                     {speedLimit > 0 && <span className="col-span-2">{translateText("转发限速: ")}{formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
                   </div>
 
@@ -1578,7 +1578,7 @@ function UsersContent() {
                             <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("规则 ")}{u.maxRules ? translateText("{0} 条", [u.maxRules]) : translateText("不限")}</span>
                             <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("端口 ")}{u.maxPorts ? translateText("{0} 个", [u.maxPorts]) : translateText("不限")}</span>
                             <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("连接 ")}{u.maxConnections ? `${u.maxConnections}` : translateText("不限")}</span>
-                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("单 IP ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("IP ")}{u.maxIPs ? `${u.maxIPs}` : translateText("不限")}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
                               <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">{translateText("转发限速 ")}{formatForwardRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
                             )}
@@ -2152,7 +2152,7 @@ function UsersContent() {
                   <p className="text-xs text-muted-foreground">{translateText("按主机或隧道聚合。")}</p>
                 </div>
                 <div className="space-y-2">
-                  <Label>{translateText("单 IP 接入限制")}</Label>
+                  <Label>{translateText("IP 限制")}</Label>
                   <Input
                     type="number"
                     min={0}
@@ -2160,8 +2160,8 @@ function UsersContent() {
                     onChange={(e) => setMaxIPs(parseInt(e.target.value) || 0)}
                     placeholder={translateText("0=不限制")}
                   />
-                  <p className="text-xs text-muted-foreground">{translateText("每个来源 IP 的 TCP 并发上限，非 IP 个数；UDP 不适用。")}</p>
-                  <HelpDetails title={translateText("限制范围")}><p>{translateText("限制每个来源 IP 的 TCP 并发连接数，不是 IP 个数。普通转发按用户、入口主机共享；V1/V2 隧道按规则计数，UDP 不适用。")}</p></HelpDetails>
+                  <p className="text-xs text-muted-foreground">{translateText("同时在线来源 IP 数，0 为不限；同用户、同入口主机的规则共享。")}</p>
+                  <HelpDetails title={translateText("限制范围")}><p>{translateText("持续至少 5 秒且双向累计流量达到 512 字节后计入，短时扫描不占名额。")}</p><p>{translateText("TCP/UDP 共用 IP 名额，IPv4/IPv6 分别计数；UDP 无流量约 30 秒释放，TCP 断开后约 10 秒释放。需要新版 Agent 及防火墙、连接跟踪权限。")}</p></HelpDetails>
                 </div>
               </div>
               <Separator />

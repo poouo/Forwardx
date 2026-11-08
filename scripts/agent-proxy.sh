@@ -32,7 +32,7 @@ fwx_agent_proxy_args() {
   if [ "${FORWARDX_AGENT_PROXY+x}" = x ]; then FWX_PROXY_EXPLICIT=true; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      install|upgrade|update|uninstall|remove|delete)
+      install|upgrade|update|uninstall|remove|delete|install-tool)
         [ -z "$ACTION" ] || { echo '[ERROR] Multiple actions.' >&2; return 1; }
         ACTION="$1"; shift ;;
       --proxy)

@@ -59,6 +59,8 @@ With one installed role its menu opens directly; with both roles choose panel or
 | --- | --- |
 | `fwxm agent info` / `fwxm panel info` | Paths, service, redacted proxy, address; no Token/database password |
 | `fwxm agent status` / `fwxm panel status` | Service status |
+| `fwxm agent tools` | Discover forwarding tool executables and display their paths; works offline |
+| `fwxm agent tools install [NAME]` | Select or install Realm, ForwardX Runtime (`gost`), iptables, nftables, socat or Nginx |
 | `fwxm agent logs` / `fwxm panel logs` | Follow logs; Ctrl+C exits |
 | `fwxm agent start\|stop\|restart` | Control Agent service |
 | `fwxm panel start\|stop\|restart` | Control local service or Docker container |
@@ -72,5 +74,7 @@ With one installed role its menu opens directly; with both roles choose panel or
 When both roles are installed, specify `agent` or `panel`. Schedule repairs/removal as maintenance. Small management scripts and cached installers remain after removal to allow reinstallation; no background service is added. `install` on an existing deployment behaves as an upgrade to preserve registration/data.
 
 Panel maintenance proxy only affects download tools that support proxy environment variables, not Node runtime notifications/OAuth; npm/system package SOCKS support varies. **Docker image pulls use the Docker daemon** and require its own HTTP/HTTPS proxy configuration (a SOCKS-only proxy needs an HTTP endpoint/adapter). `fwxm` does not modify global Docker settings.
+
+The Agent menu offers **9) Forwarding tools**. For example, `fwxm agent tools install realm` installs only Realm, using the Agent's configured panel URL and proxy. Both the panel installer and cached management scripts must include this feature. Component installation does not rewrite Agent registration or rules, or intentionally restart Agent/forwarding processes. System packages can bring dependencies and start services (notably system Nginx); existing sites/reverse proxies require care. APK package downloads with SOCKS fail explicitly rather than bypassing the proxy. Wait for a subsequent Agent report, then refresh the panel to see the updated inventory. Executable discovery is not a kernel, permissions or connectivity test; installing iptables/nftables cannot grant missing `CAP_NET_ADMIN` in restricted containers.
 
 Official installers record custom paths, service/container names and Compose project names. Manual Compose deployments and older releases without `fwxm` should first upgrade using the matching official installer; do not blindly run default installation against an unknown existing deployment.

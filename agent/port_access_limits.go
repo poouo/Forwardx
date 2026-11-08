@@ -158,7 +158,15 @@ func portLimitHook(dispatch, base string) []string {
 }
 
 func managedPortLimitChain(name string) bool {
-	if !strings.HasPrefix(name, "FWX_PD_") && !strings.HasPrefix(name, "FWX_PC_") {
+	return managedLimitChain(name, []string{"FWX_PD_", "FWX_PC_"})
+}
+
+func managedLimitChain(name string, prefixes []string) bool {
+	found := false
+	for _, prefix := range prefixes {
+		found = found || strings.HasPrefix(name, prefix)
+	}
+	if !found {
 		return false
 	}
 	if len(name) != 27 {
@@ -177,6 +185,10 @@ func managedPortLimitChain(name string) bool {
 // checkOnly is read-only and is used for desired-state health checks.
 func reconcilePortLimitFamily(fw portLimitFirewall, binary string, specs []portAccessLimitSpec, checkOnly bool) error {
 	dispatch, desired := portLimitRules(specs, binary == "ip6tables")
+	return reconcileLimitPlan(fw, binary, dispatch, desired, checkOnly, []string{"FWX_PD_", "FWX_PC_"}, portLimitHook)
+}
+
+func reconcileLimitPlan(fw portLimitFirewall, binary, dispatch string, desired map[string][][]string, checkOnly bool, prefixes []string, hookFor func(string, string) []string) error {
 	snapshot, err := fw.Run(binary, "-S")
 	if err != nil {
 		return err
@@ -185,10 +197,10 @@ func reconcilePortLimitFamily(fw portLimitFirewall, binary string, specs []portA
 	var obsoleteHooks [][]string
 	for _, line := range strings.Split(snapshot, "\n") {
 		args := strings.Fields(line)
-		if len(args) == 2 && args[0] == "-N" && managedPortLimitChain(args[1]) {
+		if len(args) == 2 && args[0] == "-N" && managedLimitChain(args[1], prefixes) {
 			existing[args[1]] = true
 		}
-		if len(args) >= 4 && args[0] == "-A" && (args[1] == "PREROUTING" || args[1] == "OUTPUT") && args[len(args)-2] == "-j" && managedPortLimitChain(args[len(args)-1]) && args[len(args)-1] != dispatch {
+		if len(args) >= 4 && args[0] == "-A" && (args[1] == "PREROUTING" || args[1] == "OUTPUT") && args[len(args)-2] == "-j" && managedLimitChain(args[len(args)-1], prefixes) && args[len(args)-1] != dispatch {
 			obsoleteHooks = append(obsoleteHooks, args)
 		}
 	}
@@ -221,7 +233,7 @@ func reconcilePortLimitFamily(fw portLimitFirewall, binary string, specs []portA
 			}
 			// Missing rules go before RETURN (also repairs a partial apply).
 			operation := []string{"-I", name, "1"}
-			if len(rule) == 2 && rule[0] == "-j" && rule[1] == "RETURN" {
+			if len(rule) == 2 && rule[0] == "-j" && (rule[1] == "RETURN" || rule[1] == "DROP") {
 				operation = []string{"-A", name}
 			}
 			if _, err := fw.Run(binary, append(operation, rule...)...); err != nil {
@@ -231,7 +243,7 @@ func reconcilePortLimitFamily(fw portLimitFirewall, binary string, specs []portA
 	}
 	if dispatch != "" {
 		for _, base := range []string{"PREROUTING", "OUTPUT"} {
-			args := portLimitHook(dispatch, base)
+			args := hookFor(dispatch, base)
 			if _, err := fw.Run(binary, append([]string{"-C", base}, args...)...); err == nil {
 				continue
 			}
@@ -256,7 +268,7 @@ func reconcilePortLimitFamily(fw portLimitFirewall, binary string, specs []portA
 		}
 	}
 	// Remove obsolete dispatchers first, then their now-unreferenced counters.
-	for _, prefix := range []string{"FWX_PD_", "FWX_PC_"} {
+	for _, prefix := range prefixes {
 		for name := range existing {
 			if !strings.HasPrefix(name, prefix) || desired[name] != nil {
 				continue

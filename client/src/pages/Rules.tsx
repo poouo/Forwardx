@@ -23,6 +23,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
 import { ruleOwnerOptionIds } from "@/lib/userSelection";
 import { isCompleteRuleSortScope } from "@/lib/ruleSortScope";
+import { portEntryProbeHosts } from "@/lib/portEntryProbePlan";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
@@ -2189,7 +2190,9 @@ function RulesContent() {
     : undefined;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
+  const [portConfigurationError, setPortConfigurationError] = useState<string | null>(null);
   const latestPortCheckRef = useRef(0);
+  const latestRandomPortRef = useRef(0);
   const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
   const [copyRuleSearch, setCopyRuleSearch] = useState("");
   const [copyRuleCategory, setCopyRuleCategory] = useState<RuleCategory>("all");
@@ -2818,7 +2821,7 @@ function RulesContent() {
     if (portStatus === "used") {
       return {
         type: "used" as const,
-        text: portRangeError ? translateText("超范围") : translateText("不可用"),
+        text: portRangeError && /必须在.*(?:范围|区间)|must be.*range/i.test(portRangeError) ? translateText("超范围") : translateText("不可用"),
         title: portRangeError || translateText("端口已被占用"),
       };
     }
@@ -3120,6 +3123,7 @@ function RulesContent() {
       return;
     }
     setPortRangeError(null);
+    setPortConfigurationError(null);
     setPortStatus("checking");
     try {
       const result = await utils.rules.checkPort.fetch({
@@ -3130,21 +3134,26 @@ function RulesContent() {
         sourcePort,
         excludeRuleId: editingId || undefined,
         protocol: form.protocol,
-      });
+      }, { staleTime: 0 });
       if (latestPortCheckRef.current !== checkId) return;
       setPortRangeError(result.used ? result.reason ?? null : null);
+      setPortConfigurationError(result.configurationError ?? null);
       setPortStatus(result.used ? "used" : "available");
-    } catch {
+    } catch (err: any) {
       if (latestPortCheckRef.current !== checkId) return;
       setPortStatus("idle");
+      setPortConfigurationError(err?.message || translateText("端口检查失败，请重试"));
     }
   }, [form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, editingId, createOwnerUserId, utils, isForwardGroupRouteMode]);
 
   // A response started for the previous route must not mark the new route occupied.
   useEffect(() => {
     latestPortCheckRef.current += 1;
+    latestRandomPortRef.current += 1;
     setPortStatus("idle");
-  }, [editingId, form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, isForwardGroupRouteMode]);
+    setPortRangeError(null);
+    setPortConfigurationError(null);
+  }, [showDialog, editingId, createOwnerUserId, form.forwardGroupId, form.hostId, form.protocol, form.routeMode, form.sourcePort, form.tunnelId, isForwardGroupRouteMode]);
 
   // 源端口变化时自动检测
   useEffect(() => {
@@ -3211,15 +3220,24 @@ function RulesContent() {
       toast.error(translateText("请先选择主机"));
       return;
     }
+    const requestId = ++latestRandomPortRef.current;
     try {
       const randomPortInput = isForwardGroupRouteMode
         ? { forwardGroupId: Number(form.forwardGroupId), excludeRuleId: editingId || undefined, protocol: form.protocol }
         : { hostId: Number(form.hostId), tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null, excludeRuleId: editingId || undefined, protocol: form.protocol };
-      const result = await utils.rules.randomPort.fetch({ ...randomPortInput, userId: editingId ? undefined : createOwnerUserId });
-      setForm({ ...form, sourcePort: result.port });
+      const result = await utils.rules.randomPort.fetch({ ...randomPortInput, userId: editingId ? undefined : createOwnerUserId }, { staleTime: 0 });
+      if (latestRandomPortRef.current !== requestId) return;
+      latestPortCheckRef.current += 1;
+      setForm(prev => ({ ...prev, sourcePort: result.port }));
+      setPortRangeError(null);
+      setPortConfigurationError(null);
       setPortStatus("available");
       toast.success(translateText("已分配随机端口: {0}", [result.port]));
+      // A one-port range (or repeated random result) does not change the
+      // effect dependencies, so explicitly refresh its diagnostics as well.
+      if (result.port === form.sourcePort) void checkPort();
     } catch (err: any) {
+      if (latestRandomPortRef.current !== requestId) return;
       toast.error(err.message || translateText("无法获取随机端口"));
     }
   };
@@ -4803,6 +4821,16 @@ function RulesContent() {
       ], targetMeta);
     }
 
+    const portEntries = portEntryProbeHosts(routeGroup, hosts || []);
+    if (portEntries.length) {
+      const plannedSegments: LinkTestPlannedSegment[] = portEntries.map(entry => {
+        addHostNodeMeta(meta, entry.host, [entry.label, `主机 #${entry.hostId}`, `主机${entry.hostId}`]);
+        return {from:entry.label, to:ruleLabel, fromHostId:entry.hostId,
+          toHostId:Number(targetHost?.id || 0) || null, hopIndex:0, hopCount:1,
+          fromMeta:meta[entry.label], toMeta:meta[ruleLabel]};
+      });
+      return {nodeMeta:meta,sourceLabel:portEntries.map(entry => entry.label).join(" / "),targetLabel:ruleLabel,plannedSegments};
+    }
     const routeHosts = routeHostIds
       .map((hostId: number) => hostForRouteId(Number(hostId)))
       .filter(Boolean);
@@ -7433,6 +7461,11 @@ function RulesContent() {
                     <Shuffle className="h-4 w-4" />
                   </Button>
                 </div>
+                {(portConfigurationError || portRangeError) && (
+                  <p role="status" aria-live="polite" className="text-xs text-destructive" data-testid="rule-port-diagnostic">
+                    {portConfigurationError || portRangeError}
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>{translateText("目标地址")}</Label>
@@ -8503,7 +8536,7 @@ function SelfTestDialog({
   const displayedMessage = awaitingNewTest ? null : latest?.message;
   const parsedMessage = useMemo(() => parseLinkTestMessage(displayedMessage), [displayedMessage]);
   const testSource = forwardGroupSelfTestSource(latest);
-  const testSegments: LinkTestPlannedSegment[] | undefined = testSource ? [{
+  const testSegments: LinkTestPlannedSegment[] | undefined = parsedMessage.kind === "port-entry-summary" ? undefined : testSource ? [{
     from: testSource.label,
     to: testSource.targetLabel || targetLabel || ruleName,
     fromHostId: testSource.hostId,
@@ -8511,7 +8544,7 @@ function SelfTestDialog({
     fromMeta: nodeMeta?.[String(testSource.hostId)],
     toMeta: nodeMeta?.[testSource.targetLabel || targetLabel || ruleName],
   }] : plannedSegments;
-  const plannedSegmentCount = testSegments?.length || 0;
+  const plannedSegmentCount = testSegments?.length || parsedMessage.details.length || 0;
   const probeDialogSizeClass = plannedSegmentCount >= 3 ? "sm:max-w-4xl" : plannedSegmentCount >= 2 ? "sm:max-w-3xl" : "sm:max-w-xl";
   const lastFailureToastKey = useRef("");
   useEffect(() => {

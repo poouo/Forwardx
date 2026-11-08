@@ -31,6 +31,8 @@ Docker 面板在**宿主机 SSH** 执行命令，不是在容器内。菜单选�
 | 启动 / 停止 | `fwxm panel start` / `stop` | `fwxm agent start` / `stop` |
 | 跟随日志 | `fwxm panel logs` | `fwxm agent logs` |
 | 配置路径、服务与地址 | `fwxm panel info` | `fwxm agent info` |
+| 查看转发组件 | — | `fwxm agent tools` |
+| 选择安装转发组件 | — | `fwxm agent tools install` |
 | 后台地址提示 | `fwxm panel address` | — |
 | 查看 / 设置 / 关闭代理 | `fwxm panel proxy show` / `set` / `off` | `fwxm agent proxy show` / `set` / `off` |
 | 升级 | `fwxm panel upgrade` | `fwxm agent upgrade` |
@@ -39,6 +41,24 @@ Docker 面板在**宿主机 SSH** 执行命令，不是在容器内。菜单选�
 | 重置管理员密码 | `fwxm panel reset-admin` | — |
 
 表中的 `/ stop` 等表示分别执行完整命令，例如 `fwxm panel stop`，不要把斜杠一并输入。重置密码需要数据库可用，详见 [账号恢复](./account-recovery.md)。
+
+## Agent 转发环境
+
+Agent 菜单的 **9）转发环境（查看 / 安装）** 可查看 Realm、ForwardX Runtime（GOST）、iptables、nftables、socat、Nginx 的安装状态和可执行文件路径，也可选择其中一个组件安装。支持直接执行：
+
+```bash
+fwxm agent tools                    # 查看，不下载或启动组件
+fwxm agent tools install            # 交互选择安装哪个组件
+fwxm agent tools install realm      # 只安装 Realm
+fwxm agent tools install gost       # 安装项目自编译 ForwardX Runtime
+fwxm agent tools install nftables
+```
+
+需先通过包含本功能的新版面板安装器安装或升级 Agent，以更新 `fwxm` 和缓存脚本；单独安装组件也要求面板支持此功能。查询状态可离线进行，安装时读取该主机的面板连接地址和代理，复用原有组件安装来源及检查流程。失败会显示错误，不会回退为整套 Agent 重装。
+
+此操作不修改 Agent 注册信息或已有规则，不主动重启 Agent/转发进程。系统组件通过包管理器安装，可能带入必要依赖；安装 Nginx 时包管理器可能启动系统 Nginx 服务，已有网站或反代需留意端口。组件安装后，等待 Agent 后续上报并刷新面板查看状态。
+
+“已检测到”只代表 Agent 能找到相应可执行文件，不保证版本兼容、内核模块、权限或业务连通性。LXC 缺少 `CAP_NET_ADMIN` 时，安装 iptables/nftables 并不能补齐权限。APK 不支持 SOCKS 下载时会明确中止，可改用 HTTP 代理或自行安装，不会绕过代理直连。
 
 ## 安装与适用范围
 

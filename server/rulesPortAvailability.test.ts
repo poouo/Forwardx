@@ -79,11 +79,11 @@ test("forward-group port checks cover every entry and exclude the edited templat
       });
       assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 10, sourcePort: 17500, protocol: "tcp" }),
-        { used: true },
+        { used: true, reason: "Entry agent port 17500 is already used" },
       );
       assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 10, sourcePort: 17500, protocol: "udp" }),
-        { used: true },
+        { used: true, reason: "Entry agent port 17500 is already used" },
       );
       assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 10, sourcePort: 17501, protocol: "tcp" }),
@@ -99,7 +99,7 @@ test("forward-group port checks cover every entry and exclude the edited templat
       );
       assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 12, sourcePort: 17650, protocol: "tcp" }),
-        { used: true },
+        { used: true, reason: "Entry agent port 17650 is already used" },
       );
       await assert.rejects(
         () => caller.randomPort({ forwardGroupId: 12, protocol: "tcp" }),
@@ -107,7 +107,7 @@ test("forward-group port checks cover every entry and exclude the edited templat
       );
       assert.deepEqual(
         await caller.checkPort({ forwardGroupId: 13, sourcePort: 17700, excludeRuleId: 130, protocol: "tcp" }),
-        { used: true },
+        { used: true, reason: "Entry agent port 17700 is already used" },
       );
       await assert.rejects(
         () => caller.randomPort({ forwardGroupId: 13, excludeRuleId: 130, protocol: "tcp" }),
@@ -239,6 +239,32 @@ test("direct-host create, port lookup, enable, and update paths enforce subscrip
       );
       const randomPort = await limitedCaller.randomPort({ hostId: 2, protocol: "tcp" });
       assert.ok(randomPort.port >= 17000 && randomPort.port <= 18000, "random port escaped plan range: " + randomPort.port);
+
+      // A missing runtime is a configuration problem, not an occupied port.
+      // Reproduce the 20-port subscription shown in the user report.
+      await runtime.executeRaw('UPDATE "user_subscriptions" SET "portRangeStart" = ?, "portRangeEnd" = ? WHERE "id" = ?', [10000, 10019, 60]);
+      const { updateAgentToolInventory } = await import(moduleUrl("server/agentToolInventory.ts"));
+      updateAgentToolInventory(1, { realm: false }, Date.now());
+      await runtime.executeRaw('UPDATE "forward_groups" SET "forwardType" = ? WHERE "id" = ?', ["realm", 10]);
+      assert.deepEqual(await limitedCaller.effectivePortPolicy({ forwardGroupId: 10 }), { rangeText: "10000-10019" });
+      for (let i = 0; i < 20; i++) {
+        const allocated = await limitedCaller.randomPort({ forwardGroupId: 10, protocol: "tcp" });
+        assert.ok(allocated.port >= 10000 && allocated.port <= 10019);
+        assert.deepEqual(await limitedCaller.checkPort({ forwardGroupId: 10, sourcePort: allocated.port, protocol: "tcp" }), {
+          used: false,
+          configurationError: "所选入口缺少转发工具 realm：entry",
+        });
+      }
+      updateAgentToolInventory(1, { realm: true }, Date.now());
+      const availablePort = await limitedCaller.randomPort({ forwardGroupId: 10, protocol: "tcp" });
+      assert.deepEqual(await limitedCaller.checkPort({ forwardGroupId: 10, sourcePort: availablePort.port, protocol: "tcp" }), { used: false });
+      updateAgentToolInventory(1, { realm: false }, Date.now());
+      await assert.rejects(() => limitedCaller.create({ forwardGroupId: 10, name: "missing-runtime", forwardType: "realm", protocol: "tcp", sourcePort: availablePort.port, targetIp: "203.0.113.20", targetPort: 8080, isEnabled: true }), /缺少转发工具 realm/);
+      await insert("forward_rules", ["id", "hostId", "name", "forwardType", "protocol", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning"], [999, 1, "occupied-with-missing-tool", "iptables", "tcp", availablePort.port, "203.0.113.20", 8080, 1, 1, 0]);
+      assert.deepEqual(await limitedCaller.checkPort({ forwardGroupId: 10, sourcePort: availablePort.port, protocol: "tcp" }), { used: true, reason: "Entry agent port " + availablePort.port + " is already used" });
+      await runtime.executeRaw('DELETE FROM "forward_rules" WHERE "id" = ?', [999]);
+      await runtime.executeRaw('UPDATE "forward_groups" SET "forwardType" = ? WHERE "id" = ?', ["iptables", 10]);
+      await runtime.executeRaw('UPDATE "user_subscriptions" SET "portRangeStart" = ?, "portRangeEnd" = ? WHERE "id" = ?', [17000, 18000, 60]);
 
       const directRule = {
         hostId: 2,

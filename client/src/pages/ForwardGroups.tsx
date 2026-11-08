@@ -2234,15 +2234,6 @@ export function ForwardGroupsContent({
                         {form.recordType === "CNAME" && <SelectItem value="CNAME">{translateText("CNAME（旧配置）")}</SelectItem>}
                       </SelectContent>
                     </Select>
-                    {isPortMode && <div className="text-xs text-muted-foreground" role="status">
-                      {toolPreflight.isError ? translateText("工具检查失败，保存时将再次校验")
-                        : !toolPreflight.data ? translateText("正在检查入口工具…")
-                          : toolPreflight.data.some((host) => host.status === "missing")
-                            ? <span className="text-amber-700 dark:text-amber-300">{translateText("缺少 {0}：{1}",[form.forwardType,toolPreflight.data.filter((host) => host.status === "missing").map((host) => host.hostName || `#${host.hostId}`).join("、")])}</span>
-                            : toolPreflight.data.some((host) => host.status === "unknown") ? translateText("部分入口工具未确认（离线、旧版 Agent 或上报过期），允许保存")
-                              : toolPreflight.data.length ? translateText("所选入口均已检测到工具") : translateText("请先选择入口")}
-                      <p className="mt-1">{translateText("仅检查可执行文件，不保证内核模块、权限或业务连通性。")}</p>
-                    </div>}
                   </div>
                   {form.groupMode === "entry" && (
                     <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
@@ -2415,6 +2406,17 @@ export function ForwardGroupsContent({
                     />
                   </div>
                 </div>
+                {isPortMode && (
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground" role="status" aria-live="polite" data-testid="port-forward-tool-preflight">
+                    {toolPreflight.isError ? translateText("工具检查失败，保存时将再次校验")
+                      : !toolPreflight.data ? translateText("正在检查入口工具…")
+                        : toolPreflight.data.some((host) => host.status === "missing")
+                          ? <span className="font-medium text-amber-700 dark:text-amber-300">{translateText("缺少 {0}：{1}", [form.forwardType, toolPreflight.data.filter((host) => host.status === "missing").map((host) => host.hostName || `#${host.hostId}`).join("、")])}</span>
+                          : toolPreflight.data.some((host) => host.status === "unknown") ? translateText("部分入口工具未确认（离线、旧版 Agent 或上报过期），允许保存")
+                            : toolPreflight.data.length ? translateText("所选入口均已检测到工具") : translateText("请先选择入口")}
+                    {toolPreflight.data?.some((host) => host.status === "missing") && <p className="mt-1">{translateText("请先在入口主机安装所选工具，或更换转发工具后保存。")}</p>}
+                  </div>
+                )}
               </div>
             )}
 
@@ -2668,7 +2670,7 @@ export function ForwardGroupsContent({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={closeDialog}>{translateText("取消")}</Button>
-            <Button onClick={handleSubmit} disabled={isPending || (isPortMode && form.isEnabled && !!toolPreflight.data?.some((host) => host.status === "missing"))}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
+            <Button onClick={handleSubmit} disabled={isPending}>{isPending ? translateText("保存中...") : editingId ? translateText("保存") : translateText("创建")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

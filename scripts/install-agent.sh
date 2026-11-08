@@ -49,7 +49,7 @@ configure_proxy() {
   ACTION='' TOKEN=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      install|upgrade|update|uninstall|remove|delete) [ -z "$ACTION" ] || return 1; ACTION="$1"; shift ;;
+      install|upgrade|update|uninstall|remove|delete|install-tool) [ -z "$ACTION" ] || return 1; ACTION="$1"; shift ;;
       --proxy) [ "$#" -ge 2 ] && [ -n "$2" ] || return 1; value="$2"; explicit=true; shift 2 ;;
       --proxy=*) value="${1#*=}"; explicit=true; shift ;;
       --no-proxy) value=''; explicit=true; shift ;;
@@ -103,6 +103,7 @@ show_help() {
 参数:
   install   <TOKEN>  安装 Agent 并注册到面板
   upgrade   [TOKEN]  升级 Agent，默认复用现有配置
+  install-tool NAME  仅安装指定转发组件（realm/gost/iptables/nftables/socat/nginx）
   uninstall          完全卸载 Agent 及相关服务
   --proxy URL        安装/运行/升级使用代理，例如 socks5h://127.0.0.1:1080
   --no-proxy         保存为直连；升级默认保留配置中的 proxyUrl
@@ -279,6 +280,19 @@ do_upgrade() {
   fi
 }
 
+do_install_tool() {
+  require_root
+  local tool="$1"
+  case "$tool" in realm|gost|iptables|nftables|socat|nginx) ;; *) echo '[错误] 不支持的转发组件'; return 1 ;; esac
+  read_existing_config
+  PANEL_URL="${PANEL_URL:-${EXISTING_PANEL_URL:-}}"
+  [ -n "$PANEL_URL" ] || { echo '[错误] 未找到面板地址，请先安装 Agent 或设置 PANEL_URL'; return 1; }
+  if ! run_panel_installer install-tool "$tool"; then
+    echo '[错误] 组件安装失败，请检查上方日志；面板须支持 install-tool 命令。不会回退为 Agent 重装。' >&2
+    return 1
+  fi
+}
+
 do_uninstall() {
   require_root
   echo "======================================"
@@ -286,6 +300,23 @@ do_uninstall() {
   echo "======================================"
 
   remove_service_by_name "$SERVICE_NAME"
+
+  # Remove only distinct-IP admission owned by ForwardX, after stopping its
+  # observer. Leave NAT, other applications' sets and unrelated chains alone.
+  for bin in iptables ip6tables; do
+    command -v "$bin" >/dev/null 2>&1 || continue
+    for base in PREROUTING OUTPUT; do
+      "$bin" -t mangle -S "$base" 2>/dev/null | grep -E -- '-j FWX_ID_[0-9a-f]{20}$' | sed 's/^-A/-D/' | while read -r rule; do
+        "$bin" -w 5 -t mangle $rule 2>/dev/null || true
+      done || true
+    done
+    chains=$("$bin" -t mangle -S 2>/dev/null | sed -nE 's/^-N (FWX_I[DU]_[0-9a-f]{20})$/\1/p') || true
+    for chain in $chains; do "$bin" -w 5 -t mangle -F "$chain" 2>/dev/null || true; done
+    for chain in $chains; do "$bin" -w 5 -t mangle -X "$chain" 2>/dev/null || true; done
+  done
+  if command -v ipset >/dev/null 2>&1; then
+    for set in $(ipset list -name 2>/dev/null | grep -E '^FWX_I[AB]_[0-9a-f]{20}(_T)?$'); do ipset destroy "$set" 2>/dev/null || true; done
+  fi
 
   for pid in $(pgrep -f "[/]usr/local/bin/forwardx-fxp" 2>/dev/null || true); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
@@ -339,6 +370,9 @@ case "$ACTION" in
     ;;
   upgrade|update)
     do_upgrade "$TOKEN"
+    ;;
+  install-tool)
+    do_install_tool "$TOKEN"
     ;;
   uninstall|remove|delete)
     do_uninstall

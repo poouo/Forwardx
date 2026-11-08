@@ -216,6 +216,6 @@ test("financial status badges and positive balances adapt to dark mode", () => {
   for (const name of ['Wallet', 'Billing']) {
     const source = readFileSync(`client/src/pages/${name}.tsx`, 'utf8');
     assert.match(source, /text-emerald-600 dark:text-emerald-400/);
-    assert.match(source, /<Badge variant=\{item\.status[^}]*\? "default" : "secondary"\}/);
+    assert.match(source, /<Badge\b[^>]*\bvariant=\{item\.status[^}]*\? "default" : "secondary"\}/);
   }
 });

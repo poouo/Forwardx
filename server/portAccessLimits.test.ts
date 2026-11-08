@@ -52,11 +52,12 @@ test("empty snapshots remove limits; old Agents explicitly fail rather than sile
 
 test("heartbeat sync covers already-running rules without applying/restarting their runtime", () => {
   const source = readFileSync(new URL("./agentHeartbeatRoute.ts", import.meta.url), "utf8");
-  const block = source.slice(source.indexOf("const portLimits = portAccessLimitSpecs"), source.indexOf("const effectiveActions = dropStalePortRemoveActions"));
+  const block = source.slice(source.indexOf("const ipLimits = ipAccessLimitSpecs"), source.indexOf("const effectiveActions = dropStalePortRemoveActions"));
   assert.match(block, /agentHostRules/);
   assert.match(block, /!runtimeBool\(rule.pendingDelete\)/);
   assert.match(block, /runtimeBool\(rule.isEnabled\)/);
   assert.match(block, /isRuleProtocolEnabled/);
   assert.doesNotMatch(block, /rule.isRunning|restart|resetForward/);
   assert.match(source, /portAccessLimits: action\?\.portAccessLimits \|\| \[\]/);
+  assert.match(source, /ipAccessLimits: action\?\.ipAccessLimits \|\| \[\]/);
 });

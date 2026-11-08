@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [2.3.298] - 2026-11-09
+
+- View forwarding tools and install individual components such as Realm from the Agent SSH menu.
+- IP limits now count concurrent source IPs across TCP/UDP, filtering short-lived scans; upgrade the Agent to enable this.
+- Fixed free random ports being marked unavailable when forwarding tools are missing, with clear diagnostics.
+- Fixed missing entries in port-forward self-tests and delayed runtime status recovery, with details for unconfirmed rules.
+- Fixed group member changes potentially restoring a removed host's old DDNS address.
+- Fixed FXP entry-group rule additions potentially failing; requires an Agent upgrade.
+- Upload theme ZIP packages with streamlined theme management.
+- Delete unpaid orders and toggle Telegram login separately.
+- Improve host network speed statistics and monitoring pages.
+- Versions: panel `2.3.298`, Android / iOS `2.4.16`, Agent `2.2.210`, ForwardX FXP runtime `2.2.122` (unchanged). Please upgrade the Agent as well.
+
 ## [2.3.297] - 2026-11-07
 
 - Filter bulk rule actions by entry host and show host names and addresses in the rule list.

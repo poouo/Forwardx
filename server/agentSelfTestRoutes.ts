@@ -177,7 +177,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       return;
     }
     const durableBatchId = String((t as any).batchId || "");
-    if (durableBatchId.startsWith("tp-") || durableBatchId.startsWith("fc-") || durableBatchId.startsWith("rt-")) {
+    if (durableBatchId.startsWith("tp-") || durableBatchId.startsWith("fc-") || durableBatchId.startsWith("rt-") || durableBatchId.startsWith("pe-")) {
       // Commit the individual report before locking the batch. Otherwise two
       // reporters can each hold one row and deadlock while finalizing all rows.
       const accepted = await db.completeForwardTestIfActive(testId, {
@@ -186,7 +186,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       });
       if (durableBatchId.startsWith("tp-")) await settleManualTunnelProbeBatch(durableBatchId);
       else if (durableBatchId.startsWith("rt-")) await settleRuleTunnelProbeBatch(durableBatchId);
-      else await settleManualForwardChainBatch(durableBatchId);
+      else if (durableBatchId.startsWith("fc-")) await settleManualForwardChainBatch(durableBatchId);
       res.json({ success: true, ignored: !accepted });
       return;
     }

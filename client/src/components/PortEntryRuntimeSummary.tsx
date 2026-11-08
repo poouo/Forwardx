@@ -20,6 +20,10 @@ export function PortEntryRuntimeDetails({ summary }: { summary: Summary }) {
               <span className={node.status === "running" ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>{node.status === "pending" && (node.runtimeErrors.length > 0 || node.syncDiagnostic) ? t("执行失败") : labels[node.status]}</span>
             </div>
             <p className="text-muted-foreground">{t("运行规则 {0}/{1}",[node.runningRuleCount,node.expectedRuleCount])}</p>
+            {node.unconfirmedRules?.map(rule => <p key={rule.ruleId} className="text-muted-foreground">
+              {rule.name || t("规则 #{0}",[rule.ruleId])}{rule.sourcePort > 0 ? ` · :${rule.sourcePort}` : ""} · {rule.state === "not-synced"
+                ? t("规则尚未同步") : rule.state === "disabled" ? t("节点规则已停用") : t("等待 Agent 确认运行状态")}
+            </p>)}
             {node.syncDiagnostic && <div className="space-y-1 text-amber-700 dark:text-amber-300">
               <p>{t("配置同步失败：{0} 条规则，尝试 {1} 次",[node.syncDiagnostic.failedRuleCount,node.syncDiagnostic.attempts])}</p>
               <p>{t("最近失败 {0}",[time(node.syncDiagnostic.lastFailedAt)])}</p>

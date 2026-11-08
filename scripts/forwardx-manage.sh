@@ -21,6 +21,8 @@ ForwardX Manager / 管理工具 — fwxm
   fwxm panel reset-admin       Reset admin password / 重置管理员密码
   fwxm panel address           Panel address / 后台地址
   fwxm agent install --panel-url URL --token TOKEN [--proxy URL]
+  fwxm agent tools [status]     转发环境：查看已安装组件及路径
+  fwxm agent tools install [NAME]  选择安装组件，例如 realm、gost
 Agent proxy covers management/downloads, not forwarding or probes.
 Panel proxy covers maintenance downloads only, not Node runtime/Docker pulls.
 HELP
@@ -107,6 +109,65 @@ panel_env_value() {
   printf '%s' "$value"
 }
 
+# Match agent/tool_inventory.go: executable discovery, not a runtime health test.
+agent_tool_path() {
+  local tool="$1" candidate
+  local -a candidates=()
+  case "$tool" in
+    realm) candidates=(/usr/local/bin/realm) ;;
+    gost) candidates=(/usr/local/bin/forwardx-runtime /usr/local/bin/gost "$(command -v gost 2>/dev/null || true)") ;;
+    iptables) candidates=("$(command -v iptables 2>/dev/null || true)") ;;
+    nftables) candidates=("$(command -v nft 2>/dev/null || true)") ;;
+    socat) candidates=(/usr/bin/socat) ;;
+    nginx) candidates=(/usr/local/bin/forwardx-nginx /usr/sbin/nginx /usr/local/nginx/sbin/nginx "$(command -v nginx 2>/dev/null || true)") ;;
+    *) return 1 ;;
+  esac
+  for candidate in "${candidates[@]}"; do
+    if [ -f "$candidate" ] && [ -x "$candidate" ]; then printf '%s' "$candidate"; return 0; fi
+  done
+  return 1
+}
+agent_tools_status() {
+  local tool path label
+  printf '\n转发环境 / Forwarding tools (%s / %s)\n' "$(uname -s)" "$(uname -m)"
+  for tool in realm gost iptables nftables socat nginx; do
+    label="$tool"; [ "$tool" != gost ] || label='ForwardX Runtime (GOST)'
+    if path="$(agent_tool_path "$tool")"; then
+      printf '  %-25s 已检测到 / Found  %s\n' "$label" "$path"
+    else
+      printf '  %-25s 未检测到 / Missing\n' "$label"
+    fi
+  done
+  echo '仅检查 Agent 使用的可执行文件，不代表内核权限、模块或转发连通性正常。'
+  echo 'LXC 等受限环境即使安装 iptables/nftables，也可能缺少 CAP_NET_ADMIN。'
+}
+agent_tools() {
+  local action="${1:-status}" tool="${2:-}" choice
+  case "$action" in
+    status|list|show) [ "$#" -le 1 ] || die 'Use: fwxm agent tools status'; agent_tools_status; return ;;
+    menu)
+      agent_tools_status
+      printf '\n  1) 选择安装组件 / Install\n  0) 返回 / Exit\n选择 / Select: ' > /dev/tty
+      IFS= read -r choice < /dev/tty
+      [ "$choice" = 1 ] || return 0 ;;
+    install) [ "$#" -le 2 ] || die 'Use: fwxm agent tools install [NAME]' ;;
+    *) die 'Use: fwxm agent tools status | install [realm|gost|iptables|nftables|socat|nginx]' ;;
+  esac
+  if [ -z "$tool" ]; then
+    printf '\n  1) Realm\n  2) ForwardX Runtime (GOST)\n  3) iptables\n  4) nftables\n  5) socat\n  6) Nginx (stream)\n  0) 取消 / Cancel\n选择安装 / Select: ' > /dev/tty
+    IFS= read -r choice < /dev/tty
+    case "$choice" in 1) tool=realm ;; 2) tool=gost ;; 3) tool=iptables ;; 4) tool=nftables ;; 5) tool=socat ;; 6) tool=nginx ;; 0) return 0 ;; *) die '无效的组件选择 / Invalid selection.' ;; esac
+  fi
+  case "$tool" in runtime|forwardx-runtime) tool=gost ;; nft) tool=nftables ;; realm|gost|iptables|nftables|socat|nginx) ;; *) die '不支持的组件 / Unsupported tool.' ;; esac
+  [ -f "$MANAGE_DIR/install-agent.sh" ] || die 'Cached Agent installer missing; upgrade management tools first.'
+  [ -f "$AGENT_CONFIG" ] || die 'Agent config not found; install/register Agent first.'
+  echo "[INFO] 安装所选组件 / Installing: $tool"
+  echo '[INFO] 不重装或主动重启 Agent，不修改已有规则；系统包安装可能影响相应服务。'
+  PANEL_URL="$(json_value panelUrl)" FORWARDX_AGENT_PROXY="$(json_value proxyUrl)" \
+    bash "$MANAGE_DIR/install-agent.sh" install-tool "$tool"
+  agent_tools_status
+}
+
 ROLE="${1:-}"; [ "$#" = 0 ] || shift
 if [ -z "$ROLE" ]; then
   if [ -f "$AGENT_CONFIG" ] && [ -f "$MANAGE_DIR/panel-kind" ]; then
@@ -122,12 +183,15 @@ if [ -z "$ACTION" ]; then
   printf '\nForwardX %s 管理 / Management\n' "$ROLE"
   printf '%s\n' '  1) 关键信息 / Info' '  2) 运行状态 / Status' '  3) 查看日志 / Logs' '  4) 重启面板或 Agent / Restart' '  5) 代理设置 / Proxy' '  6) 升级 / Upgrade' '  7) 重装修复 / Repair' '  8) 卸载 / Uninstall'
   if [ "$ROLE" = panel ]; then echo '  9) 重置管理员密码 / Reset admin password'; fi
+  if [ "$ROLE" = agent ]; then echo '  9) 转发环境（查看 / 安装）/ Forwarding tools'; fi
   echo '  0) 退出 / Exit'
   printf 'Select / 选择: ' > /dev/tty; IFS= read -r choice < /dev/tty
   case "$choice" in 1) ACTION=info ;; 2) ACTION=status ;; 3) ACTION=logs ;; 4) ACTION=restart ;; 5)
     printf 'Proxy: 1) show  2) set  3) off: ' > /dev/tty; IFS= read -r choice < /dev/tty; ACTION=proxy
     case "$choice" in 1) set -- show ;; 2) set -- set ;; 3) set -- off ;; *) exit 0 ;; esac ;;
-    6) ACTION=upgrade ;; 7) ACTION=repair ;; 8) ACTION=uninstall ;; 9) ACTION=reset-admin ;; *) exit 0 ;; esac
+    6) ACTION=upgrade ;; 7) ACTION=repair ;; 8) ACTION=uninstall ;; 9)
+      if [ "$ROLE" = agent ]; then ACTION=tools; set -- menu; else ACTION=reset-admin; fi ;;
+    *) exit 0 ;; esac
 fi
 PANEL_KIND="$(metadata panel-kind)"; PANEL_DIR="$(metadata panel-dir)"
 PANEL_SERVICE="$(metadata panel-service)"; PANEL_SERVICE="${PANEL_SERVICE:-forwardx-panel}"
@@ -135,6 +199,7 @@ PANEL_CONTAINER="$(metadata panel-container)"; PANEL_CONTAINER="${PANEL_CONTAINE
 if [ "$ROLE" = agent ]; then
   case "$ACTION" in
     proxy) agent_proxy "$@" ;;
+    tools|env) agent_tools "$@" ;;
     info|address|config)
       echo "Agent config: $AGENT_CONFIG"; echo 'Service: forwardx-agent'
       echo "Panel: $(json_value panelUrl)"; printf 'Proxy: '; redacted_proxy "$(json_value proxyUrl)"

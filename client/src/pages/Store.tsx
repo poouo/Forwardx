@@ -94,8 +94,8 @@ function planBenefitItems(plan: any) {
     Number(plan.portCount) === 0 ? translateText("端口不限") : translateText("连续端口 {0} 个", [plan.portCount || 0]),
     translateText("套餐流量 {0}", [bytes(plan.trafficLimit)]),
     translateText("限速 {0}", [speed(plan.rateLimitMbps)]),
-    translateText("规则 {0} · 连接 {1} · 单 IP {2}", [plan.maxRules || translateText("不限"), plan.maxConnections || translateText("不限"), plan.maxIPs || translateText("不限")]),
-    translateText("计数范围：端口转发按主机，隧道转发按隧道"),
+    translateText("规则 {0} · 连接 {1} · IP {2}", [plan.maxRules || translateText("不限"), plan.maxConnections || translateText("不限"), plan.maxIPs || translateText("不限")]),
+    translateText("连接数按主机或隧道聚合；IP 数按用户、入口主机共享"),
     translateText("可用资源 {0}", [planResourceText(plan)]),
   ];
   if (Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0) {

@@ -2,6 +2,10 @@ import { type ForwardType } from "../shared/forwardTypes";
 import { getAgentToolAvailability } from "./agentToolInventory";
 import { hostPolicyBool } from "../shared/hostTrafficPolicy";
 
+export class MissingPortForwardToolError extends Error {
+  override name = "MissingPortForwardToolError";
+}
+
 export function portForwardToolPreflight(hosts: any[], forwardType: ForwardType) {
   return hosts.map((host) => ({
     hostId:Number(host.id),hostName:String(host.name || ""),forwardType,

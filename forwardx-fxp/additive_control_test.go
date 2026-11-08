@@ -74,7 +74,7 @@ func testControlledFXPAddsRules(t *testing.T, mode string) {
 	}
 	exit := normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "exit", TunnelID: 991, Protocol: "both", ListenHost: "127.0.0.1", ListenPort: exitPort, Key: "additive-test", ControlSocket: filepath.Join(dir, "exit.sock"), UDPTargets: []udpTarget{{RuleID: 1, TargetIP: "127.0.0.1", TargetPort: targetPort}}})
 	entry := func(id, port int) config {
-		return normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "entry", TunnelID: 991, RuleID: id, ListenHost: "127.0.0.1", ListenPort: port, Protocol: "both", ExitHost: "127.0.0.1", ExitPort: exitPort, TargetIP: "127.0.0.1", TargetPort: targetPort, Key: "additive-test"})
+		return normalizeConfig(config{InstallationID: "test-agent-installation", TransportVersion: version, V3Transport: mode, Role: "entry", TunnelID: 991, RuleID: id, ListenHost: "127.0.0.1", ListenPort: port, Protocol: "both", ExitHost: "127.0.0.1", ExitPort: exitPort, TargetIP: "127.0.0.1", TargetPort: targetPort, Key: "additive-test"})
 	}
 	group := normalizeConfig(config{TransportVersion: version, V3Transport: mode, Role: "entry-group", TunnelID: 991, ControlSocket: filepath.Join(dir, "entry.sock"), Entries: []config{entry(1, firstPort)}})
 	start := func(cfg config, port int) {
@@ -202,6 +202,50 @@ func TestFXPControlRefusesToOverwriteRegularFiles(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "keep" {
 		t.Fatal("control path overwritten")
+	}
+}
+
+func TestFXPAdditionPlanRetainsIdentityAndPolicyChecks(t *testing.T) {
+	entry := normalizeConfig(config{Role: "entry", TunnelID: 991, RuleID: 1, ListenHost: "127.0.0.1", ListenPort: 19001, Protocol: "both", ExitHost: "127.0.0.1", ExitPort: 19000, TargetIP: "127.0.0.1", TargetPort: 443, Key: "add-test", PanelURL: "https://panel.example.test", Token: "test-token", InstallationID: "test-agent-installation"})
+	second := entry
+	second.RuleID, second.ListenPort, second.UDPListenPort = 2, 19002, 19002
+	old := config{Role: "entry-group", TunnelID: 991, Entries: []config{entry}}
+	next := config{Role: "entry-group", TunnelID: 991, Entries: []config{entry, second}}
+	additions, err := planFXPConfigAddition(old, next)
+	if err != nil || len(additions) != 1 || additions[0].RuleID != 2 || additions[0].InstallationID != entry.InstallationID {
+		t.Fatalf("valid identity-bound addition refused: %v", err)
+	}
+	if _, err := planFXPConfigAddition(next, old); err == nil {
+		t.Fatal("existing entry removal accepted")
+	}
+	// Identity/credentials are used by running listeners for authenticated
+	// reports. Ignoring them would silently retain stale credentials on old rules.
+	for name, edit := range map[string]func(*config){
+		"missing-installation": func(c *config) { c.InstallationID = "" },
+		"changed-installation": func(c *config) { c.InstallationID = "another-installation" },
+		"panel-url":            func(c *config) { c.PanelURL = "https://another.example.test" },
+		"token":                func(c *config) { c.Token = "another-token" },
+		"listen-port":          func(c *config) { c.ListenPort++ },
+		"udp-listen-port":      func(c *config) { c.UDPListenPort++ },
+		"target-ip":            func(c *config) { c.TargetIP = "192.0.2.1" },
+		"target-port":          func(c *config) { c.TargetPort++ },
+		"protocol":             func(c *config) { c.Protocol = "tcp" },
+		"key":                  func(c *config) { c.Key = "another-key" },
+		"proxy-protocol":       func(c *config) { c.ProxyProtocolSend = true },
+		"connection-limit":     func(c *config) { c.MaxConnections = 10 },
+		"ip-limit":             func(c *config) { c.MaxIPs = 10 },
+		"rate-limit":           func(c *config) { c.LimitIn = 1024 },
+		"access-policy":        func(c *config) { c.BlockHTTP = true },
+		"dns-generation":       func(c *config) { c.DNSGeneration++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := next
+			changed.Entries = append([]config(nil), next.Entries...)
+			edit(&changed.Entries[0])
+			if _, err := planFXPConfigAddition(old, changed); err == nil {
+				t.Fatal("existing entry change accepted")
+			}
+		})
 	}
 }
 

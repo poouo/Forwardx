@@ -20,6 +20,7 @@ export type PortEntryNodeRuntime = {
   online:boolean; expectedRuleCount:number; runningRuleCount:number; configuredRuleCount:number;
   syncDiagnostic:PortEntrySyncDiagnostic | null;
   runtimeErrors:Array<Partial<RuleRuntimeDiagnostic> & {ruleId:number;runtimeRuleId:number}>;
+  unconfirmedRules?:Array<{ruleId:number;name:string;sourcePort:number;state:"not-synced" | "unconfirmed" | "disabled"}>;
 };
 
 export type PortEntryRuntimeSummary = {expectedHostCount:number;runningHostCount:number;nodes:PortEntryNodeRuntime[]};
