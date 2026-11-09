@@ -37,10 +37,10 @@ export default function OperationsFinanceSummary({from,to,userId,refreshInterval
   const credits = sum(["admin_recharge","redeem"],"creditCents");
   const newSubscriptions = (data?.subscriptions || []).reduce((total,row)=>total+row.count,0);
   const cards = [
-    {title:t("在线实收"),value:summary.isLoading ? "—" : [...receiptTotals].map(([currency,row])=>operationsMoney(row.cents,currency)).join(" · ") || operationsMoney(0),hint:t("仅成功支付，按币种分别统计"),icon:CreditCard,tone:"emerald" as const},
-    {title:t("余额消费"),value:summary.isLoading ? "—" : operationsMoney(consumption),hint:t("套餐、附加流量与流量计费"),icon:Wallet,tone:"sky" as const},
-    {title:t("管理员 / 兑换入账"),value:summary.isLoading ? "—" : operationsMoney(credits),hint:t("不计入在线实收"),icon:Gift,tone:"amber" as const},
-    {title:t("新增套餐记录"),value:summary.isLoading ? "—" : String(newSubscriptions),hint:t("当前生效 {0} 个",[data?.activeSubscriptions || 0]),icon:PackagePlus,tone:"violet" as const},
+    {title:t("在线实收"),value:summary.isLoading ? "—" : [...receiptTotals].map(([currency,row])=>operationsMoney(row.cents,currency)).join(" · ") || operationsMoney(0),hint:t("仅成功支付，按币种分别统计"),icon:CreditCard},
+    {title:t("余额消费"),value:summary.isLoading ? "—" : operationsMoney(consumption),hint:t("套餐、附加流量与流量计费"),icon:Wallet},
+    {title:t("管理员 / 兑换入账"),value:summary.isLoading ? "—" : operationsMoney(credits),hint:t("不计入在线实收"),icon:Gift},
+    {title:t("新增套餐记录"),value:summary.isLoading ? "—" : String(newSubscriptions),hint:t("当前生效 {0} 个",[data?.activeSubscriptions || 0]),icon:PackagePlus},
   ];
   const currentPage = ledger.data?.page ?? page, pages = Math.max(1,Math.ceil((ledger.data?.total || 0)/10));
   return <Card>

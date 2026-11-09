@@ -528,6 +528,20 @@ test("presence responses keep the liveness cadence inside the ten-second failure
   assert.equal(AGENT_PRESENCE_INTERVAL_SECONDS, 5);
   assert.equal(response.nextPresenceInterval, AGENT_PRESENCE_INTERVAL_SECONDS);
   assert.ok(response.nextPresenceInterval * 2 <= 10);
+  assert.equal(response.refreshMetrics, false);
+  const watching = buildPresenceAgentHeartbeatResponse({ metricsWatching: true });
+  assert.equal(watching.refreshMetrics, true, "presence must wake metrics even without SSE");
+  assert.equal(watching.requestLocalState, false);
+  assert.deepEqual(watching.actions, []);
+});
+
+test("default metrics leases bridge transient poll delays but expire without viewers", () => {
+  const hostId = 98_766;
+  assert.deepEqual(markHostMetricsWatching([hostId], undefined, 100_000), [hostId]);
+  assert.equal(isHostMetricsWatching(hostId, 108_000), true);
+  assert.deepEqual(markHostMetricsWatching([hostId], undefined, 109_000), []);
+  assert.equal(isHostMetricsWatching(hostId, 123_999), true);
+  assert.equal(isHostMetricsWatching(hostId, 124_000), false);
 });
 
 test("stable heartbeat plans require a completed plan and exact Agent acknowledgements", () => {

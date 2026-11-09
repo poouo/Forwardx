@@ -2208,14 +2208,6 @@ export const crudRulesRouter = router({
       const hostChanged = Number(oldHostIdForRule) !== Number(nextHostIdForRule);
       if (keyFieldChanged && !failoverHotUpdate) {
         (data as any).isRunning = false;
-        const affectedTunnelIds = new Set<number>();
-        if ((rule as any).tunnelId) affectedTunnelIds.add((rule as any).tunnelId);
-        if ((data as any).tunnelId) affectedTunnelIds.add((data as any).tunnelId);
-        for (const affectedTunnelId of affectedTunnelIds) {
-          const affectedTunnel = await db.getTunnelById(affectedTunnelId);
-          await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
-          if (affectedTunnel) await pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
-        }
       }
       await db.updateForwardRule(id, data);
       // The mapping reconciler performs its own per-endpoint reservation. Do
@@ -2240,11 +2232,24 @@ export const crudRulesRouter = router({
         await db.clearForwardRuleTunnelExits(id);
       }
       if (keyFieldChanged) {
+        // Refresh only after the rule and every exit mapping are persisted.
+        // An early SSE can make an Agent reconcile the old target and cache
+        // that plan. Include both topologies when moving between tunnels.
+        if (!failoverHotUpdate) {
+          const affectedTunnelIds = new Set<number>();
+          if (rule.tunnelId) affectedTunnelIds.add(Number(rule.tunnelId));
+          if (nextTunnelIdForRule) affectedTunnelIds.add(Number(nextTunnelIdForRule));
+          for (const affectedTunnelId of affectedTunnelIds) {
+            const affectedTunnel = await db.getTunnelById(affectedTunnelId);
+            await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
+            if (affectedTunnel) await pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated", { urgent: true });
+          }
+        }
         if (hostChanged) {
-          pushAgentRefresh(oldHostIdForRule, "forward-rule-updated-old-host");
-          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host");
+          pushAgentRefresh(oldHostIdForRule, "forward-rule-updated-old-host", { urgent: true });
+          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host", { urgent: true });
         } else if (!nextTunnelIdForRule) {
-          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated");
+          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated", { urgent: true });
         } else if (failoverHotUpdate) {
           const tunnel = await db.getTunnelById(nextTunnelIdForRule);
           if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-failover-hot-update");

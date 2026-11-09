@@ -5,6 +5,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue, { StatValuePersistenceContext } from "@/components/AnimatedStatValue";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import DashboardLayout from "@/components/DashboardLayout";
+import { MetricReadout } from "@/components/MetricReadout";
 import PanelStartView from "@/components/PanelStartView";
 import MobileAppSettings from "@/components/MobileAppSettings";
 import { Badge } from "@/components/ui/badge";
@@ -115,7 +116,7 @@ export function DashboardStatCard({
   fallbackValue,
   className,
   index = 0,
-  tone = "bg-gradient-to-br from-teal-500 to-teal-600",
+  direction,
 }: {
   title: string;
   value: string | number;
@@ -126,41 +127,33 @@ export function DashboardStatCard({
   fallbackValue?: string | number;
   className?: string;
   index?: number;
-  tone?: string;
+  direction?: "inbound" | "outbound";
 }) {
   return (
     <div
       className={cn("min-w-0", className)}
     >
-      <Card enterIndex={index} interactive hoverable className="pearl-stat group h-full border-border/40">
-        <div aria-hidden="true" className={`pointer-events-none absolute inset-0 opacity-[0.04] dark:opacity-[0.07] ${tone}`} />
-        <CardContent className="relative p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 space-y-1">
-              <p className="break-words text-xs font-medium text-muted-foreground">{title}</p>
+      <Card enterIndex={index} interactive hoverable disableEnterAnimation className="pearl-stat h-full border-border/60">
+        <CardContent className="p-4">
+          <MetricReadout title={title} icon={Icon} direction={direction} value={
               <AnimatedStatValue
                 as="p"
                 value={value}
                 loading={loading}
                 cacheKey={cacheKey}
                 fallbackValue={fallbackValue}
-                className="break-words text-2xl font-bold leading-tight tracking-tight tabular-nums"
+                className="[overflow-wrap:anywhere]"
               />
-              {subtitle && (
+          } hint={subtitle && (
                 <AnimatedStatValue
                   as="p"
                   value={subtitle}
                   loading={loading}
                   cacheKey={`${cacheKey}.subtitle`}
                   fallbackValue=""
-                  className="break-words text-xs text-muted-foreground/80"
+                  className="break-words"
                 />
-              )}
-            </div>
-            <div aria-hidden="true" className={`pearl-stat-icon hidden h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm sm:flex ${tone}`}>
-              <Icon className="h-5 w-5 text-white" />
-            </div>
-          </div>
+          )} />
         </CardContent>
       </Card>
     </div>
@@ -188,7 +181,7 @@ function CircularProgress({ value, color }: { value: number; color: string }) {
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
-          className="transition-all duration-700 ease-out"
+          className="transition-[stroke-dashoffset] duration-300 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none"
         />
       </svg>
       <span className="absolute text-sm font-bold tabular-nums">{Math.round(value)}%</span>
@@ -200,7 +193,7 @@ function FixedColorProgress({ value, color, className = "" }: { value: number; c
   const normalized = Math.max(0, Math.min(100, Number(value) || 0));
   return (
     <div className={`relative h-4 w-full overflow-hidden rounded-full bg-secondary ${className}`}>
-      <div className="h-full rounded-full transition-all" style={{ width: `${normalized}%`, backgroundColor: color }} />
+      <div className="h-full w-full origin-left rounded-full transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none" style={{ transform: `scaleX(${normalized / 100})`, backgroundColor: color }} />
     </div>
   );
 }
@@ -616,8 +609,7 @@ function DashboardContent() {
     <div className="space-y-6">
       <div className="pearl-page-header">
         <div>
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{translateText("仪表盘")}</h1>
-          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">{translateText("欢迎回来，")}{user?.name || user?.username || translateText("用户")}</p>
+          <h1 className="text-xl font-semibold sm:text-2xl">{translateText("仪表盘")}</h1>
           <p className="mt-1 text-xs text-muted-foreground" title={stats?.summaryUpdatedAt ? translateText("上次更新：{0}", [new Date(stats.summaryUpdatedAt).toLocaleString(getFormatLocale())]) : undefined}>{translateText("统计约每分钟更新，余额与额度实时校验")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -643,7 +635,6 @@ function DashboardContent() {
         )}
         <DashboardStatCard
           title={translateText("转发规则")}
-          tone="bg-gradient-to-br from-blue-500 to-blue-600"
           value={stats?.totalRules ?? 0}
           subtitle={translateText("{0} 条已启用", [stats?.activeRules ?? 0])}
           icon={ArrowRightLeft}
@@ -655,7 +646,7 @@ function DashboardContent() {
         />
         <DashboardStatCard
           title={translateText("入站流量")}
-          tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
+          direction="inbound"
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
           subtitle={translateText("累计入站")}
           icon={ArrowDownToLine}
@@ -666,7 +657,7 @@ function DashboardContent() {
         />
         <DashboardStatCard
           title={translateText("出站流量")}
-          tone="bg-gradient-to-br from-orange-500 to-orange-600"
+          direction="outbound"
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
           subtitle={translateText("累计出站")}
           icon={ArrowUpFromLine}

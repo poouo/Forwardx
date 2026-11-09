@@ -391,7 +391,7 @@ export function pushAgentSupportBundle(hostId: number, taskId: string) {
   return sendAgentEvent(hostId, "agent-support-bundle", { taskId, requestedAt: new Date().toISOString() });
 }
 
-export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000, now = Date.now()) {
+export function markHostMetricsWatching(hostIds: number[], ttlMs = 15_000, now = Date.now()) {
   const newlyWatched: number[] = [];
   const until = now + ttlMs;
   for (const id of hostIds) {

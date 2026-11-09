@@ -30,6 +30,7 @@ import { pruneMapEntries, setBoundedMapValue } from "../boundedCache";
 import { getNotificationSettings } from "../notificationSettings";
 import { normalizeRuleTableLayout, ruleTableLayoutSchema } from "../../shared/ruleTableLayout";
 import { normalizeHostTableLayout, hostTableLayoutSchema } from "../../shared/hostTableLayout";
+import { getPasswordRecoveryOptions, passwordRecovery } from "../passwordRecovery";
 
 const emailCodeStore = new Map<string, { code: string; expiresAt: number; lastSentAt: number; attempts: number }>();
 const emailSendIpStore = new Map<string, LoginFailEntry>();
@@ -181,6 +182,25 @@ function verifyEmailCode(email: string, code?: string) {
 }
 
 export const authRouter = router({
+  passwordRecoveryOptions: publicProcedure.query(async ({ ctx }) => {
+    ctx.res.setHeader?.("Cache-Control", "no-store");
+    const { email, telegram } = await getPasswordRecoveryOptions();
+    return { email, telegram };
+  }),
+  requestPasswordRecovery: publicProcedure
+    .input(z.object({ identifier: z.string().trim().min(1, "请输入用户名或邮箱").max(254), channel: z.enum(["email", "telegram"]) }))
+    .mutation(({ input, ctx }) => {
+      ctx.res.setHeader?.("Cache-Control", "no-store");
+      return passwordRecovery.request(input.identifier, input.channel, getRequestIp(ctx));
+    }),
+  resetPasswordWithToken: publicProcedure
+    .input(z.object({ token: z.string().min(1).max(2048), newPassword: z.string().min(6, "密码至少6个字符").max(128, "密码最多128个字符") }))
+    .mutation(async ({ input, ctx }) => {
+      ctx.res.setHeader?.("Cache-Control", "no-store");
+      const result = await passwordRecovery.reset(input.token, input.newPassword, getRequestIp(ctx));
+      ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+      return result;
+    }),
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) {
       if (ctx.authFailureReason === "session_replaced" || ctx.authFailureReason === "account_disabled") {
@@ -195,7 +215,8 @@ export const authRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
       throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
     }
-    return sanitizeUser(ctx.user);
+    return { ...sanitizeUser(ctx.user), impersonation: ctx.impersonation
+      ? { actorName: ctx.impersonation.actorName, expiresAt: ctx.impersonation.expiresAt } : null };
   }),
 
   createCaptcha: publicProcedure
@@ -344,7 +365,7 @@ export const authRouter = router({
               message: `TWO_FACTOR_CHALLENGE_RATE_LIMITED:${Math.ceil(challengeLimit.retryAfterSeconds / 60)}`,
             });
           }
-          const challenge = createTwoFactorChallenge({ userId: user.id, username: user.username, mobile: input.mobile, ip });
+          const challenge = createTwoFactorChallenge({ userId: user.id, username: user.username, mobile: input.mobile, ip, passwordHash: user.password });
           recordTwoFactorChallengeIssue(ip, user.username);
           return { twoFactorRequired: true as const, username: user.username, ...challenge };
         }
@@ -381,6 +402,10 @@ export const authRouter = router({
       }
       if (!challenge) throw new Error("双重验证已过期，请重新登录");
       const user = await db.getUserById(challenge.userId);
+      if (user && challenge.passwordHash && challenge.passwordHash !== user.password) {
+        clearTwoFactorChallenge(input.challengeId);
+        throw new Error("双重验证已过期，请重新登录");
+      }
       if (!user?.twoFactorEnabled || !user.twoFactorSecret) {
         throw new Error("当前账户未启用双重验证");
       }
@@ -468,6 +493,11 @@ export const authRouter = router({
     }),
 
   logout: publicProcedure.mutation(async ({ ctx }) => {
+    if (ctx.impersonation) {
+      await revokeAuthSession(ctx.impersonation.actorId, ctx.impersonation.grantSid, "browser", "impersonation_logout");
+      console.info(`[UserEntry] ended adminId=${ctx.impersonation.actorId} targetId=${ctx.user?.id}`);
+      return { success: true } as const;
+    }
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     if (ctx.user && ctx.authSession?.sid) {

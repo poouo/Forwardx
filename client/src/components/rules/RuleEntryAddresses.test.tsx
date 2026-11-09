@@ -13,13 +13,12 @@ test("compact cards share inline entry/exit readouts while full cards retain the
   assert.equal((card.match(/<div className=\{labelClass\}>/g) || []).length, 2);
   assert.match(card, /rounded-xl border border-border\/50 px-2 py-1\.5/);
   assert.match(card, /rounded-xl border border-border\/50 px-2\.5 py-2/);
-  assert.match(card, /min-w-0 break-all text-\[11px\] leading-4/);
-  assert.match(card, /min-w-0 break-all text-xs leading-5/);
+  assert.match(card, /compact \? "text-\[11px\] leading-4" : "text-xs leading-5"/);
   assert.match(card, /const inlineEndpoints = effectiveRuleCardSize === "compact"/);
   assert.match(card, /pearl-readout flex min-w-0 items-start gap-1\.5/);
   assert.match(card, /shrink-0 whitespace-nowrap py-0\.5/);
   assert.match(card, /className=\{cn\(valueClass, "flex-1 text-left"\)\} title=\{inlineEndpoints \? entry.text : undefined\}>\{entry.text\}/);
-  assert.match(card, /const valueClass = inlineEndpoints\s*\? "min-w-0 flex-1 truncate/);
+  assert.match(card, /inlineEndpoints \? "flex-1 truncate" : "break-all"/);
   assert.match(card, /title=\{targetAddress\}/);
   assert.match(card, /flex-1 rounded px-1\.5/);
   assert.match(card, /inlineEndpoints \? "py-0\.5" : "bg-muted\/35 py-1"/);
@@ -35,6 +34,27 @@ test("cards and table entries copy the selected full address with no IPv6 expans
   assert.match(table, /min-w-0 truncate/);
   assert.match(card, /title=\{entry.copyable \? translateText\("复制入口地址: \{0\}", \[entry.text\]\)/);
   assert.match(source, /return \x60\[\$\{value\}\]:\$\{port\}\x60/);
+});
+
+test("compact and standard endpoint labels share standard typography independently of layout", () => {
+  const labelDefinition = card.slice(card.indexOf("    const labelClass ="), card.indexOf("    const valueClass ="));
+  assert.match(labelDefinition, /cn\(\s*"text-xs font-medium leading-4 text-muted-foreground",/);
+  assert.match(labelDefinition, /inlineEndpoints\s*\? "shrink-0 whitespace-nowrap py-0\.5"\s*: "mb-1 flex items-center gap-1"/);
+  assert.doesNotMatch(labelDefinition, /text-\[11px\]/);
+  assert.match(card, /pearl-transfer min-w-0 font-mono text-xs/);
+});
+
+test("compact and standard card addresses share font family, size, weight and line height", () => {
+  const definition = card.match(/    const valueClass = cn\([\s\S]*?\n    \);/)?.[0];
+  assert.ok(definition);
+  const resolve = new Function("cn", "compact", "inlineEndpoints", `${definition}\nreturn valueClass;`);
+  const cn = (...classes: string[]) => classes.join(" ");
+  const typography = (inline: boolean) => resolve(cn, true, inline).split(" ").filter((token: string) => /^(font-|text-|leading-)/.test(token));
+  assert.deepEqual(typography(true), ["font-mono", "font-normal", "text-[11px]", "leading-4"]);
+  assert.deepEqual(typography(true), typography(false));
+  assert.equal((card.match(/<code className=\{cn\(valueClass,/g) || []).length, 2);
+  const cards = source.slice(source.indexOf("  const renderRuleCard ="));
+  assert.equal((cards.match(/renderTransfer\(rule, true\)/g) || []).length, 2);
 });
 
 test("IPv4/domain preference and directly copyable IPv6-only entries match the previous version", () => {
@@ -54,7 +74,7 @@ test("only standard cards opt into IPv6 alternatives and label individually copy
   assert.doesNotMatch(card, /!inlineEndpoints && entryAddresses.length > 1/);
   assert.match(card, /addressFamily\(entry.value\) === "ipv6" \? "IPv6" : "IPv4"/);
   assert.doesNotMatch(card, /translateText\(entry.label\)|justify-between/);
-  assert.match(card, /w-\[4ch\] shrink-0 text-\[10px\]/);
+  assert.match(card, /w-\[4ch\] shrink-0 text-\[11px\]/);
   assert.match(card, /cn\(valueClass, "flex-1 text-left"\)/);
   assert.match(source, /filterRuleEntryAddressesForDisplay\(entryItems, includeIpv6\)/);
   assert.match(source, /getForwardChainEntryAddresses\(group, includeIpv6\)/);

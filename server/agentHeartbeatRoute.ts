@@ -1419,7 +1419,7 @@ agentRouter.post("/api/agent/presence", async (req: Request, res: Response) => {
         });
     }
     const panelMigration = await getPanelMigrationAgentDirective(Number(host.id));
-    res.json(buildPresenceAgentHeartbeatResponse({ panelMigration }));
+    res.json(buildPresenceAgentHeartbeatResponse({ panelMigration, metricsWatching: isHostMetricsWatching(host.id) }));
   } catch (error) {
     if (respondAgentDatabaseBusy(error, res)) return;
     console.error("[Agent Presence] Error:", error);

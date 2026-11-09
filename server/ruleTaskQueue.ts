@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { RuleTaskAction, RuleTaskResult, RuleTaskSnapshot } from "../shared/ruleTaskQueue";
 import type { SessionKind } from "./session";
+import type { Impersonation } from "./userImpersonation";
 
-export type RuleTaskActor = { userId: number; sid: string | null; kind: SessionKind; dev: boolean; requestId: string };
+export type RuleTaskActor = { userId: number; sid: string | null; kind: SessionKind; dev: boolean; requestId: string; impersonation?: Impersonation };
 type Job = {
   actor: RuleTaskActor; hash: string; actions: RuleTaskAction[];
   snapshot: RuleTaskSnapshot; results: RuleTaskResult[]; cancel: boolean; payloadBytes: number;

@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
 import OperationsChinaMap, { operationsBytes as bytes, sourceUsage } from "@/components/OperationsChinaMap";
 import OperationsDateFilter from "@/components/OperationsDateFilter";
+import OperationsPeriodSummary from "@/components/OperationsPeriodSummary";
 import OperationsSourceList from "@/components/OperationsSourceList";
 import OperationsFinanceSummary from "@/components/OperationsFinanceSummary";
 import OperationsRefreshSelect from "@/components/OperationsRefreshSelect";
@@ -69,14 +70,14 @@ export default function OperationsPage() {
   const hostCount = (overview.data?.current || []).reduce((sum, row) => sum + Number(row.count), 0);
   const enabled = sources.data?.enabled ?? false;
   const cards = [
-    { title: t("入向流量"), value: bytes(totalIn), icon: ArrowDownToLine, tone: "sky" as const },
-    { title: t("出向流量"), value: bytes(totalOut), icon: ArrowUpFromLine, tone: "emerald" as const },
-    { title: t("来源 IP"), value: String(sources.data?.totals?.ips ?? "—"), icon: Globe2, tone: "violet" as const },
-    { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server, tone: "amber" as const },
+    { title: t("入向流量"), value: bytes(totalIn), icon: ArrowDownToLine, direction: "inbound" as const },
+    { title: t("出向流量"), value: bytes(totalOut), icon: ArrowUpFromLine, direction: "outbound" as const },
+    { title: t("来源 IP"), value: String(sources.data?.totals?.ips ?? "—"), icon: Globe2 },
+    { title: t("当前在线主机"), value: `${online}/${hostCount}`, icon: Server, hint: t("实时状态，不随日期范围变化") },
   ];
   return <DashboardLayout><div className="w-full min-w-0 space-y-6">
-    <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold">{t("运维看板")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("最近 30 天 · 北京时间 · 实际规则流量，不含计费倍率")}</p><p className="mt-1 text-xs text-muted-foreground">{t("流量与财务汇总约每分钟更新")}</p></div>
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="pearl-page-header"><div><h1 className="text-xl font-semibold sm:text-2xl">{t("运维看板")}</h1><OperationsPeriodSummary {...dates} /><p className="mt-1 text-xs text-muted-foreground">{t("流量与财务汇总约每分钟更新")}</p></div>
+      <div className="pearl-toolbar flex flex-wrap items-center gap-2">
         <OperationsRefreshSelect seconds={autoRefresh.seconds} onChange={autoRefresh.onChange} />
         <OperationsSettingsDialog />
         <Button variant="outline" onClick={refresh} disabled={overview.isFetching || sources.isFetching}><RefreshCw className="mr-2 size-4" />{t("刷新")}</Button>

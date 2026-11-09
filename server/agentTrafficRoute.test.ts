@@ -180,6 +180,8 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
         { hostId: 1, bytesIn: 100, bytesOut: 200, connections: 1 },
       ]);
       assert.deepEqual(await runtime.queryRaw('SELECT "quotaUsedIn", "quotaUsedOut" FROM "forward_rules" WHERE "id" = 100'), [{ quotaUsedIn: 100, quotaUsedOut: 200 }]);
+      assert.equal(Number((await runtime.queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "id" = 100'))[0].isRunning), 0,
+        "traffic is not an acknowledgement that the desired direct-forward configuration was applied");
 
       let injectedFailures = 0;
       runtime.requireSqlite().function("agent_traffic_fail_once", () => {
@@ -228,6 +230,8 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       await runtime.executeRaw('ALTER TABLE "tunnel_exit_nodes_unavailable" RENAME TO "tunnel_exit_nodes"');
       const topologyRetry = await postTraffic(baseUrl, 21, "topology-rollback", 300, 11, 13);
       assert.equal(topologyRetry.status, 200);
+      assert.equal(Number((await runtime.queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "id" = 300'))[0].isRunning), 0,
+        "old tunnel traffic must not mark a pending configuration as running");
       assert.equal(topologyRetry.body.success, true);
 
       const ordinaryFirst = await postTraffic(baseUrl, 21, "ordinary-owner-first", 701, 37, 43);

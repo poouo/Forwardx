@@ -118,6 +118,7 @@ jobs:
           pnpm test:globe-ui
           pnpm test:list-settings
           pnpm test:resource-traffic
+          pnpm test:network-speed
           pnpm test:security-boundaries
           pnpm test:login-ui
           pnpm test:startup

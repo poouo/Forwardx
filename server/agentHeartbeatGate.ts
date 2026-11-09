@@ -117,6 +117,7 @@ export const AGENT_PRESENCE_INTERVAL_SECONDS = 5;
 
 export function buildPresenceAgentHeartbeatResponse(input: {
   panelMigration?: unknown;
+  metricsWatching?: boolean;
 }) {
   return {
     success: true,
@@ -131,6 +132,7 @@ export function buildPresenceAgentHeartbeatResponse(input: {
     panelMigration: input.panelMigration || null,
     requestLocalState: false,
     compactReports: true,
+    refreshMetrics: input.metricsWatching === true,
     nextPresenceInterval: AGENT_PRESENCE_INTERVAL_SECONDS,
   };
 }

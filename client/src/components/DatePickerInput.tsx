@@ -225,6 +225,7 @@ export default function DatePickerInput({
         id={id}
         ref={triggerRef}
         type="button"
+        data-date-picker-trigger=""
         className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         onClick={() => {
           if (!open) updatePanelPosition();

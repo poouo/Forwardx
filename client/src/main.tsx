@@ -15,6 +15,10 @@ import { createTRPCQueryUtils } from "@trpc/react-query";
 import { installDashboardCache } from "./lib/dashboardCache";
 import { readSiteBranding, saveSiteBranding } from "./lib/siteBranding";
 import { shouldRetryQuery } from "./lib/queryPolicy";
+import { userEntry } from "./lib/userImpersonation";
+
+userEntry.initialize();
+globalThis.fetch = userEntry.wrapFetch(globalThis.fetch.bind(globalThis));
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
 
@@ -28,11 +32,19 @@ const queryClient = new QueryClient({
     },
   },
 });
-const dashboardCache = installDashboardCache(queryClient, () => mobileAuth.isNative ? mobileAuth.getPanelUrl() : window.location.origin);
+const dashboardCache = userEntry.isEntry() ? { clear() {} } : installDashboardCache(queryClient, () => mobileAuth.isNative ? mobileAuth.getPanelUrl() : window.location.origin);
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
+  if (userEntry.isEntry()) {
+    if (error.data?.code === "UNAUTHORIZED") {
+      userEntry.finish();
+      void queryClient.cancelQueries();
+      queryClient.clear();
+    }
+    return;
+  }
 
   const isUnauthorized =
     error.message === UNAUTHED_ERR_MSG ||

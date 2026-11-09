@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.210"
+var Version = "2.2.211"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -313,6 +313,8 @@ var heartbeatWakeCh = make(chan struct{}, 1)
 var heartbeatWakeFromSSE atomic.Bool // SSE 唤醒时置 true；主循环读取后清零
 var heartbeatUrgentWakeFromSSE atomic.Bool
 var heartbeatForceReconcileWake atomic.Bool
+var heartbeatMetricsWake atomic.Bool
+var lastMetricsHeartbeatAt atomic.Int64
 var agentEventStreamConnected atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
@@ -866,6 +868,7 @@ type heartbeatResp struct {
 	ReconciliationCoalesced bool                     `json:"reconciliationCoalesced,omitempty"`
 	NextPresenceInterval    int                      `json:"nextPresenceInterval,omitempty"`
 	MetricsOnly             bool                     `json:"metricsOnly,omitempty"`
+	RefreshMetrics          bool                     `json:"refreshMetrics,omitempty"`
 	TrafficReportInterval   int                      `json:"trafficReportInterval,omitempty"`
 }
 
@@ -2783,6 +2786,7 @@ func main() {
 		fromSSE := heartbeatWakeFromSSE.Swap(false)
 		urgentRefresh := heartbeatUrgentWakeFromSSE.Swap(false)
 		forceReconcileWake := heartbeatForceReconcileWake.Swap(false)
+		metricsWake := heartbeatMetricsWake.Swap(false)
 		now := time.Now()
 		if pending > 0 {
 			if shouldLogAgentReport("heartbeat-pending-continue", agentReportLogInterval) {
@@ -2792,12 +2796,15 @@ func main() {
 		// SSE 唤醒 + 有 actions 正在处理：只发轻量 keepalive（不做 readiness 扫描，
 		// 仅上报指标并告知面板 Agent 正忙）。完整心跳由定时器或下一次 SSE 唤醒触发。
 		useActionBacklogKeepalive := !forceReconcileWake && shouldUseBusyHeartbeat(fromSSE, urgentRefresh, pending, lastFullHeartbeatAt, now)
-		useMetricsOnlyHeartbeat := shouldUseMetricsOnlyHeartbeat(metricsOnlyMode, fromSSE, urgentRefresh, forceReconcileWake, pending, lastFullHeartbeatAt, now)
+		useMetricsOnlyHeartbeat := shouldUseMetricsOnlyHeartbeat(metricsOnlyMode || metricsWake, fromSSE, urgentRefresh, forceReconcileWake, pending, lastFullHeartbeatAt, now)
 		if useActionBacklogKeepalive || useMetricsOnlyHeartbeat {
 			result, err := heartbeatKeepalive(cfg)
 			requestSkipped := errors.Is(err, errHeartbeatRequestInFlight)
 			if requestSkipped {
 				restoreHeartbeatWakeIntent(fromSSE, urgentRefresh, forceReconcileWake)
+				if metricsWake {
+					heartbeatMetricsWake.Store(true)
+				}
 			}
 			if err != nil && !requestSkipped {
 				recordPanelMigrationHeartbeatFailure(cfg, err)
@@ -2805,6 +2812,7 @@ func main() {
 			} else {
 				if err == nil {
 					recordPanelMigrationHeartbeatSuccess()
+					lastMetricsHeartbeatAt.Store(time.Now().UnixMilli())
 					metricsOnlyMode = result.MetricsOnly
 				}
 			}
@@ -2830,6 +2838,9 @@ func main() {
 			requestSkipped := errors.Is(err, errHeartbeatRequestInFlight)
 			if requestSkipped {
 				restoreHeartbeatWakeIntent(fromSSE, urgentRefresh, forceReconcileWake || forceFullAudit)
+				if metricsWake {
+					heartbeatMetricsWake.Store(true)
+				}
 			}
 			if err != nil && !requestSkipped {
 				recordPanelMigrationHeartbeatFailure(cfg, err)
@@ -2837,6 +2848,7 @@ func main() {
 			} else {
 				if err == nil {
 					recordPanelMigrationHeartbeatSuccess()
+					lastMetricsHeartbeatAt.Store(time.Now().UnixMilli())
 					metricsOnlyMode = result.MetricsOnly
 					if !result.ReconciliationCoalesced {
 						lastFullHeartbeatAt = time.Now()
@@ -3060,6 +3072,17 @@ func restoreHeartbeatWakeIntent(fromSSE bool, urgentRefresh bool, forceReconcile
 
 func wakeHeartbeat() {
 	heartbeatForceReconcileWake.Store(true)
+	signalHeartbeatWake()
+}
+
+// Presence remains collection-free. It can wake the existing serialized
+// metrics lane when SSE is unavailable, without forcing a runtime audit.
+func requestMetricsHeartbeat(refresh bool, now time.Time) {
+	last := lastMetricsHeartbeatAt.Load()
+	if !refresh || (last > 0 && now.UnixMilli()-last < 3000) {
+		return
+	}
+	heartbeatMetricsWake.Store(true)
 	signalHeartbeatWake()
 }
 
@@ -4188,6 +4211,7 @@ func heartbeatPresenceRequest(cfg Config, expectedGeneration *uint64) (int, uint
 		return 0, requestGeneration, nil
 	}
 	agentPresenceSupported.Store(true)
+	requestMetricsHeartbeat(resp.RefreshMetrics, time.Now())
 	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
 		return resp.NextPresenceInterval, requestGeneration, nil
 	}

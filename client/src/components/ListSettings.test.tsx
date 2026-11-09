@@ -163,11 +163,19 @@ test("compact rule cards keep addresses on one line with complete hover text and
   const transfer = source.slice(source.indexOf("const renderTransfer ="), source.indexOf("const renderTableTransferEntry ="));
   assert.match(transfer, /const inlineEndpoints = effectiveRuleCardSize === "compact"/);
   assert.match(transfer, /const panelClass = inlineEndpoints\s*\? "pearl-readout flex min-w-0 items-start/);
-  assert.match(transfer, /const labelClass = inlineEndpoints\s*\? "shrink-0 whitespace-nowrap/);
-  assert.match(transfer, /: "mb-1 flex items-center gap-1/);
-  assert.match(transfer, /const valueClass = inlineEndpoints\s*\? "min-w-0 flex-1 truncate text-\[11px\]/);
-  assert.match(transfer, /min-w-0 break-all text-\[11px\]/);
-  assert.match(transfer, /min-w-0 break-all text-xs/);
+  const styleDefinitions = transfer.slice(transfer.indexOf("    const labelClass ="), transfer.indexOf("    return ("));
+  const resolveStyle = new Function("cn", "inlineEndpoints", "compact", `${styleDefinitions}\nreturn { labelClass, valueClass };`);
+  const cn = (...classes: string[]) => classes.join(" ");
+  const inline = resolveStyle(cn, true, true);
+  assert.match(inline.labelClass, /shrink-0 whitespace-nowrap/);
+  assert.match(inline.valueClass, /min-w-0.*flex-1 truncate/);
+  assert.match(inline.valueClass, /text-\[11px\]/);
+  for (const compact of [true, false]) {
+    const stacked = resolveStyle(cn, false, compact);
+    assert.match(stacked.labelClass, /mb-1 flex items-center gap-1/);
+    assert.match(stacked.valueClass, /min-w-0.*break-all/);
+    assert.match(stacked.valueClass, compact ? /text-\[11px\]/ : /text-xs/);
+  }
   assert.equal((transfer.match(/<div className=\{panelClass\}>/g) || []).length, 2);
   for (const label of ["入口", "出口"]) {
     assert.ok(transfer.includes(`<div className={labelClass}>{translateText("${label}")}</div>`));

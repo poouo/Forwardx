@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+func TestSelfTestUDPAlwaysUsesICMP(t *testing.T) {
+	for _, test := range []selfTest{
+		{Protocol: "udp"}, {Protocol: "UDP", Method: "tcp"},
+		{Protocol: "ping"}, {Method: "ping"}, {Method: "udp"},
+	} {
+		if got := selfTestProbeMethod(test); got != "ping" {
+			t.Fatalf("%+v selected %s", test, got)
+		}
+	}
+	for _, test := range []selfTest{{Protocol: "tcp"}, {Protocol: "both"}, {Method: "tcp"}, {}} {
+		if got := selfTestProbeMethod(test); got != "tcp" {
+			t.Fatalf("%+v selected %s", test, got)
+		}
+	}
+}
+
 func TestSelfTestPollingOnlyFallsBackWithoutEventStream(t *testing.T) {
 	if selfTestIdlePollInterval < agentPresenceInterval {
 		t.Fatalf("idle self-test fallback polls too often: got=%s minimum=%s", selfTestIdlePollInterval, agentPresenceInterval)

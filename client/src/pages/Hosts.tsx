@@ -1,5 +1,5 @@
 import { getFormatLocale } from "@/i18n";
-import { hostNetworkSpeed } from "@shared/hostNetworkSpeed";
+import { hostNetworkSpeed, stampHostNetworkMetrics } from "@shared/hostNetworkSpeed";
 import { t as translateText } from "@/i18n";
 import { HintSwitch } from "@/components/ui/hint-switch";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -7,6 +7,8 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
+import { MetricReadout } from "@/components/MetricReadout";
+import HostViewSelect from "@/components/hosts/HostViewSelect";
 import ListSettings from "@/components/ListSettings";
 import ColumnResizeHandle from "@/components/ColumnResizeHandle";
 import { useHostTableLayout } from "@/hooks/useHostTableLayout";
@@ -97,7 +99,6 @@ import {
   ArrowUpFromLine,
   ArrowRightLeft,
   CalendarDays,
-  CircleCheck,
   Clock,
   Cpu,
   Plus,
@@ -107,7 +108,6 @@ import {
   List,
   Globe,
   RadioTower,
-  MapPinned,
   Download,
   Gauge,
   AlertTriangle,
@@ -875,10 +875,6 @@ function HostSummaryCard({
   value,
   subtitle,
   icon: Icon,
-  leadingIcon: LeadingIcon,
-  leadingTone = "bg-emerald-500",
-  iconTone = "bg-chart-2/10 text-chart-2",
-  tone,
   loading,
   cacheKey,
   className,
@@ -887,45 +883,24 @@ function HostSummaryCard({
   value: string;
   subtitle?: string;
   icon: typeof ActivitySquare;
-  leadingIcon?: typeof ActivitySquare;
-  leadingTone?: string;
-  iconTone?: string;
-  tone: string;
   loading?: boolean;
   cacheKey: string;
   className?: string;
 }) {
   return (
-    <Card hoverable className={`group relative h-full overflow-hidden border-border/40 bg-card/60 ${className || ""}`.trim()}>
-      <div className={`absolute inset-0 opacity-[0.035] transition-opacity group-hover:opacity-[0.07] ${tone}`} />
-      <CardContent className="relative flex h-full min-h-[112px] flex-col justify-center p-3.5 sm:min-h-[112px] sm:p-4">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-        <div className={`absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="mt-1 flex min-w-0 items-center gap-2.5 pr-12">
-          {LeadingIcon && (
-            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg shadow-sm ${leadingTone}`}>
-              <LeadingIcon className="h-4 w-4 text-white" />
-            </div>
-          )}
-          <div className="min-w-0">
+    <Card hoverable disableEnterAnimation className={`h-full border-border/60 ${className || ""}`.trim()}>
+      <CardContent className="h-full p-4">
+        <MetricReadout title={title} icon={Icon} value={
             <AnimatedStatValue
               as="span"
               value={value}
               loading={loading}
               cacheKey={cacheKey}
               fallbackValue="0"
-              className="block truncate text-2xl font-bold leading-none tracking-tight tabular-nums"
+              className="block truncate"
               title={value}
             />
-            {subtitle && (
-              <p className="mt-2 truncate text-xs text-muted-foreground" title={subtitle}>
-                {subtitle}
-              </p>
-            )}
-          </div>
-        </div>
+        } hint={subtitle} />
       </CardContent>
     </Card>
   );
@@ -935,7 +910,7 @@ function HostTrafficDirectionStat({
   label,
   value,
   icon: Icon,
-  tone,
+  direction,
   loading,
   cacheKey,
   animated = true,
@@ -944,7 +919,7 @@ function HostTrafficDirectionStat({
   label: string;
   value: string;
   icon: typeof ActivitySquare;
-  tone: string;
+  direction: "inbound" | "outbound";
   loading?: boolean;
   cacheKey: string;
   animated?: boolean;
@@ -952,12 +927,10 @@ function HostTrafficDirectionStat({
 }) {
   return (
     <div className={`min-w-0 ${className || ""}`.trim()}>
-      <div className="flex items-center gap-2.5">
-        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg shadow-sm ${tone}`}>
-          <Icon className="h-4 w-4 text-white" />
-        </div>
+      <div className="flex items-center gap-2">
+        <Icon aria-hidden="true" strokeWidth={1.5} className={cn("h-4 w-4 shrink-0", direction === "inbound" ? "text-chart-1" : "text-chart-2")} />
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+          <p className="text-xs text-muted-foreground">{label}</p>
           {animated ? (
             <AnimatedStatValue
               as="p"
@@ -965,12 +938,12 @@ function HostTrafficDirectionStat({
               loading={loading}
               cacheKey={cacheKey}
               fallbackValue="0 B/s"
-              className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
+              className="mt-1 block truncate text-base font-semibold leading-tight tabular-nums sm:text-lg"
               title={value}
             />
           ) : (
             <p
-              className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
+              className="mt-1 truncate text-base font-semibold leading-tight tabular-nums sm:text-lg"
               title={value}
             >
               {value}
@@ -987,8 +960,6 @@ function HostTrafficSummaryCard({
   inValue,
   outValue,
   icon: Icon,
-  tone = "bg-gradient-to-br from-chart-1/10 to-transparent",
-  iconTone = "bg-chart-1/10 text-chart-1",
   loading,
   cacheKey,
   animated = true,
@@ -998,26 +969,19 @@ function HostTrafficSummaryCard({
   inValue: string;
   outValue: string;
   icon: typeof ActivitySquare;
-  tone?: string;
-  iconTone?: string;
   loading?: boolean;
   cacheKey: string;
   animated?: boolean;
   className?: string;
 }) {
   return (
-    <Card hoverable className={`group relative h-full overflow-hidden border-border/40 bg-card/60 ${className || ""}`.trim()}>
-      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
-      <CardContent className="relative flex h-full flex-col justify-start p-3.5 sm:p-4">
-        <div className="flex min-h-0 items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1 pr-12">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-          </div>
-          <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
-            <Icon className="h-5 w-5" />
-          </div>
+    <Card hoverable disableEnterAnimation className={`h-full border-border/60 ${className || ""}`.trim()}>
+      <CardContent className="h-full p-4">
+        <div className="pearl-metric-heading">
+          <p className="pearl-metric-label">{title}</p>
+          <span aria-hidden="true" className="pearl-metric-icon"><Icon className="h-4 w-4" strokeWidth={1.5} /></span>
         </div>
-        <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-2.5">
+        <div className="mt-2 grid grid-cols-2 gap-3">
           <HostTrafficDirectionStat
             label={translateText("入向")}
             value={inValue}
@@ -1025,7 +989,7 @@ function HostTrafficSummaryCard({
             cacheKey={`${cacheKey}.in`}
             animated={animated}
             icon={ArrowDownToLine}
-            tone="bg-emerald-500"
+            direction="inbound"
           />
           <HostTrafficDirectionStat
             label={translateText("出向")}
@@ -1034,7 +998,7 @@ function HostTrafficSummaryCard({
             cacheKey={`${cacheKey}.out`}
             animated={animated}
             icon={ArrowUpFromLine}
-            tone="bg-amber-500"
+            direction="outbound"
           />
         </div>
       </CardContent>
@@ -2090,9 +2054,13 @@ function HostsContent() {
     for (const row of hostTrafficRows as any[]) map.set(Number(row.hostId), row);
     return map;
   }, [hostTrafficRows]);
-  const { data: hostLatestMetricRows = [] } = trpc.hosts.latestMetricsSummary.useQuery(
+  const { data: hostLatestMetricResponse = [], dataUpdatedAt: hostMetricReceivedAt } = trpc.hosts.latestMetricsSummary.useQuery(
     { hostIds: pagedMetricHostIds },
     { enabled: !!hostLiveRefreshInterval && pagedMetricHostIds.length > 0, refetchInterval: adaptivePollingInterval(hostLiveRefreshInterval) }
+  );
+  const hostLatestMetricRows = useMemo(
+    () => stampHostNetworkMetrics(hostLatestMetricResponse, hostMetricReceivedAt),
+    [hostLatestMetricResponse, hostMetricReceivedAt],
   );
   const hostLatestMetricById = useMemo(() => {
     const map = new Map<number, any>();
@@ -2309,14 +2277,13 @@ function HostsContent() {
     style: themeGridConfigured ? { ...themeColumnStyles(themeHosts?.cardLayout === "rows" ? { mobile: 1, tablet: 1, desktop: 1 } : themeHosts?.columns), gap: themeHosts?.gap ?? 16 } : undefined,
   };
   return (
-    <div data-theme-part="hosts" className="space-y-6">
+    <div data-theme-part="hosts" className="space-y-4">
       {/* Header */}
       <div data-theme-part="hosts-toolbar" className="pearl-page-header flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{themeText(themeHosts?.title, getLanguage(), translateText("主机管理"))}</h1>
-        </div>
-        <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
-          <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
+          <h1 className="text-xl font-semibold sm:text-2xl">{themeText(themeHosts?.title, getLanguage(), translateText("主机管理"))}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
             <Server className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
               value={translateText("{0} / {1} 在线", [onlineCount, displayedHostTotal])}
@@ -2324,13 +2291,15 @@ function HostsContent() {
               cacheKey="hosts.header.online"
               fallbackValue={translateText("0 / 0 在线")}
             />
-          </Badge>
-          {/* 布局切换按钮 */}
+          </span>
           {updateCount > 0 && (
-            <Badge variant="outline" className="justify-center gap-1.5 border-amber-500/30 px-3 py-1.5 text-xs text-amber-500">
+            <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-3 w-3" />
-              {updateCount}{translateText(" 台发现新版本")}</Badge>
+              {updateCount}{translateText(" 台发现新版本")}</span>
           )}
+          </div>
+        </div>
+        <div className="responsive-actions pearl-toolbar grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           {activeManageTab === "hosts" && (
             <>
               <div className="col-span-2 grid min-w-0 grid-cols-3 gap-1.5 sm:contents">
@@ -2370,52 +2339,8 @@ function HostsContent() {
                   </>
                 )}
               </div>
-              <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
-                <Button
-                  variant={viewMode === "compact-card" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="h-8 w-8 rounded-none"
-                  title={translateText("精简卡片")}
-                  onClick={() => handleViewModeChange("compact-card")}
-                >
-                  <Rows3 className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={viewMode === "card" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="h-8 w-8 rounded-none"
-                  title={translateText("标准卡片")}
-                  onClick={() => handleViewModeChange("card")}
-                >
-                  <LayoutGrid className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={viewMode === "table" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="h-8 w-8 rounded-none"
-                  title={translateText("列表视图")}
-                  onClick={() => handleViewModeChange("table")}
-                >
-                  <List className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={viewMode === "map" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="hidden h-8 w-8 rounded-none md:inline-flex"
-                  title={translateText("3D 地球视图")}
-                  onClick={() => handleViewModeChange("map")}
-                >
-                  <Globe className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant={viewMode === "flat-map" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="hidden h-8 w-8 rounded-none md:inline-flex"
-                  title={translateText("平面地图视图")}
-                  onClick={() => handleViewModeChange("flat-map")}
-                >
-                  <MapPinned className="h-4 w-4" />
-                </Button>
+              <div className="hidden sm:block">
+                <HostViewSelect value={viewMode} onChange={handleViewModeChange} />
               </div>
             </>
           )}
@@ -2494,7 +2419,7 @@ function HostsContent() {
         </div>
       </div>
 
-      <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+      <div className="pearl-toolbar grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm text-muted-foreground">{translateText("筛选:")}</span>
@@ -2523,8 +2448,8 @@ function HostsContent() {
         </div>
         {activeManageTab === "hosts" && !isHostMapView && (
           <Select value={String(hostPageSize)} onValueChange={handleHostPageSizeChange}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]" aria-label={translateText("每页数量")}>
-              <SelectValue placeholder={translateText("每页数量")} />
+            <SelectTrigger className="h-9 w-full text-xs sm:w-auto sm:min-w-40" aria-label={translateText("每页数量")}>
+              <SelectValue>{translateText("每页 ")}{hostPageSize}{translateText(" 台")}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {HOST_PAGE_SIZE_OPTIONS.map((pageSize) => (
@@ -2560,8 +2485,6 @@ function HostsContent() {
               })()
               : translateText("暂无统计")}
             icon={Server}
-            leadingIcon={CircleCheck}
-            tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.online"
           />
@@ -2570,8 +2493,6 @@ function HostsContent() {
             inValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
             outValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
-            tone="bg-gradient-to-br from-chart-1/10 to-transparent"
-            iconTone="bg-chart-1/10 text-chart-1"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.currentTraffic"
             animated={false}
@@ -2581,8 +2502,6 @@ function HostsContent() {
             inValue={formatBytes(effectiveHostSummary?.totalTrafficIn)}
             outValue={formatBytes(effectiveHostSummary?.totalTrafficOut)}
             icon={ArrowRightLeft}
-            tone="bg-gradient-to-br from-chart-4/10 to-transparent"
-            iconTone="bg-chart-4/10 text-chart-4"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.totalTraffic"
           />

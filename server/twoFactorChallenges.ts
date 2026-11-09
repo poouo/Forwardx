@@ -6,6 +6,7 @@ type TwoFactorChallenge = {
   mobile: boolean;
   /** Source address that completed the password step. */
   issueIp: string;
+  passwordHash?: string;
   expiresAt: number;
   attempts: number;
 };
@@ -34,7 +35,7 @@ function pruneExpired(now = Date.now()) {
   }
 }
 
-export function createTwoFactorChallenge(input: { userId: number; username: string; mobile?: boolean; ip?: string }) {
+export function createTwoFactorChallenge(input: { userId: number; username: string; mobile?: boolean; ip?: string; passwordHash?: string }) {
   pruneExpired();
   const challengeId = crypto.randomBytes(24).toString("hex");
   challenges.set(challengeId, {
@@ -42,6 +43,7 @@ export function createTwoFactorChallenge(input: { userId: number; username: stri
     username: input.username,
     mobile: !!input.mobile,
     issueIp: normalizeIp(input.ip),
+    passwordHash: input.passwordHash,
     expiresAt: Date.now() + TWO_FACTOR_CHALLENGE_TTL_MS,
     attempts: 0,
   });
@@ -64,6 +66,10 @@ export function getTwoFactorChallenge(challengeId: string, requestIp?: string) {
 
 export function clearTwoFactorChallenge(challengeId: string) {
   challenges.delete(challengeId);
+}
+
+export function clearTwoFactorChallengesForUser(userId: number) {
+  for (const [id, challenge] of challenges) if (challenge.userId === userId) challenges.delete(id);
 }
 
 export function recordTwoFactorChallengeFailure(challengeId: string) {

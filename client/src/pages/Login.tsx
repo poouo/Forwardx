@@ -2,6 +2,7 @@ import { t as translateText } from "@/i18n";
 import { useState, useCallback, useEffect, useRef } from "react";
 import LanguageSelector from "@/components/LanguageSelector";
 import GoogleLoginButton from "@/components/GoogleLoginButton";
+import PasswordRecoveryDialog from "@/components/PasswordRecoveryDialog";
 import ImageCaptchaField from "@/components/ImageCaptchaField";
 import { normalizeAuthCaptchaProvider } from "@shared/authCaptcha";
 import { captureAffiliateReferral, getAffiliateReferral, clearAffiliateReferral } from "@/lib/affiliateReferral";
@@ -178,6 +179,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [passwordRecoveryOpen, setPasswordRecoveryOpen] = useState(false);
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [captchaChallenge, setCaptchaChallenge] = useState<CaptchaChallengeState | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
@@ -854,6 +856,7 @@ export default function Login() {
 
   return (
     <>
+      <PasswordRecoveryDialog open={passwordRecoveryOpen} onOpenChange={setPasswordRecoveryOpen} defaultIdentifier={username} onPasswordReset={() => { setPassword(""); setConfirmPassword(""); mobileAuth.setCredentials(username, ""); mobileAuth.clear(); }} />
       <LoginLayout
         siteTitle={siteTitle}
         logo={publicInfo?.siteLogoDataUrl}
@@ -981,6 +984,9 @@ export default function Login() {
               </Button>
 
               <GoogleLoginButton disabled={isPending} />
+              <div className="text-center">
+                <button type="button" className="auth-login-switch-link" disabled={isPending || !hasMobilePanelUrl} onClick={() => setPasswordRecoveryOpen(true)}>{translateText("忘记密码？")}</button>
+              </div>
               {mode === "login" && discordLoginStatus?.enabled && discordLoginStatus.botId && (
                 <div className="space-y-2 rounded-lg border p-3 text-center"><p className="text-sm">{translateText("Discord 快捷登录")}</p><p className="text-xs text-muted-foreground">{translateText("在已绑定的机器人私聊中发送 /login，打开一次性登录链接。")}</p><Button variant="outline" asChild><a href={`https://discord.com/users/${discordLoginStatus.botId}`} target="_blank" rel="noopener noreferrer">{translateText("打开 Discord")}</a></Button></div>
               )}

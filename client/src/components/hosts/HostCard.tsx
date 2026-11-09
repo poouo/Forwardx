@@ -35,7 +35,7 @@ import {
 import { useEffect, useMemo, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { hostThemeValues, type ThemeValues } from "@shared/themeFields";
-import { hostNetworkSpeed } from "@shared/hostNetworkSpeed";
+import { hostNetworkSpeed, stampHostNetworkMetrics } from "@shared/hostNetworkSpeed";
 import type { ThemeViews } from "@shared/themeViews";
 import ThemeBlocks from "@/components/themes/ThemeBlocks";
 import {
@@ -243,9 +243,13 @@ export default function HostCard({
   themeValues,
 }: HostCardProps) {
   const hasExternalMetrics = externalMetrics !== undefined;
-  const { data: queriedMetrics } = trpc.hosts.metrics.useQuery(
+  const { data: queriedMetricResponse, dataUpdatedAt: metricReceivedAt } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 2, live: !!refreshInterval },
     { enabled: !hasExternalMetrics, refetchInterval: hasExternalMetrics ? false : refreshInterval }
+  );
+  const queriedMetrics = useMemo(
+    () => queriedMetricResponse ? stampHostNetworkMetrics(queriedMetricResponse, metricReceivedAt) : undefined,
+    [queriedMetricResponse, metricReceivedAt],
   );
   const metrics = hasExternalMetrics ? externalMetrics : queriedMetrics;
   const cachedMetrics = useMemo(() => readCachedHostMetrics(host.id), [host.id]);

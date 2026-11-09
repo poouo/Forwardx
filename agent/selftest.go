@@ -131,33 +131,28 @@ func releaseSelfTest(testID int) {
 }
 
 func handleSelfTest(cfg Config, t selfTest) {
-	method := strings.ToLower(strings.TrimSpace(t.Method))
-	if method == "" {
-		method = strings.ToLower(strings.TrimSpace(t.Protocol))
-	}
-	if normalizeRuntimeProtocol(method) == "udp" {
-		method = "ping"
-	}
+	method := selfTestProbeMethod(t)
+	logf("selftest start test=%d rule=%d method=%s target=%s port=%d", t.TestID, t.RuleID, method, t.TargetIP, t.TargetPort)
 	if method == "ping" {
 		latency, reachable, detail := pingLatency(t.TargetIP, selfTestPingTimeout)
+		logf("selftest result test=%d rule=%d method=icmp target=%s reachable=%v latency=%dms detail=%q", t.TestID, t.RuleID, t.TargetIP, reachable, latency, detail)
 		msg := ""
 		if reachable {
-			msg = fmt.Sprintf("目标 %s Ping可达，延迟 %dms", t.TargetIP, latency)
+			msg = fmt.Sprintf("目标 %s ICMP Ping可达，延迟 %dms", t.TargetIP, latency)
 		} else {
-			msg = fmt.Sprintf("目标 %s Ping不可达：%s", t.TargetIP, detail)
+			msg = fmt.Sprintf("目标 %s ICMP Ping未收到响应或无法执行：%s；不代表 UDP 端口不通", t.TargetIP, detail)
 		}
 		payload := map[string]any{
-			"testId":          t.TestID,
-			"targetReachable": reachable,
-			"latencyMs":       latency,
-			"message":         msg,
+			"testId": t.TestID, "targetReachable": reachable, "latencyMs": latency, "message": msg,
+		}
+		if net.ParseIP(detail) != nil {
+			payload["resolvedTargetIp"] = detail
 		}
 		if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
 			logSelfTestReportError(t.TestID, t.TargetIP, err)
 		}
 		return
 	}
-
 	latency, reachable, resolvedTarget := 0, false, ""
 	minimumAttempts := selfTestTCPAttempts(t)
 	readinessWindow := selfTestTCPReadinessWindow(t)
@@ -221,9 +216,25 @@ func handleSelfTest(cfg Config, t selfTest) {
 	if resolvedTarget != "" {
 		payload["resolvedTargetIp"] = resolvedTarget
 	}
+	logf("selftest result test=%d rule=%d method=tcp target=%s reachable=%v latency=%dms resolved=%s", t.TestID, t.RuleID, target, reachable, latency, resolvedTarget)
 	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
 		logSelfTestReportError(t.TestID, target, err)
 	}
+}
+
+func selfTestProbeMethod(t selfTest) string {
+	// An explicit UDP rule must never inherit an old TCP probe selection.
+	if normalizeRuntimeProtocol(t.Protocol) == "udp" {
+		return "ping"
+	}
+	method := strings.ToLower(strings.TrimSpace(t.Method))
+	if method == "" {
+		method = strings.ToLower(strings.TrimSpace(t.Protocol))
+	}
+	if method == "ping" || normalizeRuntimeProtocol(method) == "udp" {
+		return "ping"
+	}
+	return "tcp"
 }
 
 func selfTestTCPAttempts(t selfTest) int {

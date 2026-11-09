@@ -273,6 +273,7 @@ export const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "redeem", description: "兑换余额或套餐兑换码" },
   { command: "bind", description: "使用绑定码绑定后台账号" },
   { command: "login", description: "生成网页登录链接" },
+  { command: "resetpassword", description: "找回当前绑定账号的密码" },
   { command: "webapp", description: "在 Telegram 内打开面板" },
   { command: "unbind", description: "解除机器人绑定" },
   { command: "users", description: "管理员用户管理" },
@@ -800,6 +801,7 @@ function helpText(bound: boolean, isAdmin = false) {
     "/ask 问题 - 用自然语言查询面板信息",
     "/redeem 兑换码 - 兑换余额或套餐",
     "/login - 生成网页一次性登录链接",
+    ...(!isDiscordBotContext() ? ["/resetpassword - 通过已绑定 Telegram 找回密码"] : []),
     isDiscordBotContext() ? "/webapp - 获取一次性网页登录链接" : "/webapp - 在 Telegram 内打开面板",
     "/enable 规则ID - 启用规则",
     "/disable 规则ID - 停用规则",
@@ -5129,6 +5131,18 @@ async function handleMessage(message: TelegramMessage) {
   }
   if (command === "/redeem") return handleRedeem(message, user, args.join(" "));
   if (command === "/login") return handleLogin(message, user);
+  if (command === "/resetpassword") {
+    if (isDiscordBotContext()) return sendMessage(message.chat.id, "请通过面板登录页，使用已验证邮箱或已绑定 Telegram 找回密码。");
+    const { passwordRecovery } = await import("./passwordRecovery");
+    try {
+      const result = passwordRecovery.request(user.username, "telegram", `telegram:${identity.telegramId}`);
+      // The reset link is delivered only to the bound private chat, never to
+      // this message's chat (which could be a group).
+      return sendMessage(message.chat.id, result.message);
+    } catch {
+      return sendMessage(message.chat.id, "申请过于频繁，请稍后再试或联系管理员");
+    }
+  }
   if (command === "/webapp") return handleWebApp(message, user);
   if (command === "/enable") return handleRuleToggle(message, user, args[0], true);
   if (command === "/disable") return handleRuleToggle(message, user, args[0], false);

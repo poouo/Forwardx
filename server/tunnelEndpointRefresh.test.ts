@@ -145,3 +145,97 @@ test("deferred tcping stays interactive without bypassing tunnel apply readiness
   assert.match(dispatch, /if \(forceTcping\) clearHostTcpingRequest\(host.id\)/);
   assert.match(dispatch, /const hasInteractiveTasks = [\s\S]*\|\| tcpingRequested/);
 });
+
+test("rule edits notify every tunnel endpoint only after the target and exit mappings are saved", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-rule-update-refresh-"));
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import { EventEmitter } from "node:events";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+    const load = file => import(pathToFileURL(path.join(process.cwd(), file)).href);
+    const runtime = await load("server/dbRuntime.ts");
+    const streams = [];
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await (await load("server/dbSchema.ts")).ensureDatabaseSchema();
+      const events = await load("server/agentEvents.ts");
+      const insert = (table, columns, values) => runtime.executeRaw(
+        'INSERT INTO "' + table + '" (' + columns.map(c => '"' + c + '"').join(',') +
+        ') VALUES (' + values.map(() => '?').join(',') + ')', values,
+      );
+      await insert("users", ["id", "username", "password", "role"], [1, "test-admin", "test-hash", "admin"]);
+      await (await load("server/repositories/settingsRepository.ts")).setSetting("forwardProtocols", JSON.stringify({ nginx_stream: true }));
+      for (let id = 1; id <= 8; id++) {
+        await insert("hosts", ["id", "name", "ip", "userId"], [id, "host-" + id, "192.0.2." + id, 1]);
+      }
+      await insert("forward_groups", ["id", "name", "groupMode", "groupType", "targetIp", "userId", "isEnabled"],
+        [10, "entries", "entry", "host", "0.0.0.0", 1, 1]);
+      await insert("forward_group_members", ["groupId", "memberType", "hostId", "isEnabled"], [10, "host", 6, 1]);
+      for (const [id, entry, exit, group] of [[1, 1, 3, 10], [2, 7, 8, null]]) {
+        await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "listenPort", "userId", "mode", "isEnabled", "entryGroupId", "loadBalanceEnabled"],
+          [id, "tunnel-" + id, entry, exit, 17000 + exit, 1, "forwardx", 1, group, 1]);
+      }
+      for (const id of [1, 2, 3]) {
+        await insert("tunnel_hops", ["tunnelId", "seq", "hostId", "listenPort"], [1, id - 1, id, 17000 + id]);
+      }
+      await insert("tunnel_exit_nodes", ["tunnelId", "seq", "hostId", "listenPort", "isEnabled"], [1, 1, 4, 17004, 1]);
+      await insert("forward_rules", ["id", "name", "hostId", "userId", "sourcePort", "targetIp", "targetPort", "protocol", "forwardType", "tunnelId", "isEnabled", "isRunning"],
+        [1, "rule", 1, 1, 18001, "198.51.100.10", 443, "tcp", "gost", 1, 1, 1]);
+      const snapshot = async () => ({
+        rule: (await runtime.queryRaw('SELECT "hostId", "tunnelId", "targetIp", "targetPort", "tunnelExitPort", "isRunning" FROM "forward_rules" WHERE "id" = 1'))[0],
+        exits: await runtime.queryRaw('SELECT "exitHostId", "tunnelExitPort" FROM "forward_rule_tunnel_exits" WHERE "ruleId" = 1 ORDER BY "exitHostId"'),
+      });
+      let notifications = [];
+      for (let hostId = 1; hostId <= 8; hostId++) {
+        class Response extends EventEmitter {
+          write() { notifications.push(snapshot().then(state => ({ hostId, state }))); return true; }
+          end() { this.emit("finish"); }
+        }
+        streams.push(events.registerAgentEventClient(hostId, "test-token", new Response()));
+      }
+      const { crudRulesRouter } = await load("server/routers/rules.crud.ts");
+      const caller = crudRulesRouter.createCaller({ user: { id: 1, role: "admin" }, req: { headers: {} }, res: {} });
+      let sequence = 0;
+      const editAndCheck = async (patch, expectedHosts) => {
+        const before = await snapshot();
+        notifications = [];
+        const result = await caller.update({ id: 1, ...patch });
+        assert.equal(result.success, true);
+        const final = await snapshot();
+        assert.equal(final.rule.targetIp, patch.targetIp ?? before.rule.targetIp);
+        assert.equal(final.rule.targetPort, patch.targetPort ?? before.rule.targetPort);
+        assert.equal(final.rule.isRunning, 0);
+        const received = await Promise.all(notifications);
+        assert.deepEqual([...new Set(received.map(n => n.hostId))].sort((a,b) => a-b), expectedHosts);
+        for (const notification of received) assert.deepEqual(notification.state, final,
+          "refresh must never expose an old target or incomplete exit mappings on host " + notification.hostId);
+      };
+      for (const [mode, version] of [["forwardx", "v1"], ["forwardx", "v2"], ["forwardx", "v3"], ["tls", "v1"], ["nginx_stream", "v1"]]) {
+        await runtime.executeRaw('UPDATE "tunnels" SET "mode" = ?, "forwardxVersion" = ? WHERE "id" = 1', [mode, version]);
+        // Back-to-back saves must not lose the second notification to SSE coalescing.
+        for (let edit = 0; edit < 2; edit++) {
+          sequence++;
+          await editAndCheck({ targetIp: "198.51.100." + (20 + sequence), targetPort: 8400 + sequence }, [1, 2, 3, 4, 6]);
+        }
+        if (mode !== "forwardx") assert.deepEqual((await snapshot()).exits.map(row => row.exitHostId), [4]);
+      }
+      await editAndCheck({ targetIp: "198.51.100.80" }, [1, 2, 3, 4, 6]);
+      await editAndCheck({ targetPort: 8080 }, [1, 2, 3, 4, 6]);
+      await editAndCheck({ tunnelId: 2, targetIp: "198.51.100.90", targetPort: 9090 }, [1, 2, 3, 4, 6, 7, 8]);
+    } finally {
+      streams.forEach(stream => stream.close());
+      await runtime.closeDatabase();
+    }
+  `;
+  try {
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: path.join(directory, "update.db"), FORWARDX_LOG_DIR: path.join(directory, "logs") },
+      encoding: "utf8", timeout: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

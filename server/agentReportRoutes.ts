@@ -810,7 +810,6 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 
     const quotaTrafficByUser = new Map<number, number>();
     const trafficBatch: db.TrafficStatBatchItem[] = [];
-    const runningRuleIds = new Set<number>();
     const billingEntries: Array<{
       rule: any;
       ruleBytes: number;
@@ -908,7 +907,6 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       acceptedBytesOut += bytesOut;
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
-        if (!(rule as any).isRunning) runningRuleIds.add(Number(rule.id));
         logTrafficReportSample(
           `rule:${host.id}:${rule.id}`,
           `[Traffic] host=${host.id} rule=${rule.id}`,
@@ -930,7 +928,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     await recordOperationsTraffic(trafficBatch, contextsByRuleId, host);
     if (analyticsEnabled && trafficReportId) await recordOperationsSources(host, sourceSamples, contextsByRuleId, entryHostsByTunnelId, req.body?.sourceStatus, req.body?.sourceSampledAt);
     await recordRuleQuotaTraffic(trafficBatch, contextsByRuleId);
-    await db.markForwardRulesRunning(Array.from(runningRuleIds));
+    // Traffic can come from an old connection or a buffered report. It does
+    // not acknowledge the desired configuration; only runtime/status
+    // reconciliation may mark a pending rule as running.
 
     for (const { rule, ruleBytes, billingResource } of billingEntries) {
       strictTrafficAccounting = true;

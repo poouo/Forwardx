@@ -23,6 +23,9 @@ import { databaseHealth, describeDatabaseError, isDatabaseBusyError } from "../d
 import { DATABASE_UNAVAILABLE_MESSAGE, SERVICE_BUSY_MESSAGE } from "../../shared/databaseHealth";
 import { isDatabaseGuardRequestError } from "../databaseNetworkGuard";
 import { createRequestWorkPool } from "../requestWorkPool";
+import { userImpersonation } from "../userImpersonationRuntime";
+import type { Impersonation } from "../userImpersonation";
+import { IMPERSONATION_PREFIX } from "../../shared/userImpersonation";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -33,6 +36,7 @@ export interface AuthSession {
 }
 
 export interface TrpcContext {
+  impersonation?: Impersonation;
   req: Request;
   res: Response;
   user: User | null;
@@ -213,6 +217,26 @@ export async function createContext({ req, res }: CreateExpressContextOptions): 
   let authSession: AuthSession | null = null;
   let authFailureReason: TrpcContext["authFailureReason"] = null;
 
+  const session = getRequestToken(req);
+  // Must precede the local-dev administrator shortcut. Invalid delegated tokens
+  // must never fall back to the real administrator's Cookie (or dev identity).
+  if (session.token.startsWith(IMPERSONATION_PREFIX)) {
+    try {
+      const delegated = await authReads.run(() => userImpersonation.resolve(session.token));
+      res.setHeader("Cache-Control", "no-store");
+      return { req, res, ...delegated, authSession: null, authFailureReason: null };
+    } catch (error) {
+      if (error instanceof TRPCError) throw error;
+      if (isDatabaseBusyError(error) || isDatabaseGuardRequestError(error)) {
+        throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: SERVICE_BUSY_MESSAGE, cause: error });
+      }
+      if (describeDatabaseError(error) || databaseHealth.snapshot().state === "unavailable") {
+        throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: DATABASE_UNAVAILABLE_MESSAGE });
+      }
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "用户身份验证暂时失败，请稍后重试" });
+    }
+  }
+
   if (isDevPanelMode()) {
     const devUser = await db.getUserByUsername(DEV_ADMIN_USERNAME).catch(() => null);
     if (devUser) {
@@ -232,7 +256,6 @@ export async function createContext({ req, res }: CreateExpressContextOptions): 
     }
   }
 
-  const session = getRequestToken(req);
   if (session.token) {
     const resolved = await resolveSessionFromToken(req, res, session.token, session.source || "cookie");
     if (resolved.user) {

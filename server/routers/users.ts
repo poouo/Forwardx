@@ -14,6 +14,11 @@ import {
 } from "../services/userCommandService";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reconcileUserRuleResourceAuthorization } from "../ruleResourceAuthorization";
+import { userImpersonation } from "../userImpersonationRuntime";
+import { createAuthSession } from "../repositories/sessionRepository";
+import { isDevPanelMode } from "../devPanel";
+import { randomUUID } from "node:crypto";
+import { IMPERSONATION_TTL_SECONDS } from "../../shared/userImpersonation";
 
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
@@ -34,6 +39,17 @@ function maskIdentifier(value?: string | null) {
 }
 
 export const usersRouter = router({
+    enterUserBackend: adminProcedure.input(z.object({ userId: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        let session = ctx.authSession;
+        if (isDevPanelMode() && session?.sid === "dev-panel") {
+          const sid = `dev-entry:${randomUUID()}`;
+          await createAuthSession({ userId: ctx.user.id, sid, kind: "browser", expiresAt: new Date(Date.now() + IMPERSONATION_TTL_SECONDS * 1000) });
+          session = { ...session, sid };
+        }
+        ctx.res.setHeader("Cache-Control", "no-store");
+        return userImpersonation.issue(ctx.user, session, input.userId);
+      }),
     list: adminProcedure.query(async () => {
       return db.getAllUsers();
     }),

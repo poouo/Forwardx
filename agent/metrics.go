@@ -22,6 +22,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv6"
 )
 
 const (
@@ -1934,6 +1937,9 @@ func executeTCPingTaskWithProbes(
 		if pingProbe != nil {
 			measurement = pingProbe(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 		}
+		if !measurement.Reachable && shouldLogAgentReport("icmp-probe-failed", time.Minute) {
+			logf("latency probe failed kind=%s rule=%d method=icmp target=%s replies=%d/%d detail=%q", task.Kind, task.RuleID, task.TargetIP, measurement.ProbeSuccesses, measurement.ProbeCount, measurement.Detail)
+		}
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
 		status := wireGuardProbeTimeout
 		var latency int
@@ -2471,6 +2477,7 @@ func nativePingLatencyDetailed(target string, timeout time.Duration, count int) 
 	if timeout <= 0 {
 		timeout = tcpingProbeTimeout
 	}
+	deadline := time.Now().Add(timeout)
 	targets := []string{target}
 	if net.ParseIP(target) == nil {
 		resolved := resolveNetworkTargetIPs(target, timeout)
@@ -2479,6 +2486,65 @@ func nativePingLatencyDetailed(target string, timeout time.Duration, count int) 
 		}
 		targets = resolved
 	}
+	return nativePingTargetsDetailed(targets, deadline, count, nativePingIPDetailed)
+}
+
+// A DNS name may have many A/AAAA answers. Bound both work and wall time;
+// serial per-address timeouts used to outlive the panel's self-test lease.
+// Keep both families represented, including when an IPv4-only path is blocked.
+func nativePingTargetsDetailed(targets []string, deadline time.Time, count int, probe func(net.IP, time.Duration, int) (int, bool, error, int, int)) (int, bool, string, int, int, error) {
+	var v4, v6 []net.IP
+	seen := map[string]bool{}
+	for _, target := range targets {
+		ip := net.ParseIP(target)
+		if ip == nil || seen[ip.String()] {
+			continue
+		}
+		seen[ip.String()] = true
+		if ip.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
+	}
+	var ips []net.IP
+	for len(ips) < 8 && (len(v4) > 0 || len(v6) > 0) {
+		if len(v4) > 0 {
+			ips = append(ips, v4[0])
+			v4 = v4[1:]
+		}
+		if len(v6) > 0 && len(ips) < 8 {
+			ips = append(ips, v6[0])
+			v6 = v6[1:]
+		}
+	}
+	type result struct {
+		latency, sent, successes int
+		ok                       bool
+		err                      error
+	}
+	results := make([]result, len(ips))
+	jobs := make(chan int, len(ips))
+	for i := range ips {
+		jobs <- i
+	}
+	close(jobs)
+	var workers sync.WaitGroup
+	for worker := 0; worker < len(ips); worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					continue
+				}
+				r := &results[i]
+				r.latency, r.ok, r.err, r.sent, r.successes = probe(ips[i], remaining, count)
+			}
+		}()
+	}
+	workers.Wait()
 	var lastErr error
 	// Keep the best partial result as a fallback, but continue trying every
 	// resolved address.  A hostname can resolve to an unreachable IPv4 first
@@ -2488,12 +2554,9 @@ func nativePingLatencyDetailed(target string, timeout time.Duration, count int) 
 	partialSent := 0
 	partialSuccesses := 0
 	partialDetail := ""
-	for _, value := range targets {
-		ip := net.ParseIP(value)
-		if ip == nil {
-			continue
-		}
-		latency, ok, err, sent, successes := nativePingIPDetailed(ip, timeout, count)
+	for i, r := range results {
+		value := ips[i].String()
+		latency, ok, err, sent, successes := r.latency, r.ok, r.err, r.sent, r.successes
 		if err != nil {
 			lastErr = err
 			continue
@@ -2528,11 +2591,21 @@ func nativePingIP(ip net.IP, timeout time.Duration, count int) (int, bool, error
 }
 
 func nativePingIPDetailed(ip net.IP, timeout time.Duration, count int) (int, bool, error, int, int) {
-	ipv4 := ip.To4()
-	if ipv4 == nil {
-		return 0, false, fmt.Errorf("native ping currently supports ipv4 only"), 0, 0
+	return nativePingIPWithPacketConn(ip, timeout, count, net.ListenPacket)
+}
+
+func nativePingIPWithPacketConn(ip net.IP, timeout time.Duration, count int, listen func(string, string) (net.PacketConn, error)) (int, bool, error, int, int) {
+	if ip == nil {
+		return 0, false, fmt.Errorf("invalid ping address"), 0, 0
 	}
-	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	ipv4 := ip.To4()
+	network, bind, replyType := "ip4:icmp", "0.0.0.0", byte(0)
+	if ipv4 == nil {
+		network, bind, replyType = "ip6:ipv6-icmp", "::", 129
+	} else {
+		ip = ipv4
+	}
+	conn, err := listen(network, bind)
 	if err != nil {
 		return 0, false, err, 0, 0
 	}
@@ -2543,11 +2616,20 @@ func nativePingIPDetailed(ip net.IP, timeout time.Duration, count int) (int, boo
 	id := os.Getpid() & 0xffff
 	baseSeq := int(time.Now().UnixNano()) & 0xffff
 	sentAt := map[int]time.Time{}
+	packets := map[int][]byte{}
 	for i := 0; i < count; i++ {
 		seq := (baseSeq + i) & 0xffff
 		packet := buildICMPEchoRequest(8, id, seq)
+		if ipv4 == nil {
+			// Raw ICMPv6 sockets compute the pseudo-header checksum in the OS.
+			packet, err = (&icmp.Message{Type: ipv6.ICMPTypeEchoRequest, Body: &icmp.Echo{ID: id, Seq: seq, Data: packet[8:]}}).Marshal(nil)
+			if err != nil {
+				return 0, false, err, len(sentAt), 0
+			}
+		}
 		sentAt[seq] = time.Now()
-		if _, err := conn.WriteTo(packet, &net.IPAddr{IP: ipv4}); err != nil {
+		packets[seq] = packet
+		if _, err := conn.WriteTo(packet, &net.IPAddr{IP: ip}); err != nil {
 			return 0, false, err, len(sentAt), 0
 		}
 	}
@@ -2559,11 +2641,14 @@ func nativePingIPDetailed(ip net.IP, timeout time.Duration, count int) (int, boo
 		if err != nil {
 			break
 		}
-		if ipAddr, ok := addr.(*net.IPAddr); ok && !ipAddr.IP.Equal(ipv4) {
+		if ipAddr, ok := addr.(*net.IPAddr); ok && !ipAddr.IP.Equal(ip) {
 			continue
 		}
-		msg := stripIPv4Header(buf[:n])
-		if len(msg) < 8 || msg[0] != 0 || msg[1] != 0 {
+		msg := buf[:n]
+		if ipv4 != nil {
+			msg = stripIPv4Header(msg)
+		}
+		if len(msg) < 8 || msg[0] != replyType || msg[1] != 0 {
 			continue
 		}
 		if int(binary.BigEndian.Uint16(msg[4:6])) != id {
@@ -2572,6 +2657,11 @@ func nativePingIPDetailed(ip net.IP, timeout time.Duration, count int) (int, boo
 		seq := int(binary.BigEndian.Uint16(msg[6:8]))
 		started, ok := sentAt[seq]
 		if !ok {
+			continue
+		}
+		// Raw sockets also receive other probes from this process. Match the
+		// echoed payload, not just the small shared PID/sequence number space.
+		if !bytes.Equal(msg[8:], packets[seq][8:]) {
 			continue
 		}
 		delete(sentAt, seq)

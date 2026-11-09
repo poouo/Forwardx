@@ -11,6 +11,7 @@ import { getSetting } from "../repositories/settingsRepository";
 import { getSessionKindField, isSessionLeaseOwnedByAnother, parseSessionLease } from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
 import { databaseHealth, isDatabaseBusyError } from "../databaseHealthState";
+import { userImpersonation } from "../userImpersonationRuntime";
 
 async function executionContext(actor: RuleTaskActor): Promise<TrpcContext> {
   // Safe to wait here: no business write has started. Never retry the actual
@@ -18,6 +19,17 @@ async function executionContext(actor: RuleTaskActor): Promise<TrpcContext> {
   for (let attempt = 0; ; attempt++) {
     try {
       if (databaseHealth.snapshot().state === "unavailable") throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "数据库暂不可用" });
+      if (actor.impersonation) {
+        let resolved;
+        try { resolved = await userImpersonation.resume(actor.userId, actor.impersonation); }
+        catch (error) {
+          if (error instanceof TRPCError && error.code === "UNAUTHORIZED") throw new RuleTaskAuthorizationError("用户代入已结束，任务未继续执行");
+          throw error;
+        }
+        return { ...resolved, authSession: null, authFailureReason: null,
+          req: { headers: { "x-request-id": actor.requestId }, protocol: "http" } as any,
+          res: { clearCookie() {} } as any };
+      }
       const identity = actor.sid ? await getAuthSessionIdentity(actor.userId, actor.sid, actor.kind) : null;
       const user = identity?.session ? identity.user : actor.dev && isDevPanelMode() ? await getUserById(actor.userId) : null;
       if (!user || (user as any).accountEnabled === false || actor.dev && user.username !== DEV_ADMIN_USERNAME) throw new RuleTaskAuthorizationError("登录或账号已失效，任务未继续执行");
@@ -63,10 +75,10 @@ export const ruleTasksRouter = router({
   enqueueTask: protectedProcedure.input(enqueueRuleTaskSchema).mutation(({ ctx, input }) => {
     const sid = ctx.authSession?.sid || null;
     const dev = !sid && isDevPanelMode() && ctx.user.username === DEV_ADMIN_USERNAME;
-    if (!sid && !dev) throw new TRPCError({ code: "UNAUTHORIZED", message: "请重新登录后提交任务" });
+    if (!sid && !dev && !ctx.impersonation) throw new TRPCError({ code: "UNAUTHORIZED", message: "请重新登录后提交任务" });
     try {
       return { instanceId: RULE_TASK_INSTANCE_ID, task: queuedRuleTasks.enqueue({ userId: ctx.user.id, sid,
-        kind: ctx.authSession?.kind || "browser", dev, requestId: input.requestId }, input) };
+        kind: ctx.authSession?.kind || "browser", dev, requestId: input.requestId, impersonation: ctx.impersonation }, input) };
     } catch (cause) { throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: (cause as Error).message, cause }); }
   }),
   taskStatus: protectedProcedure.input(z.object({ ids: z.array(z.string().uuid()).max(20) })).query(({ ctx, input }) => ({

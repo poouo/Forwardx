@@ -1,0 +1,18 @@
+/* Reserve space for the entry notice even for fixed desktop/mobile navigation. */
+html[data-user-entry] .pearl-topbar,
+html[data-user-entry] [data-mobile-header="true"] {
+  top: var(--user-entry-height, 48px);
+}
+html[data-user-entry] [data-sidebar="container"],
+html[data-user-entry] [data-mobile-sidebar="true"] {
+  top: var(--user-entry-height, 48px);
+  height: calc(100dvh - var(--user-entry-height, 48px));
+  max-height: calc(100dvh - var(--user-entry-height, 48px));
+}
+html[data-user-entry] .pearl-shell,
+html[data-user-entry] .pearl-workspace {
+  min-height: calc(100svh - var(--user-entry-height, 48px));
+}
+html[data-user-entry] [data-sidebar="spacer"] {
+  height: calc(100svh - var(--user-entry-height, 48px));
+}

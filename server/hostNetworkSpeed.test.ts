@@ -39,6 +39,13 @@ test("host management and public monitoring exclude offline historic speeds with
       assert.equal(offlineSummary.currentTrafficOut,null);
       const rows = await admin.latestMetricsSummary({hostIds:[1,2,3]});
       assert.equal(rows.find(row=>row.hostId===1).networkSpeedIn,1000);
+      const activeRow = rows.find(row=>row.hostId===1);
+      assert.ok(activeRow.networkSampleAgeMs >= 0 && activeRow.networkSampleAgeMs < 5000);
+      const { stampHostNetworkMetrics, hostNetworkSpeed } = await import(url("shared/hostNetworkSpeed.ts"));
+      const browserNow = Date.now() - 3600000;
+      assert.equal(hostNetworkSpeed(stampHostNetworkMetrics([activeRow], browserNow)[0], undefined, {now:browserNow}).in, 1000);
+      const rawMetrics = await admin.metrics({hostId:1,limit:2,live:true});
+      assert.ok(rawMetrics.every(row => row.networkSampleAgeMs >= 0));
       for (const id of [2,3]) {
         const row = rows.find(row=>row.hostId===id);
         assert.equal(row.networkSpeedIn,null);

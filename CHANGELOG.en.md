@@ -2,7 +2,17 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
-## [Unreleased]
+## [2.3.299] - 2026-11-10
+
+- Fixed delayed tunnel rule target updates and incorrect running status caused by old traffic reports.
+- Open a user's dashboard in a separate window from User Management without affecting existing logins.
+- Improved latency probing for UDP-only rules, including IPv6 and multi-address domains, with clearer failure details; upgrade the Agent as well.
+- Recover passwords from the login page via verified email or linked Telegram using a one-time reset link; otherwise contact an administrator.
+- Fixed slow or missing live rates in Host Management and public monitoring; upgrade the Agent as well.
+- Refined host toolbars, metric cards and mobile typography, with consistent controls and hover feedback.
+- Corrected the operations date range description and clarified live versus historical statistics.
+- Unified entry/exit label and address typography across compact and standard rule cards.
+- Versions: panel `2.3.299`, Android / iOS `2.4.17`, Agent `2.2.211`, ForwardX FXP runtime `2.2.122` (unchanged). Please upgrade the Agent as well.
 
 ## [2.3.298] - 2026-11-09
 

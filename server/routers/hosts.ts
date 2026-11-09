@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
-import { hostNetworkSpeed } from "../../shared/hostNetworkSpeed";
+import { hostNetworkSpeed, hostNetworkSampleAgeMs } from "../../shared/hostNetworkSpeed";
 import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
@@ -477,6 +477,7 @@ function compactHostMetricSummary(row: any, isOnline = true) {
     networkIn: row?.networkIn == null ? null : Math.max(0, Number(row.networkIn) || 0),
     networkOut: row?.networkOut == null ? null : Math.max(0, Number(row.networkOut) || 0),
     networkSpeedOut: speed.out == null ? null : Math.round(speed.out),
+    networkSampleAgeMs: hostNetworkSampleAgeMs(row),
     diskUsage: row?.diskUsage ?? null,
     diskUsed: row?.diskUsed ?? null,
     diskTotal: row?.diskTotal ?? null,
@@ -1420,12 +1421,12 @@ export const hostsRouter = router({
       .input(z.object({ hostId: z.number(), limit: z.number().default(60), live: z.boolean().optional() }))
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
-        if (input.live) return db.getLatestHostMetrics(input.hostId, input.limit);
-        return hostQueryCache.get(
+        const rows = input.live ? await db.getLatestHostMetrics(input.hostId, input.limit) : await hostQueryCache.get(
           `metrics:${ctx.user.id}:${input.hostId}:${input.limit}`,
           { ttlMs: 10_000, staleMs: 60_000 },
           () => db.getLatestHostMetrics(input.hostId, input.limit),
         );
+        return rows.map((row: any) => ({ ...row, networkSampleAgeMs: hostNetworkSampleAgeMs(row) }));
       }),
     latestMetricsSummary: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(500).optional() }).optional())

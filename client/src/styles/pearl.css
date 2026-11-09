@@ -46,13 +46,12 @@
   --pearl-overlay-shadow: 0 8px 20px rgb(20 34 28 / 8%), 0 30px 80px -24px rgb(20 34 28 / 24%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-card-hover-shadow: 0 6px 20px -4px var(--theme-glow), 0 20px 40px -12px rgb(28 44 38 / 24%), inset 0 1px 0 var(--pearl-highlight);
   --pearl-card-shadow-duration: 480ms;
-  --pearl-card-shadow-ease: cubic-bezier(.4, 0, .2, 1);
+  --pearl-card-shadow-ease: var(--pearl-ease);
   --pearl-card-feedback-transition:
     border-color 300ms var(--pearl-ease),
     box-shadow var(--pearl-card-shadow-duration) var(--pearl-card-shadow-ease),
     background-color 300ms var(--pearl-ease),
-    opacity 300ms var(--pearl-ease),
-    min-height 300ms var(--pearl-ease);
+    opacity 300ms var(--pearl-ease);
   --pearl-ease: cubic-bezier(.22, 1, .36, 1);
   --theme-glow: rgb(35 109 233 / 20%);
 }
@@ -149,6 +148,15 @@
     -webkit-backdrop-filter: blur(12px);
   }
   .pearl-card { min-width: 0; }
+  .pearl-metric { min-width: 0; }
+  .pearl-metric-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .75rem; }
+  .pearl-metric-label { color: var(--muted-foreground); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
+  .pearl-metric-icon { display: inline-flex; width: 24px; height: 24px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 6px; background: var(--muted); color: var(--muted-foreground); }
+  .pearl-metric[data-direction="inbound"] .pearl-metric-icon { color: var(--chart-1); }
+  .pearl-metric[data-direction="outbound"] .pearl-metric-icon { color: var(--chart-2); }
+  .pearl-metric-value { margin-top: .5rem; color: var(--foreground); font-size: 1.5rem; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .pearl-metric[data-compact] .pearl-metric-value { font-size: 1.25rem; }
+  .pearl-metric-hint { margin-top: .5rem; color: var(--muted-foreground); font-size: .75rem; line-height: 1.5; overflow-wrap: anywhere; }
   /* Component-layer defaults let page-specific utility padding still win. */
   .pearl-card-header { padding: 1.5rem; }
   .pearl-card-content, .pearl-card-footer { padding: 0 1.5rem 1.5rem; }
@@ -284,7 +292,7 @@
   .pearl-nav-content [data-sidebar="menu-button"] { border-radius: 12px; padding-inline: .8rem; font-weight: 500; }
   .pearl-nav-content [data-sidebar="menu-button"][data-active="true"] { color: var(--primary); background: var(--card); }
   .pearl-nav-content [data-sidebar="menu-button"][data-active="true"] .sidebar-nav-icon { color: var(--primary); }
-  .pearl-nav-content [data-sidebar="group-label"] { font-size: .65rem; letter-spacing: .09em; text-transform: uppercase; opacity: .75; }
+  .pearl-nav-content [data-sidebar="group-label"] { font-size: .75rem; letter-spacing: 0; text-transform: none; color: var(--muted-foreground); }
   .pearl-sidebar [data-sidebar="header"] { border-bottom: 1px solid var(--border); margin-bottom: .65rem; }
   .pearl-sidebar [data-sidebar="footer"] { border-top: 1px solid var(--border); padding-top: .75rem; }
   .pearl-page-header {
@@ -436,6 +444,25 @@
   @media (max-width: 639px) {
     .pearl-page-header { align-items: stretch; text-align: left; }
     .pearl-page-header > div:first-child { min-width: 0; }
+  }
+}
+
+/* Toolbars share a control rhythm without changing dense card/list controls.
+   Unlayered so page-level h-8/h-10 utilities cannot split a single toolbar. */
+.pearl-toolbar :is(.pearl-button, .pearl-field, .pearl-select-trigger, [data-date-picker-trigger]) {
+  height: 36px;
+  min-height: 36px;
+  border-radius: 10px;
+}
+.pearl-toolbar .pearl-button.rounded-none { width: 36px; border-radius: 0; }
+@media (max-width: 639px) {
+  .rule-traffic-summary .rule-traffic-title { min-height: 40px; line-height: 20px; }
+  .rule-traffic-summary .rule-traffic-total { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
+@media (max-width: 767px) and (pointer: coarse) {
+  .pearl-toolbar :is(.pearl-button, .pearl-field, .pearl-select-trigger, [data-date-picker-trigger]) {
+    height: 44px;
+    min-height: 44px;
   }
 }
 

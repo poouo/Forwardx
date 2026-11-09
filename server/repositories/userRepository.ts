@@ -4,6 +4,8 @@ import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, 
 import { hashPassword, verifyPassword, verifyPasswordAgainstDummy } from "../password";
 import { getSessionKindField, type SessionKind } from "../session";
 import { revokeUserAuthSessions } from "./sessionRepository";
+import { boolLiteral } from "../dbCompat";
+import type { PasswordRecoveryChannel } from "../../shared/passwordRecovery";
 import { invalidateAgentAuthTokenCandidates } from "./tokenRepository";
 import {
   AVATAR_DAILY_CHANGE_LIMIT,
@@ -122,10 +124,59 @@ export async function verifyUserPassword(userId: number, password: string) {
   return verifyPassword(password, user.password);
 }
 
+/** The password hash is the one-time credential version. CAS + revocation in
+ * one transaction prevents concurrent links from both succeeding on any DB. */
+export async function resetUserPasswordFromRecovery(
+  snapshot: { id: number; password: string; email?: string | null; emailVerified?: boolean; telegramId?: string | null },
+  channel: PasswordRecoveryChannel,
+  password: string,
+) {
+  const destination = channel === "email" ? (snapshot.emailVerified ? snapshot.email?.trim().toLowerCase() : "") : snapshot.telegramId;
+  if (!destination) return false;
+  const nextHash = hashPassword(password);
+  return withDatabaseTransaction(async () => {
+    const q = quoteDbIdentifier;
+    const binding = channel === "email"
+      ? `LOWER(TRIM(${q("email")})) = ? AND ${q("emailVerified")} = ${boolLiteral(true)}`
+      : `${q("telegramId")} = ?`;
+    const result = await executeRaw(
+      `UPDATE ${q("users")} SET ${q("password")} = ?, ${q("updatedAt")} = ?,
+        ${q("telegramLoginCode")} = NULL, ${q("telegramLoginCodeExpiresAt")} = NULL,
+        ${q("discordLoginCode")} = NULL, ${q("discordLoginCodeExpiresAt")} = NULL
+       WHERE ${q("id")} = ? AND ${q("password")} = ?
+         AND ${q("accountEnabled")} = ${boolLiteral(true)} AND ${binding}`,
+      [nextHash, Math.floor(Date.now() / 1000), snapshot.id, snapshot.password, destination],
+    );
+    if (rawAffectedRows(result) !== 1) return false;
+    await revokeUserAuthSessions(snapshot.id, { reason: "password_recovery" });
+    return true;
+  });
+}
+
 export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean; discordAnnouncementSubscribed?: boolean; supportTicketNotificationSubscribed?: boolean; animationsEnabled?: boolean; ruleTableLayout?: string; hostTableLayout?: string }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
+  if (data.email === undefined) {
+    await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
+    return;
+  }
+  // Verification belongs to the address, never to an editable profile field.
+  // Lock the old value rather than relying on dialect-specific SET ordering.
+  await withDatabaseTransaction(async () => {
+    if (getDatabaseKind() !== "sqlite") {
+      const q = quoteDbIdentifier;
+      await queryRaw(`SELECT ${q("id")} FROM ${q("users")} WHERE ${q("id")} = ? FOR UPDATE`, [userId]);
+    }
+    const user = await getUserById(userId);
+    if (!user) return;
+    const email = data.email!.trim().toLowerCase();
+    const sameEmail = String(user.email || "").trim().toLowerCase() === email;
+    const transactionDb = await getDb();
+    await transactionDb!.update(users).set({
+      ...data, email, emailVerified: sameEmail ? user.emailVerified : false,
+      emailVerifiedAt: sameEmail ? user.emailVerifiedAt : null, updatedAt: nowDate(),
+    }).where(eq(users.id, userId));
+  });
 }
 
 export async function getTelegramAnnouncementSubscribers() {

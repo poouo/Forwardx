@@ -5,29 +5,31 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ArrowDownToLine } from "lucide-react";
 import { SummaryMetricCard } from "./SummaryMetricCard";
 
-test("overview metrics use colorful icons, static values and opt-in hover in every semantic tone", () => {
-  for (const tone of ["sky", "emerald", "violet", "amber"] as const) {
-    const html = renderToStaticMarkup(<SummaryMetricCard title="Traffic" value="36.26 GiB" hint="Selected range" icon={ArrowDownToLine} tone={tone} />);
-    assert.equal((html.match(new RegExp(`from-${tone}-500 to-${tone}-600`, "g")) || []).length, 2);
-    assert.match(html, /h-5 w-5 text-white/);
-    assert.match(html, /h-10 w-10 shrink-0/);
+test("overview metrics prioritize static figures, quiet icons and opt-in hover", () => {
+  for (const direction of [undefined, "inbound", "outbound"] as const) {
+    const html = renderToStaticMarkup(<SummaryMetricCard title="Traffic" value="36.26 GiB" hint="Selected range" icon={ArrowDownToLine} direction={direction} />);
+    assert.match(html, /pearl-metric-icon/);
+    assert.match(html, /h-4 w-4/);
+    if (direction) assert.match(html, new RegExp(`data-direction="${direction}"`));
     assert.match(html, /pearl-hover-card/);
     assert.match(html, /36\.26 GiB/);
     assert.match(html, /Selected range/);
-    assert.match(html, /overflow-wrap:anywhere/);
-    assert.doesNotMatch(html, /stagger-card|forwardx-stat-value|role="button"|backdrop-blur|hoverable=/);
+    assert.match(html, /pearl-metric-value/);
+    assert.doesNotMatch(html, /gradient|text-white|stagger-card|forwardx-stat-value|role="button"|backdrop-blur|hoverable=/);
   }
-  const compact = renderToStaticMarkup(<SummaryMetricCard title="Balance" value="¥12" icon={ArrowDownToLine} tone="sky" compact />);
-  assert.match(compact, /text-xl/);
+  const compact = renderToStaticMarkup(<SummaryMetricCard title="Balance" value="¥12" icon={ArrowDownToLine} compact />);
+  assert.match(compact, /data-compact="true"/);
 });
 
-test("operations and finance both use the shared colored overview cards without changing data queries", () => {
+test("operations and finance share overview cards, with color reserved for traffic direction", () => {
   const overview = readFileSync("client/src/pages/Operations.tsx", "utf8");
   const finance = readFileSync("client/src/components/OperationsFinanceSummary.tsx", "utf8");
   for (const source of [overview, finance]) {
     assert.match(source, /<SummaryMetricCard/);
-    for (const tone of ["sky", "emerald", "violet", "amber"]) assert.match(source, new RegExp(`tone:\\s*"${tone}"`));
+    assert.doesNotMatch(source, /tone:\s*"(?:sky|emerald|violet|amber)"/);
   }
+  assert.match(overview, /direction: "inbound"/);
+  assert.match(overview, /direction: "outbound"/);
   assert.doesNotMatch(overview, /size-8 text-primary\/60/);
   assert.match(finance, /summary\.isError \? "—" : card.value/);
 });
@@ -81,7 +83,7 @@ test("missing overview and product hover treatments are covered without moving s
     assert.match(source, pattern);
   }
   for (const file of ["Billing", "Payments", "Hosts", "HostMonitor", "Users", "Rules"]) {
-    assert.match(readFileSync(`client/src/pages/${file}.tsx`, "utf8"), /<Card hoverable className=/);
+    assert.match(readFileSync(`client/src/pages/${file}.tsx`, "utf8"), /<Card hoverable(?: disableEnterAnimation)? className=/);
   }
   const tunnels = readFileSync("client/src/pages/Tunnels.tsx", "utf8");
   assert.equal((tunnels.match(/interactive=\{!isDragging\}/g) || []).length, 2);

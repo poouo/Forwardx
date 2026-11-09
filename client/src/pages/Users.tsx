@@ -56,8 +56,10 @@ import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
+import { openUserBackend } from "@/lib/userImpersonation";
 import {
   ArrowDownToLine,
+  LogIn,
   ArrowRightLeft,
   ArrowUpFromLine,
   ShieldOff,
@@ -361,6 +363,12 @@ function UsersContent() {
   }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions", placeholderData: (previousData) => previousData });
   const allSubscriptions = subscriptionPageQuery.data?.items || [];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
+  const enterUserBackend = trpc.users.enterUserBackend.useMutation();
+  const enterBackend = (userId: number) => {
+    void openUserBackend(() => enterUserBackend.mutateAsync({ userId }))
+      .catch(error => toast.error(error instanceof Error ? error.message : translateText("进入用户后台失败")));
+  };
+
   const updateForwardGroupPermsMutation = trpc.users.setForwardGroupPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -1169,6 +1177,11 @@ function UsersContent() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuItem disabled={u.role === "admin" || u.accountEnabled === false || enterUserBackend.isPending} onSelect={() => enterBackend(u.id)}>
+          <LogIn />
+          <span>{translateText("进入后台")}</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => openRechargeDialog(u)}>
           <WalletCards />
           <span>{translateText("余额充值")}</span>

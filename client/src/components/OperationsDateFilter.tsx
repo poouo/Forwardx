@@ -10,7 +10,7 @@ export default function OperationsDateFilter({ from, to, minimum, today, onFromC
   onApply: () => void; onToday: () => void; onMonth: () => void;
   children?: ReactNode;
 }) {
-  return <div className="grid grid-cols-1 items-end gap-3 rounded-xl border bg-card p-4 sm:grid-cols-2 lg:flex lg:flex-wrap">
+  return <div className="pearl-toolbar grid grid-cols-1 items-end gap-3 rounded-xl border bg-card p-4 sm:grid-cols-2 lg:flex lg:flex-wrap">
     <div className="min-w-0 space-y-2 lg:w-48">
       <Label htmlFor="operations-from" className="block leading-5">{t("开始日期")}</Label>
       <DatePickerInput id="operations-from" min={minimum} max={to} value={from} onChange={onFromChange} allowClear={false} />

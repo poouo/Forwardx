@@ -200,6 +200,7 @@ function SetupGate() {
 
 import { SeamlessMigrationGate } from "./components/SeamlessMigrationGate";
 import RuleTaskNotifications from "./components/RuleTaskNotifications";
+import { UserEntryBoundary } from "./components/UserEntryBoundary";
 
 function App() {
   return (
@@ -208,7 +209,7 @@ function App() {
         <ThemeProvider defaultTheme="light">
           <TooltipProvider>
             <ConfirmDialogProvider>
-              <DatabaseHealthGate>
+              <UserEntryBoundary><DatabaseHealthGate>
                 <SeamlessMigrationGate>
                   <PersonalizationLayer />
                   <Live2DWidgetHost />
@@ -216,7 +217,7 @@ function App() {
                   <RuleTaskNotifications />
                   <SetupGate />
                 </SeamlessMigrationGate>
-              </DatabaseHealthGate>
+              </DatabaseHealthGate></UserEntryBoundary>
             </ConfirmDialogProvider>
           </TooltipProvider>
         </ThemeProvider>

@@ -5886,14 +5886,17 @@ function RulesContent() {
       : compact
       ? "pearl-readout rounded-xl border border-border/50 px-2 py-1.5"
       : "pearl-readout rounded-xl border border-border/50 px-2.5 py-2";
-    const labelClass = inlineEndpoints
-      ? "shrink-0 whitespace-nowrap py-0.5 text-[10px] font-medium leading-4 text-muted-foreground"
-      : "mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground";
-    const valueClass = inlineEndpoints
-      ? "min-w-0 flex-1 truncate text-[11px] leading-4"
-      : compact
-      ? "min-w-0 break-all text-[11px] leading-4"
-      : "min-w-0 break-all text-xs leading-5";
+    const labelClass = cn(
+      "text-xs font-medium leading-4 text-muted-foreground",
+      inlineEndpoints
+        ? "shrink-0 whitespace-nowrap py-0.5"
+        : "mb-1 flex items-center gap-1",
+    );
+    const valueClass = cn(
+      "min-w-0 font-mono font-normal",
+      compact ? "text-[11px] leading-4" : "text-xs leading-5",
+      inlineEndpoints ? "flex-1 truncate" : "break-all",
+    );
 
     return (
       <div className={cn("pearl-transfer min-w-0 font-mono text-xs", inlineEndpoints ? "space-y-1.5" : "rule-standard-transfer-sections")}>
@@ -5910,7 +5913,7 @@ function RulesContent() {
                 title={entry.copyable ? translateText("复制入口地址: {0}", [entry.text]) : entry.text}
               >
                 {!inlineEndpoints && entry.copyable && (
-                  <span className="w-[4ch] shrink-0 text-[10px] leading-4 text-muted-foreground">
+                  <span className="w-[4ch] shrink-0 text-[11px] leading-4 text-muted-foreground">
                     {addressFamily(entry.value) === "ipv6" ? "IPv6" : "IPv4"}
                   </span>
                 )}
@@ -6629,9 +6632,9 @@ function RulesContent() {
     <div className="space-y-6">
       <div className="pearl-page-header flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">{translateText("转发规则")}</h1>
+          <h1 className="text-xl font-semibold sm:text-2xl">{translateText("转发规则")}</h1>
         </div>
-        <div className="responsive-actions grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
+        <div className="responsive-actions pearl-toolbar grid min-w-0 w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
@@ -6848,15 +6851,14 @@ function RulesContent() {
       )}
 
       {/* 转发流量汇总 */}
-      <div className="grid grid-cols-3 gap-1.5 sm:gap-4">
-        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-3 sm:p-4">
+      <div className="rule-traffic-summary grid grid-cols-3 gap-2 sm:gap-4">
+        <Card hoverable disableEnterAnimation className="border-border/60">
+          <CardContent className="relative flex min-w-0 items-center justify-between p-3 sm:gap-3 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
-              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">{translateText("入向流量")}</p>
+              <p className="rule-traffic-title text-xs leading-relaxed text-muted-foreground">{translateText("入向流量")}</p>
               <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <div className="rule-traffic-total flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
                     <span className="sm:hidden">{translateText("总")}</span>
                     <span className="hidden sm:inline">{translateText("累计")}</span>
                   </span>
@@ -6868,11 +6870,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
                     fallbackValue="0 B"
-                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
+                    className="min-w-0 break-words text-base font-semibold tabular-nums [overflow-wrap:anywhere] sm:text-xl"
                   />
                 </div>
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(dailyTrafficTotals.bytesIn)}
@@ -6881,22 +6883,21 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
                     fallbackValue="0 B"
-                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
+                    className="min-w-0 break-words text-xs font-medium tabular-nums text-foreground [overflow-wrap:anywhere]"
                   />
                 </div>
               </div>
             </div>
-            <ArrowDownToLine className="hidden h-6 w-6 shrink-0 text-chart-2 sm:block" />
+            <ArrowDownToLine className="hidden h-4 w-4 shrink-0 text-chart-1 sm:block" />
           </CardContent>
         </Card>
-        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
+        <Card hoverable disableEnterAnimation className="border-border/60">
+          <CardContent className="relative flex min-w-0 items-center justify-between p-3 sm:gap-3 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
-              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">{translateText("出向流量")}</p>
+              <p className="rule-traffic-title text-xs leading-relaxed text-muted-foreground">{translateText("出向流量")}</p>
               <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <div className="rule-traffic-total flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
                     <span className="sm:hidden">{translateText("总")}</span>
                     <span className="hidden sm:inline">{translateText("累计")}</span>
                   </span>
@@ -6908,11 +6909,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
                     fallbackValue="0 B"
-                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
+                    className="min-w-0 break-words text-base font-semibold tabular-nums [overflow-wrap:anywhere] sm:text-xl"
                   />
                 </div>
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(dailyTrafficTotals.bytesOut)}
@@ -6921,22 +6922,21 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
                     fallbackValue="0 B"
-                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
+                    className="min-w-0 break-words text-xs font-medium tabular-nums text-foreground [overflow-wrap:anywhere]"
                   />
                 </div>
               </div>
             </div>
-            <ArrowUpFromLine className="hidden h-6 w-6 shrink-0 text-chart-4 sm:block" />
+            <ArrowUpFromLine className="hidden h-4 w-4 shrink-0 text-chart-2 sm:block" />
           </CardContent>
         </Card>
-        <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
-          <CardContent className="relative flex min-w-0 items-center justify-between p-2 sm:gap-4 sm:p-4">
+        <Card hoverable disableEnterAnimation className="border-border/60">
+          <CardContent className="relative flex min-w-0 items-center justify-between p-3 sm:gap-3 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
-              <p className="whitespace-nowrap text-[10px] text-muted-foreground sm:text-xs">{translateText("连接次数")}</p>
+              <p className="rule-traffic-title text-xs leading-relaxed text-muted-foreground">{translateText("连接次数")}</p>
               <div className="mt-1 grid min-w-0 gap-0.5 sm:mt-0.5 sm:flex sm:flex-wrap sm:items-baseline sm:gap-x-2 sm:gap-y-1">
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <div className="rule-traffic-total flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">
                     <span className="sm:hidden">{translateText("总")}</span>
                     <span className="hidden sm:inline">{translateText("累计")}</span>
                   </span>
@@ -6948,11 +6948,11 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
                     fallbackValue="0"
-                    className="min-w-0 whitespace-nowrap text-[10px] font-semibold tabular-nums sm:truncate sm:text-xl"
+                    className="min-w-0 break-words text-base font-semibold tabular-nums [overflow-wrap:anywhere] sm:text-xl"
                   />
                 </div>
-                <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 sm:inline-flex">
-                  <span className="shrink-0 whitespace-nowrap text-[8px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                  <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">24H</span>
                   <AnimatedStatValue
                     as="span"
                     value={dailyTrafficTotals.connections.toLocaleString(getFormatLocale())}
@@ -6961,12 +6961,12 @@ function RulesContent() {
                     fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
                     mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
                     fallbackValue="0"
-                    className="min-w-0 whitespace-nowrap text-[9px] font-semibold tabular-nums text-foreground sm:truncate sm:text-xs"
+                    className="min-w-0 break-words text-xs font-medium tabular-nums text-foreground [overflow-wrap:anywhere]"
                   />
                 </div>
               </div>
             </div>
-            <Activity className="hidden h-6 w-6 shrink-0 text-chart-3 sm:block" />
+            <Activity className="hidden h-4 w-4 shrink-0 text-muted-foreground sm:block" />
           </CardContent>
         </Card>
       </div>
@@ -7163,6 +7163,7 @@ function RulesContent() {
         <SelfTestDialog
           ruleId={selfTestRule.id}
           ruleName={selfTestRule.name}
+          probeMethod={ruleLatencyProbeMethodForRule(selfTestRuleDetail || selfTestRule)}
           sourceLabel={selfTestLinkTestNodeData.sourceLabel}
           targetLabel={selfTestLinkTestNodeData.targetLabel}
           nodeMeta={selfTestLinkTestNodeData.nodeMeta}
@@ -8446,6 +8447,7 @@ function RulesContent() {
 function SelfTestDialog({
   ruleId,
   ruleName,
+  probeMethod,
   sourceLabel,
   targetLabel,
   nodeMeta,
@@ -8455,6 +8457,7 @@ function SelfTestDialog({
 }: {
   ruleId: number;
   ruleName: string;
+  probeMethod?: "tcping" | "ping";
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, any>;
@@ -8571,6 +8574,8 @@ function SelfTestDialog({
           <DialogDescription>{ruleName}</DialogDescription>
         </DialogHeader>
 
+        {probeMethod === "ping" && <p className="text-xs leading-5 text-muted-foreground">{translateText("UDP 规则使用 ICMP Ping 探测目标主机，不检测 UDP 端口或 HY2 握手。")}</p>}
+
         <LinkTestProbeView
           parsed={parsedMessage}
           fallbackLatencyMs={!awaitingNewTest && typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
@@ -8586,6 +8591,8 @@ function SelfTestDialog({
           mobileStacked
           wrapDesktopRows
         />
+
+        {!isTesting && !isSuccess && parsedMessage.message && <p role="status" className="break-words text-sm leading-6 text-destructive">{parsedMessage.message}</p>}
 
         <DialogFooter className="gap-2">
           <Button
