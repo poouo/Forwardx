@@ -1,5 +1,4 @@
 {
-  "UDP 规则使用 ICMP Ping 探测目标主机，不检测 UDP 端口或 HY2 握手。": "UDP rules use ICMP Ping to probe the target host, not the UDP port or HY2 handshake.",
   "忘记密码？": "Forgot password?",
   "找回密码": "Recover password",
   "设置新密码": "Set a new password",

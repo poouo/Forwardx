@@ -7163,7 +7163,6 @@ function RulesContent() {
         <SelfTestDialog
           ruleId={selfTestRule.id}
           ruleName={selfTestRule.name}
-          probeMethod={ruleLatencyProbeMethodForRule(selfTestRuleDetail || selfTestRule)}
           sourceLabel={selfTestLinkTestNodeData.sourceLabel}
           targetLabel={selfTestLinkTestNodeData.targetLabel}
           nodeMeta={selfTestLinkTestNodeData.nodeMeta}
@@ -8447,7 +8446,6 @@ function RulesContent() {
 function SelfTestDialog({
   ruleId,
   ruleName,
-  probeMethod,
   sourceLabel,
   targetLabel,
   nodeMeta,
@@ -8457,7 +8455,6 @@ function SelfTestDialog({
 }: {
   ruleId: number;
   ruleName: string;
-  probeMethod?: "tcping" | "ping";
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, any>;
@@ -8574,8 +8571,6 @@ function SelfTestDialog({
           <DialogDescription>{ruleName}</DialogDescription>
         </DialogHeader>
 
-        {probeMethod === "ping" && <p className="text-xs leading-5 text-muted-foreground">{translateText("UDP 规则使用 ICMP Ping 探测目标主机，不检测 UDP 端口或 HY2 握手。")}</p>}
-
         <LinkTestProbeView
           parsed={parsedMessage}
           fallbackLatencyMs={!awaitingNewTest && typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
@@ -8591,8 +8586,6 @@ function SelfTestDialog({
           mobileStacked
           wrapDesktopRows
         />
-
-        {!isTesting && !isSuccess && parsedMessage.message && <p role="status" className="break-words text-sm leading-6 text-destructive">{parsedMessage.message}</p>}
 
         <DialogFooter className="gap-2">
           <Button

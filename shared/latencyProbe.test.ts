@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   isRuleLatencyReportMethodCompatible,
@@ -36,15 +35,6 @@ test("direct Realm UDP and entry-group self-tests dispatch ICMP even with a TCP-
   assert.ok(entry && "method" in entry);
   assert.equal(entry.method, "ping");
   assert.equal(entry?.protocol, "ping");
-});
-
-test("rule self-test dialog identifies ICMP and exposes real failure details", () => {
-  const source = readFileSync("client/src/pages/Rules.tsx", "utf8");
-  const dialog = source.slice(source.indexOf("function SelfTestDialog("));
-  assert.match(dialog, /probeMethod === "ping"/);
-  assert.match(dialog, /UDP 规则使用 ICMP Ping 探测目标主机，不检测 UDP 端口或 HY2 握手。/);
-  assert.match(dialog, /!isTesting && !isSuccess && parsedMessage\.message/);
-  assert.match(dialog, /role="status"[^>]*>\{parsedMessage\.message\}/);
 });
 
 test("probe count normalization distinguishes legacy rows from explicit zero-success reports", () => {
