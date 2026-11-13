@@ -34,7 +34,7 @@ export function TunnelCardRoute({ summary, name, mode, children }: { summary: st
     <DialogTrigger asChild>
     <button type="button" aria-label={t("链路详情")} className="flex h-10 w-full min-w-0 items-center gap-2 rounded-md bg-muted/25 px-2.5 text-left text-xs hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <span className="min-w-0 flex-1 truncate">{summary}</span>
-      <Badge variant="outline" className="shrink-0 text-[10px]">{mode}</Badge>
+      <Badge variant="outline" className="shrink-0 text-[11px]">{mode}</Badge>
       <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
     </button>
     </DialogTrigger>
@@ -61,7 +61,7 @@ export function TunnelCardLatency({ items }: { items: TunnelLatencyItem[] }) {
         ? <span className="shrink-0 tabular-nums">{Math.min(...values)}{Math.min(...values) !== Math.max(...values) ? `–${Math.max(...values)}` : ""}ms</span>
         : <LatencyRating latencyMs={summary?.latencyMs} isTimeout={summary?.isTimeout || (!summary && details.length > 0 && timeouts === details.length)} emptyText={t("未测试")} timeoutText={t("超时")} icon="none" className="shrink-0" />}
       {details.length > 0 && <SummaryDetails label={t("延迟明细")} trigger={
-        <button type="button" aria-label={t("延迟明细")} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-border/50 px-1.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <button type="button" aria-label={t("延迟明细")} className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-border/50 px-1.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {timeouts > 0 && <span role="img" aria-label={t("{0} 项超时", [timeouts])} className="h-1.5 w-1.5 rounded-full bg-destructive" />}
           {t("{0} 条明细", [details.length])}
           <ChevronRight className="h-3 w-3" aria-hidden="true" />

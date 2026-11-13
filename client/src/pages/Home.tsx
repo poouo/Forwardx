@@ -207,13 +207,13 @@ function TrafficTooltipContent({ active, payload, label }: any) {
       <p className="mb-1.5 text-xs text-muted-foreground">{data.fullLabel || label}</p>
       <div className="space-y-1">
         <p className="flex items-center gap-1.5 text-xs tabular-nums">
-          <span className="h-2 w-2 rounded-full bg-chart-1" />
-          <span className="text-muted-foreground">{translateText("入站")}</span>
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--traffic-in)" }} />
+          <span className="text-muted-foreground">{translateText("入向")}</span>
           <span className="ml-auto font-semibold">{formatBytes(data.bytesIn)}</span>
         </p>
         <p className="flex items-center gap-1.5 text-xs tabular-nums">
-          <span className="h-2 w-2 rounded-full bg-chart-2" />
-          <span className="text-muted-foreground">{translateText("出站")}</span>
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--traffic-out)" }} />
+          <span className="text-muted-foreground">{translateText("出向")}</span>
           <span className="ml-auto font-semibold">{formatBytes(data.bytesOut)}</span>
         </p>
       </div>
@@ -318,7 +318,7 @@ function TrafficPieSection({
             <BarChart3 className="h-4 w-4" />
             {title}
           </h3>
-          <span className="text-[10px] text-muted-foreground/70">{translateText("近 24H")}</span>
+          <span className="text-[11px] text-muted-foreground/70">{translateText("近 24H")}</span>
         </div>
         {loading && chartData.length === 0 ? (
           <TrafficPieLoadingState />
@@ -358,7 +358,7 @@ function TrafficPieSection({
                   <text x="50%" y="46%" textAnchor="middle" dominantBaseline="central" className="fill-foreground text-sm font-semibold tabular-nums">
                     {formatBytes(total)}
                   </text>
-                  <text x="50%" y="59%" textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground text-[10px]">{translateText("合计")}</text>
+                  <text x="50%" y="59%" textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground text-[11px]">{translateText("合计")}</text>
                   <RTooltip content={<PieTooltipContent />} wrapperStyle={{ pointerEvents: "none" }} />
                 </PieChart>
               </ResponsiveContainer>
@@ -480,7 +480,7 @@ export function DashboardStatusOverview({ isAdmin, loading, onlineHosts, totalHo
             </div>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm text-muted-foreground">{translateText("用户角色")}</span>
-              <Badge variant="secondary" className="px-2 py-0.5 text-[10px]">
+              <Badge variant="secondary" className="px-2 py-0.5 text-[11px]">
                 {isAdmin ? <><Shield className="mr-1 h-3 w-3" />{translateText("管理员")}</> : translateText("普通用户")}
               </Badge>
             </div>
@@ -645,10 +645,10 @@ function DashboardContent() {
           index={isAdmin ? 1 : 0}
         />
         <DashboardStatCard
-          title={translateText("入站流量")}
+          title={translateText("入向流量")}
           direction="inbound"
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
-          subtitle={translateText("累计入站")}
+          subtitle={translateText("累计入向")}
           icon={ArrowDownToLine}
           loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficIn"
@@ -656,10 +656,10 @@ function DashboardContent() {
           index={isAdmin ? 2 : 1}
         />
         <DashboardStatCard
-          title={translateText("出站流量")}
+          title={translateText("出向流量")}
           direction="outbound"
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
-          subtitle={translateText("累计出站")}
+          subtitle={translateText("累计出向")}
           icon={ArrowUpFromLine}
           loading={trafficTotalsLoading || !trafficTotals}
           cacheKey="home.stats.totalTrafficOut"
@@ -898,16 +898,16 @@ function DashboardContent() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <BarChart3 className="h-4 w-4" />{translateText("近 24H 流量展示")}<span className="text-[10px] font-normal text-muted-foreground/60">{translateText("每小时汇总")}</span>
+              <BarChart3 className="h-4 w-4" />{translateText("近 24H 流量展示")}<span className="text-xs font-normal text-muted-foreground/80">{translateText("每小时汇总")}</span>
             </CardTitle>
-            <div className="flex items-center gap-3 text-[10px]">
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-chart-1" />{translateText("入站")}</span>
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-chart-2" />{translateText("出站")}</span>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: "var(--traffic-in)" }} />{translateText("入向")}</span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-0 w-4 border-t-2 border-dashed" style={{ borderColor: "var(--traffic-out)" }} />{translateText("出向")}</span>
             </div>
           </div>
-          <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/60">
+          <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground/80">
             <Info className="h-3 w-3" />{translateText("每小时汇总一次可见规则流量。")}</p>
         </CardHeader>
         <CardContent>
@@ -921,26 +921,27 @@ function DashboardContent() {
                 <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="trafficInGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.02} />
+                      <stop offset="5%" stopColor="var(--traffic-in)" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="var(--traffic-in)" stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="trafficOutGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.02} />
+                      <stop offset="5%" stopColor="var(--traffic-out)" stopOpacity={0.18} />
+                      <stop offset="95%" stopColor="var(--traffic-out)" stopOpacity={0.01} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid vertical={false} strokeDasharray="3 5" stroke="var(--color-border)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={60} interval="preserveStartEnd" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} minTickGap={60} interval="preserveStartEnd" />
                   <YAxis
-                    tick={{ fontSize: 9 }}
-                    tickFormatter={(value) => formatBytes(value)}
-                    width={56}
+                    tick={{ fontSize: 11 }}
+                    // A non-breaking space keeps "5.76 GB" on one line; Recharts wraps ticks at spaces.
+                    tickFormatter={(value) => formatBytes(value).replace(" ", "\u00A0")}
+                    width={68}
                     domain={[0, (dataMax: number) => Math.max(1024, Math.ceil((dataMax || 0) * 1.2))]}
                     allowDecimals={false}
                   />
                   <RTooltip content={<TrafficTooltipContent />} cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }} />
-                  <Area isAnimationActive={motionEnabled} animationDuration={600} type="monotone" dataKey="bytesIn" name={translateText("入站")} stroke="var(--chart-1)" strokeWidth={2} fill="url(#trafficInGradient)" dot={false} />
-                  <Area isAnimationActive={motionEnabled} animationDuration={600} type="monotone" dataKey="bytesOut" name={translateText("出站")} stroke="var(--chart-2)" strokeWidth={2} fill="url(#trafficOutGradient)" dot={false} />
+                  <Area isAnimationActive={motionEnabled} animationDuration={600} type="monotone" dataKey="bytesIn" name={translateText("入向")} stroke="var(--traffic-in)" strokeWidth={2} fill="url(#trafficInGradient)" dot={false} />
+                  <Area isAnimationActive={motionEnabled} animationDuration={600} type="monotone" dataKey="bytesOut" name={translateText("出向")} stroke="var(--traffic-out)" strokeWidth={2} strokeDasharray="6 4" fill="url(#trafficOutGradient)" dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             )}

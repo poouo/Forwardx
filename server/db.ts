@@ -221,6 +221,28 @@ async function backfillRateLimitsToMbps() {
   console.log("[Database] Backfilled tunnel rate limits from legacy byte-rate storage to Mbps values");
 }
 
+/** Releases before the integer port check could store 80.5 as a port. SQLite
+ * keeps such a value as REAL, and an Agent that receives it cannot decode its
+ * desired state at all. MySQL and PostgreSQL integer columns never hold one. */
+async function repairFractionalPorts() {
+  if (getDatabaseKind() !== "sqlite") return;
+  const q = quoteIdentifier;
+  const targets: Array<[string, string[]]> = [
+    ["forward_rules", ["sourcePort", "targetPort", "gostRelayPort", "tunnelExitPort", "udpOverTcpPort"]],
+    ["tunnels", ["listenPort"]],
+  ];
+  let repaired = 0;
+  for (const [table, columns] of targets) {
+    for (const column of columns) {
+      const result = await executeRaw(
+        `UPDATE ${q(table)} SET ${q(column)} = CAST(${q(column)} AS INTEGER) WHERE typeof(${q(column)}) = 'real'`,
+      );
+      repaired += rawAffectedRows(result);
+    }
+  }
+  if (repaired > 0) console.warn(`[Database] Truncated fractional port values to integers rows=${repaired}`);
+}
+
 async function backfillLinkManagementSortOrder() {
   const marker = "link-management-sort-order-v1";
   if (await getSetting(marker)) return;
@@ -437,6 +459,9 @@ async function initializeDatabaseWithBudget() {
     }));
     await runInitializationStep("backfill-link-order", () => backfillLinkManagementSortOrder().catch((error) => {
       console.warn("[Database] Link management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
+    }));
+    await runInitializationStep("repair-fractional-ports", () => repairFractionalPorts().catch((error) => {
+      console.warn("[Database] Fractional port repair skipped:", error instanceof Error ? error.message : String(error));
     }));
     await runInitializationStep("backfill-rule-order", () => backfillForwardRuleSortOrder().catch((error) => {
       console.warn("[Database] Forward rule sort order backfill skipped:", error instanceof Error ? error.message : String(error));

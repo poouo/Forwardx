@@ -174,7 +174,7 @@ export default function Announcements() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="text-sm leading-6 text-foreground/85" dangerouslySetInnerHTML={renderAnnouncementHtml(item.content || "")} />
+                    <div className="forwardx-rich-text text-sm leading-6 text-foreground/85" dangerouslySetInnerHTML={renderAnnouncementHtml(item.content || "")} />
                   </CardContent>
                 </Card>
               );
@@ -276,7 +276,7 @@ export default function Announcements() {
               <DialogDescription>{describeContentFormat(form.content)}{translateText(" 预览。")}</DialogDescription>
             </DialogHeader>
             <div
-              className="max-h-[60svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
+              className="forwardx-rich-text max-h-[60svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
               dangerouslySetInnerHTML={renderAnnouncementHtml(form.content)}
             />
             <DialogFooter>

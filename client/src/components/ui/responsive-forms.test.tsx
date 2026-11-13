@@ -191,7 +191,7 @@ test("metered resource editor keeps both switches inside its own scroll body", (
 
 test("mobile dashboard pairs inbound/outbound cards and lays out personal consumption as two by two", () => {
   const home = source("pages/Home.tsx");
-  const traffic = section("pages/Home.tsx", 'title={translateText("入站流量")}', '<MobileAppSettings');
+  const traffic = section("pages/Home.tsx", 'title={translateText("入向流量")}', '<MobileAppSettings');
   assert.doesNotMatch(traffic, /col-span-2/);
   assert.match(home, /className=\{isAdmin \? undefined : "col-span-2 lg:col-span-1"\}/);
   const consumption = section("pages/Home.tsx", 'translateText("我的消耗")', 'translateText("我的账户状态")');

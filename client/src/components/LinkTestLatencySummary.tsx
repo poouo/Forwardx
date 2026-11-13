@@ -899,7 +899,7 @@ export function LinkTestProbeView({
     );
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
-        <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
+        <div className="flex h-5 items-center justify-center text-[11px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
           {renderFlag(meta)}
         </div>
         {tooltipContent ? (

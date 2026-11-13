@@ -173,7 +173,7 @@ export function SlidingTabsList<T extends string>({
               <span className="whitespace-nowrap">{item.label}</span>
               {item.badge !== undefined && item.badge !== null && (
                 <span className={cn(
-                  "ml-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold leading-none text-muted-foreground transition-colors group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary",
+                  "ml-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[11px] font-semibold leading-none text-muted-foreground transition-colors group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary",
                   badgeClassName,
                 )}>
                   {item.badge}

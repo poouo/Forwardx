@@ -5671,6 +5671,17 @@ function telegramUpdateQueueKey(update: TelegramUpdate) {
 
 async function processTelegramUpdate(update: TelegramUpdate) {
   if (!isDiscordBotContext() && !(await getTelegramSettings()).enabled) return;
+  // Replies carry one-time login links, password resets and account data, and
+  // they go to the chat the update came from. In a group every member would
+  // read them, so the Telegram bot only talks in private chats, the same rule
+  // the Discord gateway applies to guild channels.
+  const chatType = update.message?.chat.type || update.callback_query?.message?.chat.type;
+  if (!isDiscordBotContext() && chatType && chatType !== "private") {
+    const notice = "为保护账号安全，请在与机器人的私聊中使用 ForwardX 指令。";
+    if (update.callback_query) await answerCallback(update.callback_query.id, notice).catch(() => undefined);
+    else if (update.message?.text?.trim().startsWith("/")) await sendMessage(update.message.chat.id, notice).catch(() => undefined);
+    return;
+  }
   try {
     const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id || update.update_id;
     await withKeyedTaskLock(`bot-conversation:${isDiscordBotContext() ? "discord" : "telegram"}:${chatId}`, async () => {

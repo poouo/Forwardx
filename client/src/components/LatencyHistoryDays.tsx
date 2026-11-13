@@ -147,7 +147,7 @@ export function LatencyHistoryDayStrip({ days, selectedDay, onSelect, samples = 
         <p>{t("平均延迟")}：{summary.latencyWeight ? `${Math.round(summary.sum / summary.latencyWeight)} ms` : "—"}</p>
         <p>{t("最小延迟")}：{summary.min == null ? "—" : `${summary.min} ms`} · {t("最大延迟")}：{summary.max == null ? "—" : `${summary.max} ms`}</p>
       </>}
-      <p className="text-[10px] opacity-75">{t("按上报样本失败率：绿色 ≤1%，黄色 ≤5%，红色 >5%。")}</p>
+      <p className="text-[11px] opacity-75">{t("按上报样本失败率：绿色 ≤1%，黄色 ≤5%，红色 >5%。")}</p>
       </> };
     })} />;
 }

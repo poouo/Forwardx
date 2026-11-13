@@ -85,7 +85,7 @@ export const portsRulesRouter = router({
       hostId: z.number().int().positive().optional(),
       forwardGroupId: z.number().int().positive().optional(),
       tunnelId: z.number().nullable().optional(),
-      sourcePort: z.number().min(1).max(65535),
+      sourcePort: z.number().int().min(1).max(65535),
       excludeRuleId: z.number().optional(),
       protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
     }).refine(

@@ -46,7 +46,7 @@ export function LatencyRating({
     <span className={cn("inline-flex items-center gap-1 text-xs", rating.className, className)}>
       {icon === "activity" ? <Activity className="h-3 w-3" /> : null}
       <span className="tabular-nums">{latencyMs}ms</span>
-      <span className="rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+      <span className="rounded-full border border-current/20 px-1.5 py-0.5 text-[11px] font-medium leading-none">
         {rating.label}
       </span>
     </span>

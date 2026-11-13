@@ -1,3 +1,4 @@
 * text=auto
-plugins/bbr-manager/manage.sh text eol=lf
+# Shell scripts run on Linux hosts and inside Docker builds; CRLF breaks them.
+*.sh text eol=lf
 

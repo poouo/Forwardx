@@ -215,7 +215,7 @@ function ServiceCard({
               </span>
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium" title={service.name}>{service.name}</p>
-                <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{serviceMethodLabel(service)}</Badge>
+                <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[11px] uppercase">{serviceMethodLabel(service)}</Badge>
               </div>
             </div>
           </div>
@@ -534,7 +534,7 @@ export default function HostProbeServiceManager({
           </div> : <div className="overflow-x-auto"><Table>
             <TableHeader><TableRow><TableHead>{translateText("服务")}</TableHead><TableHead>{translateText("阈值 (%)")}</TableHead><TableHead>{translateText("主机范围")}</TableHead><TableHead>{translateText("连续超限时长（秒）")}</TableHead><TableHead>{translateText("状态")}</TableHead><TableHead className="text-right">{translateText("操作")}</TableHead></TableRow></TableHeader>
             <TableBody>{filteredResourceServices.map(service => <TableRow key={service.id}>
-              <TableCell><div className="font-medium">{service.name}</div><Badge variant="outline" className="mt-1 text-[10px]">{serviceMethodLabel({ ...service, resourceAlert: true })}</Badge></TableCell>
+              <TableCell><div className="font-medium">{service.name}</div><Badge variant="outline" className="mt-1 text-[11px]">{serviceMethodLabel({ ...service, resourceAlert: true })}</Badge></TableCell>
               <TableCell className="tabular-nums">{service.threshold}%</TableCell><TableCell className="max-w-[360px] truncate" title={scopeText(service, hostsById)}>{scopeText(service, hostsById)}</TableCell><TableCell>{service.durationSeconds}S</TableCell>
               <TableCell><ServiceEnabledSwitch service={{ ...service, resourceAlert: true, isEnabled: service.enabled }} onToggle={(_, enabled) => toggleResourceMutation.mutateAsync({ id: service.id, enabled })} /></TableCell>
               <TableCell><ServiceActionButtons service={service} onEdit={() => openResourceEdit(service)} onDelete={() => deleteResource(service)} /></TableCell>
@@ -554,7 +554,7 @@ export default function HostProbeServiceManager({
               <RadioTower className="mb-3 h-9 w-9 opacity-40" />
               <p className="text-sm">{isTextFiltered && serviceItems.length > 0 ? translateText("未找到匹配服务") : translateText("暂无服务")}</p>
               {isTextFiltered && serviceItems.length > 0 && (
-                <p className="mt-1 text-xs text-muted-foreground/60">{translateText("调整筛选内容或清空搜索")}</p>
+                <p className="mt-1 text-xs text-muted-foreground/80">{translateText("调整筛选内容或清空搜索")}</p>
               )}
             </div>
           ) : viewMode === "card" ? (
@@ -636,7 +636,7 @@ export default function HostProbeServiceManager({
                           <Activity className="h-4 w-4 text-muted-foreground" />
                           <div>
                             <div className="font-medium">{service.name}</div>
-                            <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{serviceMethodLabel(service)}</Badge>
+                            <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[11px] uppercase">{serviceMethodLabel(service)}</Badge>
                           </div>
                         </div>
                       </TableCell>

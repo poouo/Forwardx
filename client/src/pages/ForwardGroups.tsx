@@ -2086,7 +2086,7 @@ export function ForwardGroupsContent({
               <Layers3 className="h-8 w-8 opacity-40" />
             </div>
             <p className="text-lg font-medium">{emptyTitle}</p>
-            <p className="mt-1 text-sm text-muted-foreground/60">
+            <p className="mt-1 text-sm text-muted-foreground/80">
               {emptyDescription}
             </p>
           </CardContent>
@@ -2432,7 +2432,7 @@ export function ForwardGroupsContent({
                     <div className="text-xs text-muted-foreground">PROXY Protocol</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={advancedSettingsConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
+                    <Badge variant={advancedSettingsConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[11px] font-normal">
                       {advancedSettingsConfigured ? translateText("已配置") : translateText("可选")}
                     </Badge>
                     <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${advancedSettingsOpen ? "rotate-90" : ""}`} />

@@ -1474,7 +1474,7 @@ function DashboardLayoutContent({
           {pendingSidebar ? <SidebarPresentation groups={pendingSidebar} path={currentPath} /> : <>
           {primaryMenuItems.length > 0 && (
             <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/80 uppercase tracking-wider">{translateText("主菜单")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(primaryMenuItems)}
               </SidebarMenu>
@@ -1483,7 +1483,7 @@ function DashboardLayoutContent({
 
           {managementMenuItems.length > 0 && (
             <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("管理")}</SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/80 uppercase tracking-wider">{translateText("管理")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(managementMenuItems)}
               </SidebarMenu>
@@ -1492,7 +1492,7 @@ function DashboardLayoutContent({
 
           {otherMenuItems.length > 0 && (
             <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">{translateText("其他")}</SidebarGroupLabel>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/80 uppercase tracking-wider">{translateText("其他")}</SidebarGroupLabel>
               <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
                 {renderSidebarItems(otherMenuItems)}
               </SidebarMenu>
@@ -1563,7 +1563,7 @@ function DashboardLayoutContent({
                       <Progress value={upgradeProgress.percent} className="h-1" />
                       <div className="space-y-1">
                         {upgradeProgress.steps.map((step) => (
-                          <div key={step.label} className="flex min-w-0 items-center gap-1.5 text-[10px] leading-4 text-primary/75">
+                          <div key={step.label} className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-primary/75">
                             {step.done ? (
                               <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
                             ) : step.active ? (
@@ -2247,7 +2247,7 @@ function DashboardLayoutContent({
           </DialogTitle>
           <DialogDescription>{translateText("关闭后可在公告中查看。")}</DialogDescription>
           <div
-            className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
+            className="forwardx-rich-text max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml(popupAnnouncement?.content || "") }}
           />
           <DialogFooter>
@@ -2268,7 +2268,7 @@ function DashboardLayoutContent({
             ? translateText("请留意以下重要通知。")
             : <>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</>}</DialogDescription>
           <div
-            className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
+            className="forwardx-rich-text max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml((getLanguage() === "en" ? upgradeAnnouncement?.englishContent || upgradeAnnouncement?.content : upgradeAnnouncement?.content) || "") }}
           />
           <DialogFooter>

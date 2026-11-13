@@ -149,17 +149,17 @@ function TokenStatusBadge({ tokenItem }: { tokenItem: any }) {
   const host = tokenItem.host;
   if (!host) {
     return (
-      <Badge variant="secondary" className="shrink-0 gap-1.5 text-[10px]">
+      <Badge variant="secondary" className="shrink-0 gap-1.5 text-[11px]">
         <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />{translateText("未绑定")}</Badge>
     );
   }
 
   const isOnline = isTokenHostOnline(host);
   return isOnline ? (
-    <Badge className="shrink-0 gap-1.5 border-chart-2/25 bg-chart-2/10 text-chart-2 text-[10px]">
+    <Badge className="shrink-0 gap-1.5 border-chart-2/25 bg-chart-2/10 text-chart-2 text-[11px]">
       <span className="h-2 w-2 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />{translateText("在线")}</Badge>
   ) : (
-    <Badge className="shrink-0 gap-1.5 border-destructive/25 bg-destructive/10 text-destructive text-[10px]">
+    <Badge className="shrink-0 gap-1.5 border-destructive/25 bg-destructive/10 text-destructive text-[11px]">
       <span className="h-2 w-2 rounded-full bg-destructive shadow-sm shadow-destructive/50" />{translateText("离线")}</Badge>
   );
 }
@@ -864,7 +864,7 @@ export default function AgentTokenManager({
                 <Key className="h-8 w-8 opacity-40" />
               </div>
               <p className="text-lg font-medium">{isTextFiltered && tokenItems.length > 0 ? translateText("未找到匹配 Token") : translateText("暂无 Token")}</p>
-              <p className="text-sm mt-1 text-muted-foreground/60">
+              <p className="text-sm mt-1 text-muted-foreground/80">
                 {isTextFiltered && tokenItems.length > 0 ? translateText("调整筛选内容或清空搜索") : translateText("添加主机后会生成 Agent 安装命令")}
               </p>
               {showCreateButton && (

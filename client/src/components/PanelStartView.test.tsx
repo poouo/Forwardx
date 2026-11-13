@@ -50,7 +50,7 @@ test("refresh retains full inert navigation and hides collapsed text, without da
     assert.match(html, /data-state="collapsed"/);
     assert.match(html, /class="sr-only">主机管理/);
     assert.match(html, /aria-disabled="true"/);
-    assert.doesNotMatch(html, /href="\/settings"|入站流量|出站流量|运行状态/);
+    assert.doesNotMatch(html, /href="\/settings"|入向流量|出向流量|入站流量|出站流量|运行状态/);
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else Reflect.deleteProperty(globalThis, "window");
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument); else Reflect.deleteProperty(globalThis, "document");

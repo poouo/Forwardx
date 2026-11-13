@@ -385,10 +385,10 @@ function PublicHostCard({
           <div className="flex min-w-0 items-center gap-2">
             <span className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
             <span className="min-w-0 truncate text-sm font-semibold" title={host.name}>{host.name || "-"}</span>
-            <span className="shrink-0 rounded border border-border/50 bg-background/40 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
+            <span className="shrink-0 rounded border border-border/50 bg-background/40 px-1.5 py-0.5 font-mono text-[11px] leading-none text-muted-foreground">
               {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
             </span>
-            <Badge variant="outline" className={`ml-auto shrink-0 text-[10px] ${isOnline ? "border-emerald-500/30 text-emerald-600" : "border-destructive/30 text-destructive"}`}>
+            <Badge variant="outline" className={`ml-auto shrink-0 text-[11px] ${isOnline ? "border-emerald-500/30 text-emerald-600" : "border-destructive/30 text-destructive"}`}>
               {isOnline ? translateText("在线") : translateText("离线")}
             </Badge>
           </div>
@@ -433,13 +433,13 @@ function PublicHostCard({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" />{translateText(" 入站")}</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" />{translateText(" 入向")}</span>
               <span className="font-medium tabular-nums">{formatNetworkSpeed(metric?.networkSpeedIn)}</span>
             </div>
           </div>
           <div className="rounded-md border border-border/40 bg-muted/20 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" />{translateText(" 出站")}</span>
+              <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" />{translateText(" 出向")}</span>
               <span className="font-medium tabular-nums">{formatNetworkSpeed(metric?.networkSpeedOut)}</span>
             </div>
           </div>
@@ -502,7 +502,7 @@ function PublicHostListResourceMetric({
       </div>
       <Progress value={progressValue} className={progressClass} />
       {detail && (
-        <div className="truncate text-[10px] leading-none text-muted-foreground/70" title={detail}>
+        <div className="truncate text-[11px] leading-none text-muted-foreground/70" title={detail}>
           {detail}
         </div>
       )}
@@ -585,7 +585,7 @@ function PublicHostTable({
                     <div className="min-w-0 space-y-1">
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name || "-"}</span>
-                        <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
+                        <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[11px] leading-none text-muted-foreground">
                           {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                         </span>
                       </div>
@@ -664,7 +664,7 @@ function ServiceChartTooltip({ active, payload, label, services }: any) {
                   {counts.isTimeout ? translateText("超时") : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
                 </span>
                 {counts.probeCount > 1 && counts.probeSuccesses < counts.probeCount ? (
-                  <span className="block text-[10px] font-normal text-muted-foreground">{translateText("丢包 ")}{counts.probeCount - counts.probeSuccesses}/{counts.probeCount}
+                  <span className="block text-[11px] font-normal text-muted-foreground">{translateText("丢包 ")}{counts.probeCount - counts.probeSuccesses}/{counts.probeCount}
                   </span>
                 ) : null}
               </span>
@@ -818,10 +818,10 @@ function HostMonitorDetail({
           <div className="mt-1"><HostRegionBadge host={detailHost} compact /></div>
         </div>
         <DetailInfoItem label={translateText("版本")} value={detailHost?.agentVersion ? `v${detailHost.agentVersion}` : translateText("未上报")} />
-        <DetailInfoItem label={translateText("实时入站")} value={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} />
-        <DetailInfoItem label={translateText("实时出站")} value={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} />
-        <DetailInfoItem label={translateText("累计入站")} value={formatBytes(totalIn)} />
-        <DetailInfoItem label={translateText("累计出站")} value={formatBytes(totalOut)} />
+        <DetailInfoItem label={translateText("实时入向")} value={formatOptionalBytesPerSecond(metric?.networkSpeedIn)} />
+        <DetailInfoItem label={translateText("实时出向")} value={formatOptionalBytesPerSecond(metric?.networkSpeedOut)} />
+        <DetailInfoItem label={translateText("累计入向")} value={formatBytes(totalIn)} />
+        <DetailInfoItem label={translateText("累计出向")} value={formatBytes(totalOut)} />
         <DetailInfoItem label={translateText("到期时间")} value={formatMonitorDate(detailHost?.stoppedAt)} />
         <DetailInfoItem label={translateText("最后上报")} value={formatFullDateTime(metric?.recordedAt || detailHost?.lastHeartbeat)} />
       </div>

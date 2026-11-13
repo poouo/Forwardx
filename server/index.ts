@@ -34,6 +34,13 @@ import { createThemeUploadBodyParser } from "./themeUpload";
 
 installPanelLogger();
 
+// Express 4 does not catch a rejected async route handler, and Node ends the
+// process on an unhandled rejection by default. One missed catch must not take
+// the panel down for every user and Agent: log it and keep serving.
+process.on("unhandledRejection", (reason) => {
+  console.error("[Process] Unhandled promise rejection:", reason instanceof Error ? reason.stack || reason.message : reason);
+});
+
 const serverDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {

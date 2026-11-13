@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 
 export function PlanTrafficModeBadge({ mode }: { mode?: unknown }) {
   const label = normalizePlanTrafficMode(mode) === "outbound" ? t("单向（仅出向）") : t("双向合计");
-  return <Badge variant="outline" className="shrink-0 text-[10px] font-normal" title={`${t("流量计算方式")}: ${label}`}>{label}</Badge>;
+  return <Badge variant="outline" className="shrink-0 text-[11px] font-normal" title={`${t("流量计算方式")}: ${label}`}>{label}</Badge>;
 }
 
 export function PlanTrafficModeField({ value, onChange }: { value: PlanTrafficMode; onChange: (value: PlanTrafficMode) => void }) {

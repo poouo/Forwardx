@@ -122,7 +122,7 @@ function ChartTooltip({ active, payload, label, services, allServices }: any) {
                   {raw?.isTimeout ? (service.method === "url" ? translateText("请求失败") : translateText("超时")) : typeof raw?.latencyMs === "number" ? `${raw.latencyMs}ms` : "--"}
                 </span>
                 {Number(raw?.probeCount) > 1 && Number(raw?.probeSuccesses) < Number(raw?.probeCount) ? (
-                  <span className="block text-[10px] font-normal text-muted-foreground">
+                  <span className="block text-[11px] font-normal text-muted-foreground">
                     {service.method === "ping" ? translateText("Ping 丢包") : translateText("连接失败")} {Number(raw.probeCount) - Number(raw.probeSuccesses)}/{Number(raw.probeCount)}
                   </span>
                 ) : null}

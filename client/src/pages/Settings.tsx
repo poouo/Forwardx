@@ -953,7 +953,7 @@ function PanelLogsSection() {
               {levelTabs.map((tab) => (
                 <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 gap-1.5 text-xs">
                   {tab.label}
-                  <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">{tab.count}</span>
+                  <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">{tab.count}</span>
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -3423,10 +3423,10 @@ function PersonalizationSettingsSection() {
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <p className="max-w-full truncate text-sm font-medium">{page.name}</p>
-                      <Badge variant="outline" className="shrink-0 text-[10px]">
+                      <Badge variant="outline" className="shrink-0 text-[11px]">
                         {page.visibility === "admin" ? translateText("仅管理员") : translateText("所有用户")}
                       </Badge>
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                      <Badge variant="secondary" className="shrink-0 text-[11px]">
                         {page.openMode === "external" ? translateText("新窗口") : translateText("嵌入")}
                       </Badge>
                     </div>
@@ -4831,7 +4831,7 @@ function SystemInfoSection() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-sm font-medium">{translateText("服务器文件路径")}</p>
-                      <Badge variant={panelSslPathActive ? "default" : "outline"} className="text-[10px]">
+                      <Badge variant={panelSslPathActive ? "default" : "outline"} className="text-[11px]">
                         {panelSslPathActive ? translateText("当前使用") : panelSslPathConfigured ? translateText("已保存备用") : translateText("未配置")}
                       </Badge>
                     </div>
@@ -4885,7 +4885,7 @@ function SystemInfoSection() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-sm font-medium">{translateText("粘贴 PEM 内容")}</p>
-                      <Badge variant={panelSslPemActive ? "default" : "outline"} className="text-[10px]">
+                      <Badge variant={panelSslPemActive ? "default" : "outline"} className="text-[11px]">
                         {panelSslPemActive ? translateText("当前使用") : panelSslPemConfigured ? translateText("已保存备用") : translateText("未配置")}
                       </Badge>
                     </div>

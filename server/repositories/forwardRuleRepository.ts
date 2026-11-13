@@ -1101,10 +1101,25 @@ export async function getForwardGroupChildRulesForMember(memberId: number) {
     .orderBy(desc(forwardRules.createdAt));
 }
 
+const FORWARD_RULE_PORT_FIELDS = ["sourcePort", "targetPort", "gostRelayPort", "tunnelExitPort", "udpOverTcpPort"] as const;
+
+/** SQLite keeps 80.5 in an INTEGER column as REAL, and a Go Agent that meets a
+ * fractional port rejects the whole desired state of its host. Every writer
+ * (panel, Telegram bot, AI tools, imports) passes through this guard. */
+export function assertIntegerForwardRulePorts(data: Record<string, unknown>) {
+  for (const field of FORWARD_RULE_PORT_FIELDS) {
+    const value = data[field];
+    if (value === undefined || value === null) continue;
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`端口必须是 0-65535 之间的整数：${field}`);
+  }
+}
+
 export async function createForwardRule(rule: InsertForwardRule & { personalGroupIds?: number[] }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const payload = { ...(rule as any) };
+  assertIntegerForwardRulePorts(payload);
   const personalGroupIds = payload.personalGroupIds;
   delete payload.personalGroupIds;
   if (payload.sortOrder === undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId) {
@@ -1167,6 +1182,7 @@ export async function updateForwardRule(id: number, input: Partial<InsertForward
   const db = await getDb();
   if (!db) return;
   const { personalGroupIds, ...data } = input;
+  assertIntegerForwardRulePorts(data as Record<string, unknown>);
   const audit = shouldAuditConfigPatch(data as any);
   const before = audit ? await getForwardRuleById(id).catch(() => undefined) : undefined;
   const save = async () => (await getDb())!.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));

@@ -68,7 +68,7 @@ export function HostAvailabilityHistory({ days, summaries = [], selectedDay, onS
             <p>{t("在线率")}：{value.uptimePercent == null ? "—" : `${value.uptimePercent.toFixed(3)}%`} · {t("离线次数")}：{value.offlineCount}</p>
             <p>{t("离线时长")}：{availabilityDuration(value.offlineSeconds)} · {t("监测覆盖率")}：{value.coveragePercent == null ? "—" : `${value.coveragePercent.toFixed(1)}%`}</p>
           </>}
-          <p className="text-[10px] opacity-75">{t("按已监测时长计算在线率；斜纹表示当天存在未监测时段。")}</p>
+          <p className="text-[11px] opacity-75">{t("按已监测时长计算在线率；斜纹表示当天存在未监测时段。")}</p>
         </> };
       })} />
     {!selected ? <p className="text-xs text-muted-foreground">{t("点击日期查看当天稳定性详情。")}</p>
@@ -89,7 +89,7 @@ export function HostAvailabilityHistory({ days, summaries = [], selectedDay, onS
             {visibleCount < periods.length && <Button size="sm" variant="ghost" onClick={() => setVisibleCount((count) => count + 50)}>{t("更多时段")}</Button>}
           </div>
         </details>
-        <p className="text-[10px] text-muted-foreground">{t("在线转为离线记一次，跨天持续离线不重复计数；以面板监测到的 Agent 状态为准。")}</p>
+        <p className="text-[11px] text-muted-foreground">{t("在线转为离线记一次，跨天持续离线不重复计数；以面板监测到的 Agent 状态为准。")}</p>
       </>}
   </section>;
 }

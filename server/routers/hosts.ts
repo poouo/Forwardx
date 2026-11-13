@@ -1418,7 +1418,7 @@ export const hostsRouter = router({
         return deleteHostWithImpact(input.id, input.confirmOfflineCleanup);
       }),
     metrics: protectedProcedure
-      .input(z.object({ hostId: z.number(), limit: z.number().default(60), live: z.boolean().optional() }))
+      .input(z.object({ hostId: z.number(), limit: z.number().int().min(1).max(1440).default(60), live: z.boolean().optional() }))
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
         const rows = input.live ? await db.getLatestHostMetrics(input.hostId, input.limit) : await hostQueryCache.get(

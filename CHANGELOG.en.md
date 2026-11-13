@@ -2,6 +2,17 @@
 
 [简体中文](CHANGELOG.md) | [English](CHANGELOG.en.md)
 
+## [Unreleased]
+
+- Fixed fractional port values stopping the Agent of that host from syncing configuration; existing data is corrected when the panel starts.
+- Fixed the panel process possibly exiting when the Agent install script was requested during a brief database error.
+- The Telegram bot now answers commands only in private chats, so one-time login links never appear in group chats.
+- Limited how many host metric records a single query can return.
+- Mobile filters on Rules and Host Management are collapsible, and summary cards can be hidden with the choice remembered.
+- The dashboard traffic chart distinguishes inbound from outbound, with readable axes in dark mode.
+- Unified inbound/outbound wording and refined small text, the switch off state, user summary cards and announcement typography.
+- Shell scripts now always use LF line endings, fixing image builds from a Windows working tree.
+
 ## [2.3.299] - 2026-11-10
 
 - Fixed delayed tunnel rule target updates and incorrect running status caused by old traffic reports.

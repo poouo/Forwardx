@@ -21,6 +21,8 @@ import { forwardGroupRouteMembers, forwardGroupSelfTestSource } from "../../../s
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
+import { MobileFilterToggle, mobileFilterPanelClass } from "@/components/MobileFilterToggle";
+import { SummaryToggle, useSummaryCollapsed } from "@/components/SummaryToggle";
 import { ruleOwnerOptionIds } from "@/lib/userSelection";
 import { isCompleteRuleSortScope } from "@/lib/ruleSortScope";
 import { portEntryProbeHosts } from "@/lib/portEntryProbePlan";
@@ -1802,8 +1804,8 @@ function RuleTrafficGlobe({
           </div>}
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
             {globeData.summaries.slice(0, 50).map((item, index) => <button type="button" key={item.rule.id} className="globe-list-row" data-active={selectedRoute?.rule.id === item.rule.id} aria-pressed={selectedRoute?.rule.id === item.rule.id} onClick={() => { setSelectedRuleId(Number(item.rule.id)); if (item.routePoints[0]) scene.focus(item.routePoints[0]); }}>
-              <div className="flex min-w-0 items-center gap-2"><span className="w-4 shrink-0 text-[10px] tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{item.rule.name || translateText("规则 #{0}", [item.rule.id])}</span><span className="shrink-0 text-[11px] tabular-nums">{formatBytes(item.totalBytes)}</span></div>
-              <div className="ml-6 mt-1 truncate font-mono text-[10px] text-muted-foreground">{item.targetText}</div>
+              <div className="flex min-w-0 items-center gap-2"><span className="w-4 shrink-0 text-[11px] tabular-nums text-muted-foreground">{String(index + 1).padStart(2, "0")}</span><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{item.rule.name || translateText("规则 #{0}", [item.rule.id])}</span><span className="shrink-0 text-[11px] tabular-nums">{formatBytes(item.totalBytes)}</span></div>
+              <div className="ml-6 mt-1 truncate font-mono text-[11px] text-muted-foreground">{item.targetText}</div>
               <div className="ml-6 mt-2 h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full" style={{ width: `${totalTraffic ? Math.max(2, item.totalBytes / totalTraffic * 100) : 0}%`, backgroundColor: item.color }} /></div>
             </button>)}
             {globeData.summaries.length === 0 && <p className="px-2 py-8 text-center text-xs text-muted-foreground">{translateText("暂无可定位流量路径")}</p>}
@@ -2134,6 +2136,8 @@ function RulesContent() {
     normalizeRuleResourceFilter(getStoredString(filterResourceStorageKey, "all"))
   ));
   const [ruleResourceMenuOpen, setRuleResourceMenuOpen] = useState(false);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [summaryCollapsed, setSummaryCollapsed] = useSummaryCollapsed("rules");
   const [ruleResourceMenuType, setRuleResourceMenuType] = useState<RuleTransferScopeType>(
     parseRuleResourceFilter(getStoredString(filterResourceStorageKey, "all")).type || "local",
   );
@@ -3993,7 +3997,7 @@ function RulesContent() {
                 <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                   {renderRuleGroupIcon(category, "h-3.5 w-3.5")}
                   <span className="min-w-0 truncate text-sm font-medium">{rule.name}</span>
-                  <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{desktopRuleTypeLabels[category]}</Badge>
+                  <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[11px]">{desktopRuleTypeLabels[category]}</Badge>
                 </span>
                 <RuleBatchHostSummary hosts={copyRuleEntryHosts.get(Number(rule.id)) || []} />
                 <span className="mt-1 block truncate text-xs text-muted-foreground">
@@ -4443,7 +4447,7 @@ function RulesContent() {
   };
   const getHostOptionName = (host: any) => host?.name || translateText("主机 #{0}", [host?.id || "-"]);
   const renderTrafficBillingResourceBadge = (enabled = true) => enabled ? (
-    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-300">{translateText("按量计费资源")}</span>
+    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-amber-700 dark:text-amber-300">{translateText("按量计费资源")}</span>
   ) : null;
   const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? translateText("在线") : translateText("离线")}）${trafficBillingHostIds.has(Number(host?.id)) ? translateText(" / 按量计费资源") : ""}`;
   const renderHostStatusLabel = (host: any) => {
@@ -5875,7 +5879,7 @@ function RulesContent() {
       failoverStrategy,
     } = getRuleTransferDisplay(rule, effectiveRuleCardSize === "standard");
     const failoverBadge = failoverEnabled ? (
-      <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
+      <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[11px] text-amber-600">
         {failoverStrategyLabels[failoverStrategy]} {failoverCount}
       </Badge>
     ) : null;
@@ -5954,7 +5958,7 @@ function RulesContent() {
             className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors enabled:hover:bg-muted/70 disabled:cursor-default disabled:text-muted-foreground"
             title={entry.copyable ? `${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}` : entry.text}
           >
-            {entryAddresses.length > 1 && <span className="shrink-0 text-[10px] text-muted-foreground">{entry.label}</span>}
+            {entryAddresses.length > 1 && <span className="shrink-0 text-[11px] text-muted-foreground">{entry.label}</span>}
             <code className="min-w-0 truncate">{entry.text}</code>
             {entry.copyable && <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />}
           </button>
@@ -5971,7 +5975,7 @@ function RulesContent() {
           {targetAddress}
         </code>
         {failoverEnabled && (
-          <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
+          <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[11px] text-amber-600">
             {failoverStrategyLabels[failoverStrategy]} {failoverCount}
           </Badge>
         )}
@@ -5995,7 +5999,7 @@ function RulesContent() {
     return (
       <Badge
         variant="outline"
-        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[10px] [&>svg]:shrink-0 ${forwardToolBadgeClass(forwardType)}`}
+        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[11px] [&>svg]:shrink-0 ${forwardToolBadgeClass(forwardType)}`}
         title={translateText("转发工具：{0}", [label])}
       >
         {forwardType === "iptables" || forwardType === "nftables" ? (
@@ -6026,7 +6030,7 @@ function RulesContent() {
     return (
       <Badge
         variant="outline"
-        className="h-5 w-fit border-amber-500/35 bg-amber-500/10 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
+        className="h-5 w-fit border-amber-500/35 bg-amber-500/10 px-1.5 text-[11px] text-amber-700 dark:text-amber-300"
         title={warning}
       >
         <AlertCircle className="mr-1 h-3 w-3" />{translateText("跨 IPv4/IPv6 风险")}</Badge>
@@ -6051,7 +6055,7 @@ function RulesContent() {
       <Badge
         variant="outline"
         title={routeLabel}
-        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[10px] ${
+        className={`h-5 min-w-0 w-fit whitespace-nowrap px-1.5 text-[11px] ${
           rule.forwardGroupId
             ? "border-emerald-500/30 text-emerald-600"
             : rule.forwardType === "iptables" || rule.forwardType === "nftables"
@@ -6113,7 +6117,7 @@ function RulesContent() {
       groupIds={rule.personalGroupIds}
       groups={personalGroupsQuery.data?.groups || []}
       path={tunnel ? renderTunnelRoute(tunnel, false) : null}
-      warning={<>{renderKernelForwardWarningBadge(getRuleKernelForwardWarning(rule))}{!isRuleSupported(rule) && <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[10px] text-destructive">{protocolUnsupportedLabel(getRuleProtocolKey(rule))}{translateText(" 不支持")}</Badge>}</>}
+      warning={<>{renderKernelForwardWarningBadge(getRuleKernelForwardWarning(rule))}{!isRuleSupported(rule) && <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[11px] text-destructive">{protocolUnsupportedLabel(getRuleProtocolKey(rule))}{translateText(" 不支持")}</Badge>}</>}
     />;
   };
 
@@ -6411,7 +6415,7 @@ function RulesContent() {
         <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${collapsed ? "" : "rotate-90"}`} />
         {renderRuleGroupIcon(group.type, compact ? "h-3.5 w-3.5" : "h-4 w-4")}
         <span className="truncate text-sm font-semibold">{group.label}</span>
-        <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{group.rules.length}</Badge>
+        <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[11px]">{group.rules.length}</Badge>
         {!compact && <span className="min-w-0 truncate text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>}
       </button>
     );
@@ -6430,7 +6434,7 @@ function RulesContent() {
       case "entry": return renderTableTransferEntry(rule);
       case "exit": return renderTableTransferExit(rule);
       case "route": return renderRouteBadge(rule, true);
-      case "protocol": return <Badge variant="secondary" className="max-w-full truncate whitespace-nowrap text-[10px]" title={formatForwardRuleProtocol(rule.protocol)}>{formatForwardRuleProtocol(rule.protocol)}</Badge>;
+      case "protocol": return <Badge variant="secondary" className="max-w-full truncate whitespace-nowrap text-[11px]" title={formatForwardRuleProtocol(rule.protocol)}>{formatForwardRuleProtocol(rule.protocol)}</Badge>;
       case "total": return renderTableRuleTotalTraffic(rule);
       case "quota": return isAdminManagedRule(rule) ? <RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} compact /> : <span className="text-muted-foreground">—</span>;
       case "daily": return renderTableRuleDailyTraffic(rule);
@@ -6528,11 +6532,11 @@ function RulesContent() {
 
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-border/40 pt-1.5 text-xs">
               <div className="min-w-0">
-                <div className="mb-0.5 flex h-4 items-center gap-1 text-[10px] text-muted-foreground">{translateText("累计流量")}<RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} iconOnly /></div>
+                <div className="mb-0.5 flex h-4 items-center gap-1 text-[11px] text-muted-foreground">{translateText("累计流量")}<RuleUsageSummary rule={rule} totals={totalTrafficByRule.get(rule.id)} iconOnly /></div>
                 {renderMobileRuleTotalTraffic(rule)}
               </div>
               <div className="min-w-0 text-right">
-                <div className="mb-0.5 text-[10px] text-muted-foreground">24H</div>
+                <div className="mb-0.5 text-[11px] text-muted-foreground">24H</div>
                 <div className="flex flex-wrap justify-end gap-x-2 gap-y-0.5">
                   {renderRuleDailyTrafficValue(rule, "in")}
                   {renderRuleDailyTrafficValue(rule, "out")}
@@ -6700,18 +6704,18 @@ function RulesContent() {
           >
             <ClipboardCopy className="h-4 w-4" />{translateText("批量管理")}</Button>
           {rulePermissionLoading ? (
-            <Button disabled className="col-span-2 gap-2 sm:col-span-1">
+            <Button disabled className="gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />{translateText("权限加载中")}</Button>
           ) : canAdd ? (
             <Button
               onClick={() => openCreate()}
-              className="col-span-2 gap-2 sm:col-span-1"
+              className="gap-2"
               disabled={!canCreateRule}
               title={!canCreateRule ? translateText("暂无可用转发资源") : undefined}
             >
               <Plus className="h-4 w-4" />{translateText("添加规则")}</Button>
           ) : (
-            <Button disabled className="col-span-2 gap-2 sm:col-span-1" title={translateText("需要管理员授权后才能添加规则")}>
+            <Button disabled className="gap-2" title={translateText("需要管理员授权后才能添加规则")}>
               <Plus className="h-4 w-4" />{translateText("添加规则")}</Button>
           )}
         </div>
@@ -6727,11 +6731,12 @@ function RulesContent() {
       {(user?.role === "admin" || ruleScopeTotal > 0 || hasActiveRuleFilter || (rules && rules.length > 0)) && (
         <div className="space-y-3">
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-            <div className="flex items-center gap-2">
+            <div className="hidden items-center gap-2 sm:flex">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm text-muted-foreground">{translateText("筛选：")}</span>
             </div>
-            <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+            <div className="flex items-center gap-2 sm:contents">
+            <div className="relative min-w-0 flex-1 sm:w-[260px] sm:flex-none lg:w-[320px]">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={ruleSearchQuery}
@@ -6750,6 +6755,13 @@ function RulesContent() {
                 </button>
               ) : null}
             </div>
+            <MobileFilterToggle
+              open={mobileFiltersOpen}
+              onOpenChange={setMobileFiltersOpen}
+              activeCount={Number(filterResource !== "all") + Number(user?.role === "admin" && filterUser !== "self")}
+            />
+            </div>
+            <div className={mobileFilterPanelClass(mobileFiltersOpen)}>
             {user?.role === "admin" && (
               <UserSelect value={filterUser} onValueChange={handleFilterUserChange} excludeUserId={user?.id}
                 className="h-8 w-full text-xs sm:w-[180px]"
@@ -6842,6 +6854,8 @@ function RulesContent() {
                 ))}
               </SelectContent>
             </Select>
+            <SummaryToggle collapsed={summaryCollapsed} onCollapsedChange={setSummaryCollapsed} className="justify-self-start sm:ml-auto" />
+            </div>
           </div>
 
           <Tabs value={ruleCategory} onValueChange={handleRuleCategoryChange}>
@@ -6851,7 +6865,7 @@ function RulesContent() {
       )}
 
       {/* 转发流量汇总 */}
-      <div className="rule-traffic-summary grid grid-cols-3 gap-2 sm:gap-4">
+      <div className={cn("rule-traffic-summary grid grid-cols-3 gap-2 sm:gap-4", summaryCollapsed && "hidden")}>
         <Card hoverable disableEnterAnimation className="border-border/60">
           <CardContent className="relative flex min-w-0 items-center justify-between p-3 sm:gap-3 sm:p-4">
             <div className="w-full min-w-0 sm:flex-1">
@@ -7118,7 +7132,7 @@ function RulesContent() {
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Filter className="h-10 w-10 mb-3 opacity-30" />
                 <p className="text-base font-medium">{translateText("没有匹配的规则")}</p>
-                <p className="text-sm mt-1 text-muted-foreground/60">{translateText("尝试调整筛选条件")}</p>
+                <p className="text-sm mt-1 text-muted-foreground/80">{translateText("尝试调整筛选条件")}</p>
                 {hasActiveRuleFilter && (
                   <Button type="button" variant="outline" className="mt-4 gap-2" onClick={clearRuleFilters}>
                     <XCircle className="h-4 w-4" />{translateText("清除筛选")}</Button>
@@ -7130,7 +7144,7 @@ function RulesContent() {
                   <ArrowRightLeft className="h-8 w-8 opacity-40" />
                 </div>
                 <p className="text-lg font-medium">{translateText("暂无转发规则")}</p>
-                <p className="text-sm mt-1 text-muted-foreground/60">
+                <p className="text-sm mt-1 text-muted-foreground/80">
                   {canCreateRule
                     ? translateText("创建第一条转发规则")
                     : translateText("当前账号没有可用的转发资源")}
@@ -7401,7 +7415,7 @@ function RulesContent() {
                   ) : (
                     <div className="flex h-10 items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-3 text-sm">
                       <span className="truncate">{FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}</span>
-                      <Badge variant="outline" className="shrink-0 text-[10px]">
+                      <Badge variant="outline" className="shrink-0 text-[11px]">
                         {isForwardGroupRouteMode ? translateText("上级决定") : translateText("已锁定")}
                       </Badge>
                     </div>
@@ -7913,7 +7927,7 @@ function RulesContent() {
                           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                             <ArrowRightLeft className="h-3.5 w-3.5 text-primary" />
                             <span className="min-w-0 truncate text-sm font-medium">{rule.name}</span>
-                            <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
+                            <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[11px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
                           </div>
                           <div className="mt-1 truncate text-xs text-muted-foreground">
                             {rule.sourcePort > 0 ? `:${rule.sourcePort}` : translateText("随机端口")} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)}

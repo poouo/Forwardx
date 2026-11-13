@@ -1003,15 +1003,15 @@ export const crudRulesRouter = router({
       protocol: z.enum(["tcp", "udp", "both"]).default("both"),
       gostMode: z.enum(["direct", "reverse"]).default("direct"),
       gostRelayHost: z.string().max(128).nullable().optional(),
-      gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
+      gostRelayPort: z.number().int().min(1).max(65535).nullable().optional(),
       tunnelId: z.number().nullable().optional(),
       forwardGroupId: z.number().nullable().optional(),
-      sourcePort: z.number().min(0).max(65535), // 0 = 随机分配
+      sourcePort: z.number().int().min(0).max(65535), // 0 = 随机分配
       targetIp: z.string().min(1).max(253).refine(
         (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
         "请输入有效的 IP 地址或域名"
       ),
-      targetPort: z.number().min(1).max(65535),
+      targetPort: z.number().int().min(1).max(65535),
       isEnabled: z.boolean().optional().default(true),
       telegramErrorNotifyEnabled: z.boolean().optional().default(false),
       blockHttp: z.boolean().optional(),
@@ -1231,16 +1231,16 @@ export const crudRulesRouter = router({
       protocol: z.enum(["tcp", "udp", "both"]).optional(),
       gostMode: z.enum(["direct", "reverse"]).optional(),
       gostRelayHost: z.string().max(128).nullable().optional(),
-      gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
+      gostRelayPort: z.number().int().min(1).max(65535).nullable().optional(),
       tunnelId: z.number().nullable().optional(),
-      tunnelExitPort: z.number().min(1).max(65535).nullable().optional(),
+      tunnelExitPort: z.number().int().min(1).max(65535).nullable().optional(),
       forwardGroupId: z.number().nullable().optional(),
-      sourcePort: z.number().min(0).max(65535).optional(),
+      sourcePort: z.number().int().min(0).max(65535).optional(),
       targetIp: z.string().min(1).max(253).refine(
         (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
         "请输入有效的 IP 地址或域名"
       ).optional(),
-      targetPort: z.number().min(1).max(65535).optional(),
+      targetPort: z.number().int().min(1).max(65535).optional(),
       telegramErrorNotifyEnabled: z.boolean().optional(),
       blockHttp: z.boolean().optional(),
       blockSocks: z.boolean().optional(),

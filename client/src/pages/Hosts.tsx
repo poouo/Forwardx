@@ -91,6 +91,8 @@ import { pollingInterval, visiblePollingInterval } from "@/lib/polling";
 import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { MobileFilterToggle, mobileFilterPanelClass } from "@/components/MobileFilterToggle";
+import { SummaryToggle, useSummaryCollapsed } from "@/components/SummaryToggle";
 import {
   Activity,
   ArrowDown,
@@ -455,7 +457,7 @@ function HostWorldMap({
         {selectedPoint && <div className="m-3 rounded-xl border border-primary/20 bg-primary/5 p-3"><div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-xs font-semibold">{selectedPoint.host.name}</span><button type="button" aria-label={translateText("取消选择")} className="text-muted-foreground hover:text-foreground" onClick={() => setSelectedHostId(null)}>×</button></div><p className="mt-2 text-[11px] text-muted-foreground">{selectedPoint.regionText || translateText("未定位")}</p><p className="mt-1 break-all font-mono text-[11px]">{selectedPoint.addressText}</p><Button variant="outline" size="sm" className="mt-3 h-7 w-full text-xs" onClick={() => onEdit(selectedPoint.host)}>{translateText("编辑主机")}</Button></div>}
         <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
           {visiblePoints.slice(0, 60).map((point) => <button type="button" key={point.host.id} className="globe-list-row" data-active={selectedPoint?.host.id === point.host.id} aria-pressed={selectedPoint?.host.id === point.host.id} onClick={() => { setSelectedHostId(Number(point.host.id)); scene.focus(point); }}>
-            <div className="flex min-w-0 items-center gap-2"><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: point.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{point.host.name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{point.statusText}</span></div><div className="ml-4 mt-1 truncate text-[10px] text-muted-foreground">{point.regionText || point.addressText}</div>
+            <div className="flex min-w-0 items-center gap-2"><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: point.color }} /><span className="min-w-0 flex-1 truncate text-xs font-medium">{point.host.name}</span><span className="shrink-0 text-[11px] text-muted-foreground">{point.statusText}</span></div><div className="ml-4 mt-1 truncate text-[11px] text-muted-foreground">{point.regionText || point.addressText}</div>
           </button>)}
           {visiblePoints.length === 0 && <p className="py-8 text-center text-xs text-muted-foreground">{translateText("暂无匹配节点")}</p>}
         </div>
@@ -718,8 +720,8 @@ function systemNetworkTotalTitle(metric: any) {
   const total = bytesIn === null && bytesOut === null ? null : (bytesIn ?? 0) + (bytesOut ?? 0);
   return [
     translateText("\u7cfb\u7edf\u7d2f\u8ba1\u6d41\u91cf\uff08\u7cfb\u7edf\u91cd\u542f\u540e\u91cd\u7f6e\uff09"),
-    translateText("入站 {0}", [formatOptionalBytes(bytesIn)]),
-    translateText("出站 {0}", [formatOptionalBytes(bytesOut)]),
+    translateText("入向 {0}", [formatOptionalBytes(bytesIn)]),
+    translateText("出向 {0}", [formatOptionalBytes(bytesOut)]),
     translateText("合计 {0}", [formatOptionalBytes(total)]),
   ].join("\n");
 }
@@ -976,12 +978,12 @@ function HostTrafficSummaryCard({
 }) {
   return (
     <Card hoverable disableEnterAnimation className={`h-full border-border/60 ${className || ""}`.trim()}>
-      <CardContent className="h-full p-4">
+      <CardContent className="h-full p-3 sm:p-4">
         <div className="pearl-metric-heading">
           <p className="pearl-metric-label">{title}</p>
           <span aria-hidden="true" className="pearl-metric-icon"><Icon className="h-4 w-4" strokeWidth={1.5} /></span>
         </div>
-        <div className="mt-2 grid grid-cols-2 gap-3">
+        <div className="mt-2 grid gap-2 sm:grid-cols-2 sm:gap-3">
           <HostTrafficDirectionStat
             label={translateText("入向")}
             value={inValue}
@@ -1242,6 +1244,8 @@ function HostsContent() {
   });
   const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
   const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [summaryCollapsed, setSummaryCollapsed] = useSummaryCollapsed("hosts");
   const [manageSearchQueries, setManageSearchQueries] = useState<Record<HostManageTab, string>>({
     hosts: "",
     groups: "",
@@ -2222,8 +2226,8 @@ function HostsContent() {
         const timedOut = isAgentUpgradeTimedOut(host);
         return <div className="flex min-w-0 flex-wrap items-center gap-1">
           <span className="font-mono text-xs text-muted-foreground">{host.agentVersion ? `v${host.agentVersion}` : "—"}</span>
-          {host.agentUpgradeRequested ? <Badge variant="outline" className={cn("shrink-0 whitespace-nowrap px-1 py-0 text-[10px]", timedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary")}>{timedOut ? translateText("升级失败") : translateText("升级中")}</Badge>
-            : isAgentVersionBehind(host.agentVersion, latestAgentVersion) && <Badge variant="outline" className="shrink-0 whitespace-nowrap border-amber-500/30 px-1 py-0 text-[10px] text-amber-500">{translateText("新版本")}</Badge>}
+          {host.agentUpgradeRequested ? <Badge variant="outline" className={cn("shrink-0 whitespace-nowrap px-1 py-0 text-[11px]", timedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary")}>{timedOut ? translateText("升级失败") : translateText("升级中")}</Badge>
+            : isAgentVersionBehind(host.agentVersion, latestAgentVersion) && <Badge variant="outline" className="shrink-0 whitespace-nowrap border-amber-500/30 px-1 py-0 text-[11px] text-amber-500">{translateText("新版本")}</Badge>}
         </div>;
       }
       case "load": return <HostLoad metric={metric} showLabel={false} className="overflow-hidden" />;
@@ -2420,11 +2424,12 @@ function HostsContent() {
       </div>
 
       <div className="pearl-toolbar grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-        <div className="flex items-center gap-2">
+        <div className="hidden items-center gap-2 sm:flex">
           <Filter className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm text-muted-foreground">{translateText("筛选:")}</span>
         </div>
-        <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+        <div className="flex items-center gap-2 sm:contents">
+        <div className="relative min-w-0 flex-1 sm:w-[260px] sm:flex-none lg:w-[320px]">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={activeManageSearchQuery}
@@ -2446,6 +2451,15 @@ function HostsContent() {
             </button>
           ) : null}
         </div>
+        {activeManageTab === "hosts" && !isHostMapView ? (
+          <MobileFilterToggle open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} />
+        ) : (
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground sm:hidden">
+            {activeManageFilterStats.filtered} / {activeManageFilterStats.total} {activeManageFilterConfig.unit}
+          </span>
+        )}
+        </div>
+        <div className={mobileFilterPanelClass(mobileFiltersOpen && activeManageTab === "hosts" && !isHostMapView)}>
         {activeManageTab === "hosts" && !isHostMapView && (
           <Select value={String(hostPageSize)} onValueChange={handleHostPageSizeChange}>
             <SelectTrigger className="h-9 w-full text-xs sm:w-auto sm:min-w-40" aria-label={translateText("每页数量")}>
@@ -2461,6 +2475,10 @@ function HostsContent() {
         <span className="text-xs tabular-nums text-muted-foreground">
           {activeManageFilterStats.filtered} / {activeManageFilterStats.total} {activeManageFilterConfig.unit}
         </span>
+        {activeManageTab === "hosts" && themeHosts?.showSummary !== false && (
+          <SummaryToggle collapsed={summaryCollapsed} onCollapsedChange={setSummaryCollapsed} className="justify-self-start sm:ml-auto" />
+        )}
+        </div>
       </div>
 
       <Tabs
@@ -2472,8 +2490,10 @@ function HostsContent() {
 
         <TabsContent value="hosts" data-theme-part="hosts-page" data-theme-hosts-configured={themeHosts ? "true" : undefined} className="space-y-4">
         {themeHosts?.intro && <div data-theme-part="hosts-intro" style={themeSectionStyle("intro")}><ThemeBlocks node={themeHosts.intro} values={themePageValues} /></div>}
-        {themeHosts?.showSummary !== false && <div data-theme-part="hosts-summary" style={themeSectionStyle("summary")} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {themeHosts?.showSummary !== false && <div data-theme-part="hosts-summary" style={themeSectionStyle("summary")} className={cn("grid grid-cols-2 gap-3 xl:grid-cols-3", summaryCollapsed && "hidden")}>
+          {/* Phones already show the online count under the page title. */}
           <HostSummaryCard
+            className="hidden sm:block"
             title={translateText("在线状态")}
             value={`${effectiveHostSummary?.onlineHosts ?? onlineCount} / ${effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length}`}
             subtitle={effectiveHostSummary
@@ -2703,7 +2723,7 @@ function HostsContent() {
                 <Server className="h-8 w-8 opacity-40" />
               </div>
               <p className="text-lg font-medium">{isHostTextFiltered ? translateText("未找到匹配主机") : isHostGroupFiltered ? translateText("当前分组暂无主机") : translateText("暂无主机")}</p>
-              <p className="text-sm mt-1 text-muted-foreground/60">
+              <p className="text-sm mt-1 text-muted-foreground/80">
                 {isHostTextFiltered ? translateText("调整筛选内容或清空搜索") : isHostGroupFiltered ? translateText("可以在分组管理中为该分组添加主机") : user?.role === "admin" ? translateText("点击添加主机生成 Agent 安装命令") : translateText("请联系管理员添加主机")}
               </p>
             </div>

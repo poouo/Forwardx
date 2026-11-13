@@ -547,25 +547,36 @@ agentApiRouter.post("/api/agent/migration-rollback", async (req: Request, res: R
 agentRouter.use(agentApiRouter);
 
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
-  const panelUrl = await resolvePanelUrl(req);
-  const settings = await db.getAllSettings();
-  const panelMigration = await getPanelMigrationAgentDirective();
-  const abortedFallbackActive = panelMigration?.state === "aborted"
-    && !!panelMigration.startedAt
-    && Math.floor(Date.now() / 1000) - panelMigration.startedAt <= 60 * 60;
-  const migrationFallbackEnabled = panelMigration?.state === "preparing"
-    || panelMigration?.state === "committing"
-    || abortedFallbackActive;
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(generateInstallScript(panelUrl, {
-    githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
-    githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
-    preferPanelInstall: settings.agentPreferPanelInstall === "true",
-    installNginx: isNginxForwardProtocolEnabled(parseForwardProtocolSettings(settings.forwardProtocols)),
-    migrationFallbackPanelUrl: migrationFallbackEnabled ? panelMigration?.fallbackPanelUrl : undefined,
-    panelMigrationId: migrationFallbackEnabled ? panelMigration?.id : undefined,
-    panelMigrationStartedAt: migrationFallbackEnabled ? panelMigration?.startedAt : undefined,
-  }));
+  // This endpoint is public and is piped into a shell. A failed settings read
+  // must answer with a script that stops, never reject out of the handler.
+  try {
+    const panelUrl = await resolvePanelUrl(req);
+    const settings = await db.getAllSettings();
+    const panelMigration = await getPanelMigrationAgentDirective();
+    const abortedFallbackActive = panelMigration?.state === "aborted"
+      && !!panelMigration.startedAt
+      && Math.floor(Date.now() / 1000) - panelMigration.startedAt <= 60 * 60;
+    const migrationFallbackEnabled = panelMigration?.state === "preparing"
+      || panelMigration?.state === "committing"
+      || abortedFallbackActive;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(generateInstallScript(panelUrl, {
+      githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
+      githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
+      preferPanelInstall: settings.agentPreferPanelInstall === "true",
+      installNginx: isNginxForwardProtocolEnabled(parseForwardProtocolSettings(settings.forwardProtocols)),
+      migrationFallbackPanelUrl: migrationFallbackEnabled ? panelMigration?.fallbackPanelUrl : undefined,
+      panelMigrationId: migrationFallbackEnabled ? panelMigration?.id : undefined,
+      panelMigrationStartedAt: migrationFallbackEnabled ? panelMigration?.startedAt : undefined,
+    }));
+  } catch (error) {
+    console.warn(`[Agent] install script unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    if (res.headersSent) { res.end(); return; }
+    res.status(503);
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Retry-After", "10");
+    res.send("echo 'ForwardX panel is temporarily unavailable. Please retry in a moment.' >&2\nexit 1\n");
+  }
 });
 
 agentRouter.get("/api/agent/assets/:version/:asset", async (req: Request, res: Response) => {
@@ -576,7 +587,10 @@ agentRouter.get("/api/agent/assets/:version/:asset", async (req: Request, res: R
     return;
   }
 
-  const filePath = await getOrFetchAgentAssetPath(version, asset);
+  const filePath = await getOrFetchAgentAssetPath(version, asset).catch((error) => {
+    console.warn(`[Agent] asset lookup failed ${asset} v${version}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
   if (!filePath) {
     res.status(503).send("Agent asset not available");
     return;

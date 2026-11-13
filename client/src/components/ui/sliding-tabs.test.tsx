@@ -81,11 +81,11 @@ test("link management shows all six category counts, including zero, without ope
     assert.ok(tab, key);
     assert.match(tab, new RegExp(`>${counts[key]}</span>`), key);
   }
-  assert.equal((html.match(/tabular-nums|text-\[10px\]/g) || []).length, 6);
+  assert.equal((html.match(/tabular-nums|text-\[11px\]/g) || []).length, 6);
   const pending = renderToStaticMarkup(<Tabs value="tunnels">
     <LinkSectionTabs activeSection="tunnels" onSectionChange={() => {}} />
   </Tabs>);
-  assert.doesNotMatch(pending, /text-\[10px\]/, "do not display fabricated zeroes before counts are loaded");
+  assert.doesNotMatch(pending, /text-\[11px\]/, "do not display fabricated zeroes before counts are loaded");
 });
 
 test("standard tabs wrap long labels and dialog actions may grow without shrinking icons", () => {

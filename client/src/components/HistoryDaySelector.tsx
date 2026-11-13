@@ -65,7 +65,7 @@ export function HistoryDaySelector({ items, selectedDay, onSelect, ariaLabel }: 
             {item.trend}
             {item.partial && <span className="absolute inset-0" style={partialStyle} />}
           </span>}
-          <span aria-hidden="true" className={cn("pointer-events-none relative z-10 mx-auto block w-fit rounded-sm bg-background/75 px-1 whitespace-nowrap text-[10px] font-medium tabular-nums opacity-0 group-hover/day:opacity-100 group-focus-visible/day:opacity-100",
+          <span aria-hidden="true" className={cn("pointer-events-none relative z-10 mx-auto block w-fit rounded-sm bg-background/75 px-1 whitespace-nowrap text-[11px] font-medium tabular-nums opacity-0 group-hover/day:opacity-100 group-focus-visible/day:opacity-100",
             motionEnabled ? "transition-opacity duration-150" : "transition-none")}>
             {item.date.slice(5).replace("-", "/")}
           </span>

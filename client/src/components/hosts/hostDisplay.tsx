@@ -138,7 +138,7 @@ export function HostRegionBadge({ host, compact = false }: { host: any; compact?
   const title = hasGeo ? [fallbackCode, regionText].filter(Boolean).join(" ") : translateText("地区获取中");
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full shrink items-center gap-1 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
+      className={`inline-flex min-w-0 max-w-full shrink items-center gap-1 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[11px]" : "text-xs"}`}
       title={title}
     >
       {flagUrl && (

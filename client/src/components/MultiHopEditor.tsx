@@ -436,7 +436,7 @@ export default function MultiHopEditor({
                   )}
                 </div>
 
-                <Badge variant="outline" className={`flex h-6 min-w-[44px] shrink-0 justify-center whitespace-nowrap px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
+                <Badge variant="outline" className={`flex h-6 min-w-[44px] shrink-0 justify-center whitespace-nowrap px-1.5 py-0 text-[11px] ${ROLE_COLORS[role]}`}>
                   {translateText(ROLE_LABELS[role])}
                 </Badge>
 

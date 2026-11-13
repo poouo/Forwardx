@@ -277,7 +277,7 @@ export default function HostCard({
     : `${formatBytes(trafficUsedBytes)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`;
   const trafficUsageTooltip = [
     translateText("流量使用（{0}）", [trafficMeasureModeLabel]),
-    translateText("入站 {0} / 出站 {1}", [totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn), totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)]),
+    translateText("入向 {0} / 出向 {1}", [totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn), totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)]),
     trafficUsageLabel,
   ].join("\n");
   const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
@@ -380,8 +380,8 @@ export default function HostCard({
       ? "h-1.5 bg-muted [&>div]:bg-muted-foreground/30"
       : "h-1.5 bg-muted [&>div]:bg-muted-foreground/20";
   const infoPanelClass = isOnline
-    ? "pearl-readout border-border/40"
-    : "border-muted-foreground/20 bg-muted/25";
+    ? "pearl-readout border-transparent"
+    : "border-transparent bg-muted/30";
   const trafficPanelClass = isOnline
     ? "border-border/40 bg-muted/20"
     : "border-muted-foreground/20 bg-muted/25";
@@ -521,19 +521,19 @@ export default function HostCard({
                 />
                 <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
                 <span
-                  className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
+                  className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[11px] font-normal leading-none text-muted-foreground ${
                     isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
                   }`}
                 >
                   {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                 </span>
                 {agentNeedsUpdate && (
-                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">{translateText("新版")}</Badge>
+                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[11px] text-amber-500">{translateText("新版")}</Badge>
                 )}
               </div>
               {host.agentUpgradeRequested && (
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
+                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[11px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
                     {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
                   </Badge>
                 </div>
@@ -551,19 +551,19 @@ export default function HostCard({
                 />
                 <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
                 <span
-                  className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
+                  className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[11px] font-normal leading-none text-muted-foreground ${
                     isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
                   }`}
                 >
                   {host.agentVersion ? `v${host.agentVersion}` : translateText("未上报")}
                 </span>
                 {agentNeedsUpdate && (
-                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">{translateText("新版")}</Badge>
+                  <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[11px] text-amber-500">{translateText("新版")}</Badge>
                 )}
               </div>
               {host.agentUpgradeRequested && (
                 <div className="mt-1 flex flex-wrap gap-1.5">
-                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
+                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[11px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
                     {agentUpgradeTimedOut ? translateText("升级失败") : translateText("升级中")}
                   </Badge>
                 </div>
@@ -612,7 +612,7 @@ export default function HostCard({
                 <Clock className="h-3 w-3 text-muted-foreground" />
                 <span className="text-muted-foreground">{translateText("运行")}</span>
                 {remainingTimeLabel && (
-                  <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
+                  <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${remainingTimeClass}`}>
                     {remainingTimeLabel}
                   </span>
                 )}
@@ -679,7 +679,7 @@ export default function HostCard({
               <Clock className="h-3 w-3 text-muted-foreground" />
               <span className="text-muted-foreground">{translateText("运行时间")}</span>
               {remainingTimeLabel && (
-                <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
+                <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${remainingTimeClass}`}>
                   {remainingTimeLabel}
                 </span>
               )}
@@ -688,7 +688,7 @@ export default function HostCard({
           </div>
           )
         ) : (
-          <div className={`border-t border-border/30 text-center text-muted-foreground/60 ${compact ? "py-3" : "py-4"}`}>
+          <div className={`border-t border-border/30 text-center text-muted-foreground/80 ${compact ? "py-3" : "py-4"}`}>
             <p className="text-xs">{translateText("暂无监控数据")}</p>
           </div>
         )}

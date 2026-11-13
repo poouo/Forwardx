@@ -751,7 +751,7 @@ function ChinaWhitelistHostStatusSummary({
                 <div className="flex shrink-0 items-center gap-1.5">
                   {failed && <ShieldAlert className="h-3.5 w-3.5 text-destructive" />}
                   <Badge variant="outline" className={cn(
-                    "text-[10px]",
+                    "text-[11px]",
                     data?.applied ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : failed ? "border-destructive/25 bg-destructive/10 text-destructive" : "border-border/50 text-muted-foreground",
                   )}>
                     {stateLabel}
@@ -2729,12 +2729,12 @@ export default function Plugins({ sidebarPluginId }: { sidebarPluginId?: string 
                               <p className="text-sm font-medium">{action.label}</p>
                               {action.description && <p className="text-xs text-muted-foreground">{action.description}</p>}
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                                <Badge variant="outline" className="font-mono text-[10px]">{action.type}</Badge>
+                                <Badge variant="outline" className="font-mono text-[11px]">{action.type}</Badge>
                                 {(action.type === "panel.request" || action.type === "agent.request") && !selectedPlugin.trusted && (
-                                  <Badge variant="destructive" className="text-[10px]">{translateText("需要插件信任")}</Badge>
+                                  <Badge variant="destructive" className="text-[11px]">{translateText("需要插件信任")}</Badge>
                                 )}
                                 {Array.isArray(action.inputSchema) && action.inputSchema.length > 0 && (
-                                  <Badge variant="outline" className="text-[10px]">{translateText("需要输入 ")}{action.inputSchema.length}{translateText(" 项")}</Badge>
+                                  <Badge variant="outline" className="text-[11px]">{translateText("需要输入 ")}{action.inputSchema.length}{translateText(" 项")}</Badge>
                                 )}
                               </div>
                             </div>

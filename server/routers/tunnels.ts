@@ -931,7 +931,7 @@ export const tunnelsRouter = router({
         relayMode: tunnelRelayModeSchema.optional().default("chain"),
         forwardxVersion: forwardXVersionSchema.optional().default("v1"),
         ...forwardXV3InputFields,
-        listenPort: z.number().min(0).max(65535).optional().default(0),
+        listenPort: z.number().int().min(0).max(65535).optional().default(0),
         mimicPort: z.number().int().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         trafficMultiplier: z.number().int().min(1).max(5000).optional().default(100),
@@ -1179,7 +1179,7 @@ export const tunnelsRouter = router({
         relayMode: tunnelRelayModeSchema.optional(),
         forwardxVersion: forwardXVersionSchema.optional(),
         ...forwardXV3InputFields,
-        listenPort: z.number().min(0).max(65535).optional(),
+        listenPort: z.number().int().min(0).max(65535).optional(),
         // Non-persistent client hint: false means the value is merely the
         // form's persisted value and may be repaired after a route change.
         // When omitted, retain the legacy changed-value heuristic.

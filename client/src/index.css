@@ -113,6 +113,11 @@
   --forwardx-safe-area-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
   --forwardx-safe-area-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   --forwardx-mobile-header-offset: calc(3.5rem + var(--forwardx-safe-area-top));
+  /* Traffic direction pair. Personalization themes pick chart-1/chart-2 as two
+     close accent hues, so charts that compare inbound with outbound need a
+     second colour that stays distinct in every theme. */
+  --traffic-in: var(--chart-1);
+  --traffic-out: oklch(0.66 0.15 70);
 }
 
 /* ===== Dark theme ===== */
@@ -149,6 +154,7 @@
   --sidebar-accent-foreground: oklch(0.93 0.005 260);
   --sidebar-border: oklch(0.25 0.015 260);
   --sidebar-ring: oklch(0.74 0.02 260);
+  --traffic-out: oklch(0.8 0.13 75);
 }
 
 @layer base {
@@ -1582,4 +1588,68 @@
 
 .host-table-row:hover > .host-table-frozen-cell {
   background: color-mix(in oklab, var(--muted) 28%, var(--card));
+}
+
+/* Recharts paints axis text #666 and axis lines #ccc by default, which is
+   unreadable on dark surfaces. Follow the theme tokens in every chart. */
+.recharts-cartesian-axis-tick-value {
+  fill: var(--muted-foreground);
+}
+
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: var(--border);
+}
+
+/* Rendered announcement text (Markdown or sanitized HTML). Tailwind's preflight
+   removes default margins and list markers, which collapses paragraphs into a
+   single block; restore a readable rhythm for this content only. */
+.forwardx-rich-text > * + * {
+  margin-top: 0.75em;
+}
+
+.forwardx-rich-text :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+
+.forwardx-rich-text h1 { font-size: 1.125rem; }
+.forwardx-rich-text h2 { font-size: 1rem; }
+
+.forwardx-rich-text ul { list-style: disc; padding-left: 1.25em; }
+.forwardx-rich-text ol { list-style: decimal; padding-left: 1.5em; }
+.forwardx-rich-text li + li { margin-top: 0.25em; }
+.forwardx-rich-text strong { font-weight: 600; color: var(--foreground); }
+
+.forwardx-rich-text a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.forwardx-rich-text blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75em;
+  color: var(--muted-foreground);
+}
+
+.forwardx-rich-text code {
+  border-radius: 0.35em;
+  background: color-mix(in oklab, var(--muted) 80%, transparent);
+  padding: 0.1em 0.35em;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.forwardx-rich-text pre {
+  overflow-x: auto;
+  border-radius: 0.5em;
+  background: var(--muted);
+  padding: 0.75em;
+}
+
+.forwardx-rich-text pre code {
+  background: none;
+  padding: 0;
 }
