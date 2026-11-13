@@ -20,7 +20,7 @@ test("plan traffic controls and badges use the project selector and support both
       // Radix keeps a hidden native select for form/accessibility support.
       assert.doesNotMatch(field, /<select(?![^>]*aria-hidden="true")/);
       assert.match(outbound + field, language === "en" ? /One-way \(Outbound\)/ : /单向（仅出向）/);
-      assert.match(both, language === "en" ? /Total, two-way/ : /双向合计/);
+      assert.match(both, language === "en" ? /Total \(both directions\)/ : /双向合计/);
       if (language === "en") assert.doesNotMatch(both + outbound + field, /\p{Script=Han}/u);
       const card = renderToStaticMarkup(<StorePlanCard plan={{ name: "Plan", description: "Custom description", trafficMode: "outbound" }} onBuy={() => {}} />);
       assert.match(card, /Custom description/);
