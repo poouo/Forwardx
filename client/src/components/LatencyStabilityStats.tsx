@@ -71,8 +71,8 @@ export function LatencyStabilityStats({
           {" "}{translateText("探测统计，不代表业务丢包。")}
         </p>
         <HelpDetails title={translateText("统计口径")}>
-          {!counterStatistics?.available && <p>{translateText("暂无累计探测统计，请升级 Agent 并等待上报。旧记录省略了稳定成功探测，无法准确计算失败率与稳定性。")}</p>}
-          <p>{description || translateText("仅包含支持累计计数的 Agent 自首次上报后可观察到的探测；不补算旧数据，时间边界受上报间隔影响。")}</p>
+          {!counterStatistics?.available && <p>{translateText("旧版 Agent 的记录不含成功探测的次数，无法计算失败率和稳定性。")}</p>}
+          <p>{description || translateText("只统计 Agent 升级后上报的探测，之前的数据不补算；起止时间可能有一个上报间隔的误差。")}</p>
         </HelpDetails>
         </>
       )}

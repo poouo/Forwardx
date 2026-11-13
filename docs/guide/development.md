@@ -77,6 +77,25 @@ pnpm dev 直接启动 server/index.ts，不是隔离数据、自动登录的开�
 | `user-selector.png` | 已收录：展开的用户选择器，包含搜索、部分用户及翻页入口 |
 | `port-entry-nodes.png` | 已收录：「节点详情」独立弹窗，示例为两台入口暂无启用规则（0/2、0/0）；不是运行失败示例 |
 
+## 链路测速接口
+
+新增的 `linkSpeed` tRPC 路由需要登录，启动任务需要对应隧道/转发链使用权限，并遵循普通用户网络测试开关：
+
+| 方法 | 参数 | 返回 |
+| --- | --- | --- |
+| `linkSpeed.start` | `resourceType: "tunnel" \| "chain"`、`resourceId`、`protocol: "tcp" \| "udp"`（默认 TCP）、`duration`（每方向 3–30 秒，默认 10）、`rateMbps`（UDP 1–1000，默认 100） | 测速状态及任务 `id` |
+| `linkSpeed.status` | `id` | 完整状态，前端运行时每 500ms 查询 |
+| `linkSpeed.latest` | `resourceType`、`resourceId` | 当前用户最近一次任务，或 `null` |
+| `linkSpeed.cancel` | `id` | 取消后的状态 |
+
+状态依次为 `preparing → upload → download → completed`，异常/取消对应 `error`、`cancelled`。`route` 是本次拓扑快照；`samples` 包含方向、阶段内毫秒时间、累计接收字节和区间 Mbps；`upload`/`download` 包含接收字节、时长、平均/峰值 Mbps。UDP 额外包含包数、丢包率和抖动。共享类型位于 `shared/linkSpeed.ts`。
+
+Agent 通过完整心跳声明 `linkSpeedSupported: true`，并领取 `linkSpeedTasks`，任务分为 `prepare`、`run`、`stop`。执行前调用 `/api/agent/link-speed-claim`，进度和结果上报 `/api/agent/link-speed-result`；这两个端点沿用现有 Agent 加密认证，不能用作公开测速接口。任务带临时令牌和最长 150 秒的端点租约，取消后过期任务不能再次启动。
+
+结果暂存面板内存，不是持久化业务记录。当前多分支测试选择主路径，不自动汇总或推断未测试分支。
+
+专项验证：`node --import tsx --test server/linkSpeed.test.ts`，以及在 `agent/` 执行 `go test -run TestLinkSpeed ./...`。如需真实运行时集成测试，可设置 `FORWARDX_SPEED_FIXTURES_DIR` 后运行前述服务端测试生成本地回环配置，再设置 `FORWARDX_SPEED_RUNTIME_TEST_BIN`、`FORWARDX_SPEED_FXP_TEST_BIN` 为本机对应二进制路径，执行 Agent 的 `TestLinkSpeedActualRuntimePaths`。
+
 ## 常用验证
 
 ~~~bash

@@ -31,7 +31,7 @@ export function DatabaseUnavailableView({ health, checking, onRetry }: {
           <button type="button" disabled={checking} onClick={onRetry} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"><RefreshCw className={`h-4 w-4 ${checking ? "animate-spin" : ""}`} />{checking ? translateText("检查中") : translateText("重新检查")}</button>
           <p className="text-xs text-muted-foreground">{translateText("自动检查恢复状态，不会清除你的登录信息。")}</p>
         </div>
-        <p className="mt-6 text-xs leading-5 text-muted-foreground">{translateText("管理员可查看本地部署的 journalctl 服务日志，或 Docker 的 docker logs 容器日志。页面仅展示安全错误摘要，不公开数据库密码和连接串。")}</p>
+        <p className="mt-6 text-xs leading-5 text-muted-foreground">{translateText("详细原因请查看服务日志：本地部署用 journalctl，Docker 部署用 docker logs。这里只显示错误摘要，不含数据库密码和连接串。")}</p>
       </section>
     </main>
   );

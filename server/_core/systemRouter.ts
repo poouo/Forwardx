@@ -26,7 +26,7 @@ import {
   summarizeMigrationSnapshot,
   startPanelMigration as beginPanelMigration,
 } from "../migration";
-import { sendMail } from "../email";
+import { parseAdminCopyRecipients, sendMail } from "../email";
 import { SMTP_SECURITY_MODES, effectiveSmtpSecurityMode, resolveSmtpSecurityMode } from "../smtpTransport";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
 import { refreshDiscordBotProfile, resetDiscordBot, startDiscordBot, discordConnectionStatus } from "../discordBot";
@@ -1695,6 +1695,8 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       expiryReminder: false,
       trafficReminder: false,
       trafficReminderThreshold: 20,
+      adminCopy: false,
+      adminCopyTo: "",
     },
     ddns: {
       enabled: false,
@@ -1882,6 +1884,8 @@ export const systemRouter = router({
         expiryReminder: all.emailExpiryReminder === "true",
         trafficReminder: all.emailTrafficReminder === "true",
         trafficReminderThreshold: Number(all.emailTrafficReminderThreshold || 20),
+        adminCopy: all.emailAdminCopy === "true",
+        adminCopyTo: all.emailAdminCopyTo ?? "",
       },
       ddns: {
         enabled: all.ddnsEnabled === "true",
@@ -2100,6 +2104,8 @@ export const systemRouter = router({
           expiryReminder: z.boolean().optional(),
           trafficReminder: z.boolean().optional(),
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
+          adminCopy: z.boolean().optional(),
+          adminCopyTo: z.string().max(1000).optional(),
         }).optional(),
         telegram: z.object({
           enabled: z.boolean().optional(),
@@ -2346,6 +2352,12 @@ export const systemRouter = router({
         if (email.expiryReminder !== undefined) next.emailExpiryReminder = email.expiryReminder ? "true" : "false";
         if (email.trafficReminder !== undefined) next.emailTrafficReminder = email.trafficReminder ? "true" : "false";
         if (email.trafficReminderThreshold !== undefined) next.emailTrafficReminderThreshold = String(email.trafficReminderThreshold);
+        if (email.adminCopy !== undefined) next.emailAdminCopy = email.adminCopy ? "true" : "false";
+        if (email.adminCopyTo !== undefined) {
+          const recipients = parseAdminCopyRecipients(email.adminCopyTo);
+          if (recipients.invalid.length) throw new Error(`抄送邮箱格式不正确：${recipients.invalid[0]}`);
+          next.emailAdminCopyTo = recipients.valid.join(", ") || null;
+        }
         await db.setSettings(next);
         console.info("[Settings] email settings updated");
       }

@@ -74,6 +74,21 @@ export async function getAllSettings(): Promise<Record<string, string | null>> {
   }
 }
 
+/** 提醒去重标记按用户按天写入，过期后清理，避免 system_settings 持续增长。 */
+export async function cleanOldReminderMarkers(retentionDays = 7): Promise<void> {
+  if (!await getDb()) return;
+  const quote = (name: string) => (getDatabaseKind() === "mysql" ? `\`${name}\`` : `"${name}"`);
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 24 * 60 * 60;
+  try {
+    await executeRaw(
+      `DELETE FROM system_settings WHERE (${quote("key")} LIKE ? OR ${quote("key")} LIKE ?) AND ${quote("updatedAt")} < ?`,
+      ["emailReminder:%", "telegramReminder:%", cutoff],
+    );
+  } finally {
+    invalidateAllSettingsCache();
+  }
+}
+
 /** UPSERT 单个系统设置 */
 export async function setSetting(key: string, value: string | null): Promise<void> {
   return setSettings({ [key]: value });

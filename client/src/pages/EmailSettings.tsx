@@ -48,6 +48,8 @@ export function EmailSettingsContent() {
     expiryReminder: false,
     trafficReminder: false,
     trafficReminderThreshold: 20,
+    adminCopy: false,
+    adminCopyTo: "",
   });
   const [testTo, setTestTo] = useState("");
   const [testError, setTestError] = useState("");
@@ -70,6 +72,8 @@ export function EmailSettingsContent() {
       expiryReminder: !!email.expiryReminder,
       trafficReminder: !!email.trafficReminder,
       trafficReminderThreshold: Number(email.trafficReminderThreshold || 20),
+      adminCopy: !!email.adminCopy,
+      adminCopyTo: email.adminCopyTo || "",
     });
   }, [email]);
 
@@ -113,6 +117,8 @@ export function EmailSettingsContent() {
         expiryReminder: form.expiryReminder,
         trafficReminder: form.trafficReminder,
         trafficReminderThreshold: Number(form.trafficReminderThreshold || 20),
+        adminCopy: form.adminCopy,
+        adminCopyTo: form.adminCopyTo,
       },
     });
   };
@@ -302,6 +308,28 @@ export function EmailSettingsContent() {
                 max={99}
                 value={form.trafficReminderThreshold}
                 onChange={(e) => setForm({ ...form, trafficReminderThreshold: Number(e.target.value || 20) })}
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 md:grid-cols-[1fr_240px]">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">{translateText("抄送管理员")}</p>
+                <p className="text-xs text-muted-foreground">{translateText("临期和流量提醒汇总发给管理员。")}</p>
+              </div>
+              <Switch
+                checked={form.adminCopy}
+                onCheckedChange={(adminCopy) => setForm({ ...form, adminCopy })}
+                disabled={!form.expiryReminder && !form.trafficReminder}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>{translateText("接收邮箱")}</Label>
+              <Input
+                value={form.adminCopyTo}
+                onChange={(e) => setForm({ ...form, adminCopyTo: e.target.value })}
+                placeholder={translateText("留空发给全部管理员")}
+                disabled={!form.adminCopy}
               />
             </div>
           </div>

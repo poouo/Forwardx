@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [2.3.300] - 2026-11-13
+
+- Added full-path speed tests for tunnels and forwarding chains, including multiple relays, selectable TCP / UDP, 10 seconds per direction by default, and live speed, gauges and charts.
+- Results include average and peak speed, received bytes and duration, plus UDP loss and jitter, with JSON export. Upgrade every Agent along the path before testing.
+- Documented speed-test usage and development APIs. Tests use temporary listening ports and the primary path for branched routes; V1 Mimic does not yet support UDP speed tests.
+- Email settings add "Copy Admins": expiry and low-traffic reminders are summarized in one email to admins. Recipients are configurable; leave blank to send to all admin accounts.
+- Fixed one rejected user address preventing email reminders for every user after it; disabled accounts no longer receive email reminders.
+- Reminder de-duplication records are now cleaned up periodically so the settings table stops growing.
+- Rewrote about 1,870 machine-translated strings in the English UI, with consistent terms for entry, exit, latency, probe and plan, and fixed mistranslations and placeholders glued to words.
 - Fixed fractional port values stopping the Agent of that host from syncing configuration; existing data is corrected when the panel starts.
 - Fixed the panel process possibly exiting when the Agent install script was requested during a brief database error.
 - The Telegram bot now answers commands only in private chats, so one-time login links never appear in group chats.
@@ -12,6 +21,7 @@
 - The dashboard traffic chart distinguishes inbound from outbound, with readable axes in dark mode.
 - Unified inbound/outbound wording and refined small text, the switch off state, user summary cards and announcement typography.
 - Shell scripts now always use LF line endings, fixing image builds from a Windows working tree.
+- Versions: panel `2.3.300`, Android / iOS `2.4.18`, Agent `2.2.212`, ForwardX FXP runtime `2.2.122` (unchanged). Please upgrade the Agent as well.
 
 ## [2.3.299] - 2026-11-10
 

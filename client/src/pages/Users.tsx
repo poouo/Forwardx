@@ -2457,7 +2457,7 @@ function UsersContent() {
                   <Label className="text-sm font-medium">{translateText("网络测试主机授权")}</Label>
                   <Badge variant="outline" className="text-[11px]">{allowedHostIds.length}{translateText(" 台")}</Badge>
                 </div>
-                <p className="text-xs text-muted-foreground">{translateText("网络测试会展示用户自己创建、通过主机授权或套餐授权获得的主机；这里用于手动增加授权。端口转发、转发链或转发组的成员主机不会因此单独展示。")}</p>
+                <p className="text-xs text-muted-foreground">{translateText("用户在网络测试里能看到自己创建的主机，以及通过主机授权或套餐获得的主机。这里可以手动追加授权；端口转发、转发链和转发组里的成员主机不会因此显示。")}</p>
                 <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
                   <SelectTrigger className="h-9 w-full">
                     <SelectValue placeholder={availableAllowedHosts.length ? translateText("选择要授权用于网络测试的主机") : translateText("暂无可添加网络测试主机")} />

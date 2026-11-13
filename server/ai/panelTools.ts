@@ -80,6 +80,7 @@ export const PANEL_SETTINGS: Record<string, Setting> = {
   emailExpiryReminder: setting("邮件到期提醒", "email.expiryReminder", "emailExpiryReminder"),
   emailTrafficReminder: setting("邮件流量提醒", "email.trafficReminder", "emailTrafficReminder"),
   emailTrafficReminderThreshold: setting("邮件剩余流量提醒阈值(%)", "email.trafficReminderThreshold", "emailTrafficReminderThreshold", 20, z.number().int().min(1).max(99)),
+  emailAdminCopy: setting("邮件提醒抄送管理员", "email.adminCopy", "emailAdminCopy"),
   telegramExpiryReminder: setting("TG到期提醒", "telegram.expiryReminder", "telegramExpiryReminder"),
   telegramTrafficReminder: setting("TG流量提醒", "telegram.trafficReminder", "telegramTrafficReminder"),
   telegramHostStatusNotify: setting("TG主机上下线通知", "telegram.hostStatusNotify", "telegramHostStatusNotify"),

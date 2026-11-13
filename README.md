@@ -11,7 +11,7 @@
 
 [使用文档](https://poouo.github.io/Forwardx/) · [发布下载](https://github.com/poouo/Forwardx/releases/latest) · [中文更新日志](CHANGELOG.md) · [English changelog](CHANGELOG.en.md) · [Telegram 群组](https://t.me/ForwardX_panel)
 
-> 文档按当前源码整理。源码、文档站和 Release 构建独立更新；新功能须使用包含它的发布包与 Agent，不能仅凭文档判断旧版本已支持。具体见 [版本说明](docs/guide/releases.md)。
+> 新功能需要对应版本的面板和 Agent，各组件的版本对应关系见 [版本说明](docs/guide/releases.md)。
 
 ## 功能概览
 
@@ -24,7 +24,7 @@
 
 ## 1. 选择部署方式
 
-正式环境使用**单面板实例**。数据库支持 SQLite、MySQL 和 PostgreSQL；外部数据库不代表支持多副本。被管理主机需 Linux、root 权限及到面板的网络连接。
+面板只支持单实例运行，数据库可选 SQLite、MySQL 或 PostgreSQL。被管理主机需要是 Linux、有 root 权限，并且能访问面板。
 
 | 方式 | 适用场景 | 详细说明 |
 | --- | --- | --- |
@@ -33,7 +33,7 @@
 | 手动 Compose / 发布包 | 自行维护环境、服务及升级 | [部署总览](docs/guide/deploy-panel.md) |
 | 本地开发 | 修改源码、测试页面，不用于公网生产 | [开发指南](docs/guide/development.md) |
 
-以下命令以 root 执行，非 root 将管道后的 `bash` 替换为 `sudo bash`。默认访问端口为 **9810**，以安装时选择为准。
+以下命令用 root 执行，非 root 把管道后的 `bash` 换成 `sudo bash`。面板默认端口 **9810**，安装时可以改。
 
 ### Docker 安装
 
@@ -41,7 +41,7 @@
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- install --language zh-CN
 ```
 
-默认目录 `/opt/forwardx-docker`，容器 `forwardx-panel`；宿主机端口映射容器 `3000`。数据库配置、SQLite 和其他持久化数据在容器 `/data` 对应的命名卷中，**不在默认部署目录的 data 子目录**。
+默认安装到 `/opt/forwardx-docker`，容器名 `forwardx-panel`，宿主机端口映射到容器的 `3000`。数据库配置、SQLite 文件等数据保存在挂载到容器 `/data` 的 Docker 命名卷里，**不在部署目录下**。
 
 ### Linux 本地安装
 
@@ -49,17 +49,17 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- install --language zh-CN
 ```
 
-默认目录 `/opt/forwardx-panel`，数据目录 `/opt/forwardx-panel/data`，服务 `forwardx-panel`；支持 systemd / OpenRC / SysV。安装器准备 Node.js 22+ 和 pnpm，并安装 Release 发布包。
+默认安装到 `/opt/forwardx-panel`，数据在其中的 `data` 目录，服务名 `forwardx-panel`，支持 systemd / OpenRC / SysV。安装器会自动准备 Node.js 22+ 和 pnpm。
 
-中文命令传入 `--language zh-CN`，英文 README 传入 `--language en`。首次向导可切换简体中文 / English，保留输入；浏览器中的手动语言选择优先。
+`--language` 决定安装器和初始化向导的默认语言，可选 `zh-CN` 或 `en`，进入向导后仍可切换。
 
 ## 2. 完成初始化并接入主机
 
-1. 打开 `http://服务器IP:9810`，核对数据库并创建首个管理员。复用旧数据库时使用原账号。
-2. 配置 [HTTPS 与反向代理](docs/guide/reverse-proxy.md)，在系统设置填写 Agent 可访问的面板公开地址。
+1. 打开 `http://服务器IP:9810`，确认数据库配置并创建管理员。沿用旧数据库时直接用原来的账号登录。
+2. 配置 [HTTPS 与反向代理](docs/guide/reverse-proxy.md)，并在系统设置里填写 Agent 能访问到的面板地址。
 3. 在「主机管理 → Token 管理」为**每台主机分别创建 Token**，复制该主机的安装命令。
-4. 在被管理 Linux 主机以 root 执行，确认 Agent 在线。
-5. 先创建端口转发 / 隧道等链路资源，再添加规则并用真实业务验证。
+4. 在被管理的主机上用 root 执行安装命令，回到面板确认主机在线。
+5. 在「链路管理」创建端口转发或隧道，再到「转发规则」添加规则，并实际连接一次确认能通。
 
 Agent 安装示例：
 
@@ -67,17 +67,17 @@ Agent 安装示例：
 curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
-替换实际地址和 Token。Docker 连接宿主机数据库时，不要把 `127.0.0.1` 当成宿主机。NAT 主机要配置实际映射端口段，安全组与系统防火墙均需放行对应端口。详见 [快速开始](docs/guide/quick-start.md)、[首次初始化](docs/guide/first-setup.md)、[Agent 安装](docs/guide/agent.md)。
+把地址和 Token 换成自己的。几个常见问题：面板跑在 Docker 里并连接宿主机上的数据库时，地址不能填 `127.0.0.1`（那是容器自己）；NAT 主机要填写实际映射的端口段；云安全组和系统防火墙都要放行转发端口。详见 [快速开始](docs/guide/quick-start.md)、[首次初始化](docs/guide/first-setup.md)、[Agent 安装](docs/guide/agent.md)。
 
 ## 3. SSH 日常管理
 
-新版官方安装/升级流程会注册四字母命令。SSH 中直接输入：
+用官方脚本安装或升级后，主机上会多一个 `fwxm` 命令：
 
 ```bash
 fwxm
 ```
 
-仅安装一种组件时进入对应菜单；同机安装面板与 Agent 时先选择对象。菜单提供运行状态、日志、重启、代理设置、升级、重装修复和卸载；面板额外提供管理员密码重置。Docker 面板在**宿主机**使用，非 root 使用 `sudo fwxm`。
+不带参数时进入交互菜单，可以查看状态和日志、重启、设置代理、升级、重装修复和卸载，面板还可以重置管理员密码。同一台机器同时装了面板和 Agent 时，会先让你选择管理哪一个。Docker 部署的面板在**宿主机**上执行；非 root 用 `sudo fwxm`。常用子命令：
 
 ```bash
 fwxm panel status
@@ -92,11 +92,11 @@ fwxm agent logs
 fwxm agent upgrade
 ```
 
-旧版本或手工部署未必有该命令；使用对应官方安装器升级后才能注册，手工部署不要直接套用默认安装流程。[完整命令与适用范围](docs/guide/agent-proxy-manager.md)。
+旧版本和手工部署没有这个命令，用官方安装器升级后才会有；手工部署不要直接运行安装器。完整命令见 [SSH 管理与代理](docs/guide/agent-proxy-manager.md)。
 
 ## 4. Agent 通过 SOCKS 代理安装、运行与升级
 
-下载入口脚本和执行安装是两个阶段，**两处都要指定代理**：
+下载安装脚本和执行安装是两步，**都要指定代理**：
 
 ```bash
 curl --proxy 'socks5h://127.0.0.1:1080' -fsSL \
@@ -107,7 +107,7 @@ PANEL_URL='https://panel.example.com' bash /tmp/forwardx-install-agent.sh \
   install YOUR_AGENT_TOKEN --proxy 'socks5h://127.0.0.1:1080'
 ```
 
-代理保存到 `/etc/forwardx/agent/config.json` 的 `proxyUrl`，升级默认沿用。已有新版 Agent 可编辑该字段并重启，或使用：
+代理地址保存在 `/etc/forwardx/agent/config.json` 的 `proxyUrl`，升级时沿用。之后要修改，可以编辑这个字段再重启 Agent，或者用：
 
 ```bash
 fwxm agent proxy show
@@ -115,20 +115,20 @@ fwxm agent proxy set
 fwxm agent proxy off
 ```
 
-`set` 提供隐藏输入并重启 Agent；`off` 保存为直连并重启。删除或清空 `proxyUrl` 后重启也会明确直连，不继承系统代理变量。代理仅覆盖管理通信与下载，**不改变转发业务和网络探测路径**。
+`set` 和 `off` 都会重启 Agent。清空 `proxyUrl` 即为直连，Agent 不读取系统的代理环境变量。代理只用于 Agent 与面板的通信和下载，**转发流量和网络探测不走代理**。
 
-支持 SOCKS5 / HTTP / HTTPS，SOCKS 域名由代理解析。系统依赖安装仍取决于包管理器；Alpine APK 使用 SOCKS 时需预装依赖。Docker 镜像拉取需单独配置 Docker daemon 的 HTTP/HTTPS 代理；面板维护代理不等同于 Node 运行代理。详见 [代理指南](docs/guide/agent-proxy-manager.md)。
+支持 SOCKS5 / HTTP / HTTPS 代理。系统依赖由包管理器安装，不受此代理控制，Alpine 上使用 SOCKS 时需要先装好依赖；Docker 拉取镜像要另外给 Docker daemon 配置代理。详见 [代理指南](docs/guide/agent-proxy-manager.md)。
 
 ## 5. 升级、备份与恢复
 
-升级前 [备份数据库和配置](docs/guide/upgrade-backup.md)。有 `fwxm` 时：
+升级前先 [备份数据库和配置](docs/guide/upgrade-backup.md)。已有 `fwxm` 时：
 
 ```bash
 fwxm panel upgrade
 fwxm agent upgrade
 ```
 
-旧版脚本部署：
+没有 `fwxm` 的旧部署：
 
 ```bash
 # Docker 面板
@@ -138,11 +138,11 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- upgrade
 ```
 
-原地升级会重启服务或重建容器，不保证业务不断。脚本保留数据和识别的核心配置，但会重写 `.env` / Compose，自定义环境、挂载与服务配置需备份核对。数据库已升级时，换回旧程序不等于安全回退。
+升级会重启服务或重建容器，期间面板不可用；升级 Agent 可能短暂中断该主机上的转发。脚本保留数据和核心配置，但会重写 `.env` 和 Compose 文件，自己加过的环境变量、挂载和服务配置要先备份，升级后核对。数据库结构升级后不能直接换回旧版程序，需要回退时请恢复升级前的备份。
 
-GitHub 访问受限时使用 [可信加速站](docs/guide/deploy-docker.md#github-下载加速)；它与 SOCKS 代理不同，不代理 GHCR 镜像拉取。
+访问 GitHub 受限时可以使用 [下载加速站](docs/guide/deploy-docker.md#github-下载加速)。它只加速 GitHub 下载，不是代理，也不能加速 GHCR 镜像拉取。
 
-忘记密码使用 `fwxm panel reset-admin`，旧部署见 [账号恢复](docs/guide/account-recovery.md)。重装不会重置旧数据库管理员。**卸载 Agent 会中断受管转发；Docker 卸载确认后删除数据卷，本地卸载可选择保留数据**，详见 [卸载说明](docs/guide/uninstall.md)。
+忘记管理员密码时执行 `fwxm panel reset-admin`，旧部署见 [账号恢复](docs/guide/account-recovery.md)；重装面板不会重置密码。**卸载 Agent 会停掉该主机上的转发；Docker 方式卸载会删除数据卷，本地方式可以选择保留数据**，详见 [卸载说明](docs/guide/uninstall.md)。
 
 ## 文档导航
 
@@ -154,13 +154,13 @@ GitHub 访问受限时使用 [可信加速站](docs/guide/deploy-docker.md#githu
 | 账户与通知 | [用户套餐](docs/guide/users-billing.md) · [通知](docs/guide/notifications.md) · [工单](docs/guide/support-tickets.md) · [推广](docs/guide/affiliates.md) |
 | 扩展与恢复 | [Google 登录](docs/guide/google-login.md) · [AI](docs/guide/ai-assistant.md) · [插件](docs/guide/plugins.md) · [迁移](docs/guide/migration.md) · [排障](docs/guide/troubleshooting.md) |
 
-完整目录见 [文档首页](docs/guide/index.md)。面板支持中英文；未手动选择时根据部署语言（初始化期间）、浏览器和可信地区提示判断，不额外请求第三方 IP 定位。手动选择保存在当前浏览器，常规切换需刷新并先保存表单。语言菜单仅有简体中文 / English。
+完整目录见 [文档首页](docs/guide/index.md)。界面支持简体中文和 English，默认按浏览器语言显示，可在界面中切换。
 
 ## 移动客户端
 
-从 [GitHub Releases](https://github.com/poouo/Forwardx/releases/latest) 下载 Android APK 或 `forwardx-ios-v版本-unsigned.ipa`。iOS / iPadOS 15+，IPA **未签名**，证书、签名与安装由用户自行处理，不提供 App Store / TestFlight 分发。
+在 [GitHub Releases](https://github.com/poouo/Forwardx/releases/latest) 下载 Android APK 或 iOS 的 `forwardx-ios-v版本-unsigned.ipa`。IPA **未签名**，需要自行签名后安装（iOS / iPadOS 15+），不提供 App Store 或 TestFlight 版本。
 
-Android 与 iOS 统一应用版本号，独立于面板 / Agent / FXP 版本；安装包是否可用以工作流和 Release 附件为准。详见 [移动客户端](docs/guide/mobile-app.md)。
+Android 和 iOS 使用同一个 App 版本号，与面板、Agent 的版本号无关。详见 [移动客户端](docs/guide/mobile-app.md)。
 
 ## 本地开发
 
@@ -169,13 +169,16 @@ pnpm install
 pnpm dev:panel
 ```
 
-需要 Node.js 22+、pnpm 10.28.1。`dev:panel` 在 `http://127.0.0.1:5173` 启动真实页面，使用项目 `.dev` 中的隔离 SQLite 数据和开发管理员自动登录，**禁止暴露公网**。`pnpm dev` 仅直接启动后端，不是隔离开发启动器。
+需要 Node.js 22+ 和 pnpm 10.28.1。`dev:panel` 在 `http://127.0.0.1:5173` 启动面板，使用项目 `.dev` 目录里的独立 SQLite 数据，并自动以开发管理员登录，**不要暴露到公网**。`pnpm dev` 只启动后端，不带这套隔离数据。
 
-验证：`pnpm exec tsc --noEmit`、`pnpm test:agent-proxy`、`pnpm test:server`、`pnpm build`、`pnpm docs:build`、`pnpm check:versions`。详见 [开发指南](docs/guide/development.md)。
+提交前可以运行：`pnpm exec tsc --noEmit`、`pnpm test:agent-proxy`、`pnpm test:server`、`pnpm build`、`pnpm docs:build`、`pnpm check:versions`。详见 [开发指南](docs/guide/development.md)。
 
 ## 安全建议
 
-固定随机 `JWT_SECRET`，启用 HTTPS、强密码及最小权限；不需要注册时关闭入口。登录人机验证默认开启，管理员可在系统配置选择点击验证或混淆图片验证码，也可关闭，但公网推荐保持开启。保护 Agent / DDNS Token、代理凭据和备份，定期验证恢复；不要公开 `.env`、数据库配置或迁移密钥。
+- 设置固定的随机 `JWT_SECRET`，启用 HTTPS，使用强密码。
+- 不开放注册时关闭注册入口。登录人机验证默认开启，公网部署建议保留。
+- Agent Token、DDNS Token、代理账号和备份文件按密码对待；不要公开 `.env`、数据库配置和迁移密钥。
+- 定期备份，并确认备份能恢复。
 
 ## 给作者充点克劳德
 

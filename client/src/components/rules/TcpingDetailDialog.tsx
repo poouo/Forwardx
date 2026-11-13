@@ -234,8 +234,8 @@ function TcpingDetailDialog({
             failureLabel={isForwardChain ? translateText("逐跳探测失败率") : probeMethod === "ping" ? translateText("Ping 丢包率") : translateText("TCP 连接失败率")}
             counterStatistics={counterStatistics ?? null}
             description={isForwardChain
-              ? translateText("按各跳实际探测计数，不等于端到端业务丢包；仅包含支持累计计数且已上报的 Agent 探测。")
-              : translateText("统计当前目标的实际探测，不代表业务丢包；隧道路径健康状态另行判断。旧数据不补算，统计边界受上报间隔影响。")} />
+              ? translateText("按每一跳的实际探测统计，不等于端到端的业务丢包。旧版 Agent 的探测不计入。")
+              : translateText("统计对当前目标的实际探测，不代表业务丢包，也不反映隧道路径是否健康。之前的数据不补算。")} />
         </div>
       </DialogContent>
     </Dialog>

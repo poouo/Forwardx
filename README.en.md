@@ -11,7 +11,7 @@ Manage port forwarding, encrypted tunnels, failover, users and plans across Linu
 
 [Documentation (Chinese)](https://poouo.github.io/Forwardx/) · [Downloads](https://github.com/poouo/Forwardx/releases/latest) · [English changelog](CHANGELOG.en.md) · [中文更新日志](CHANGELOG.md) · [Telegram Group](https://t.me/ForwardX_panel)
 
-> Documentation follows the current source. Source, documentation deployment and Release builds update independently. New features require packages and Agents containing those changes; older installed versions may not support them. See [version guidance](docs/guide/releases.md).
+> New features need a panel and Agent release that includes them. See [version guidance](docs/guide/releases.md) for how component versions line up.
 
 ## Features
 
@@ -24,7 +24,7 @@ Manage port forwarding, encrypted tunnels, failover, users and plans across Linu
 
 ## 1. Choose a deployment method
 
-Production requires a **single panel instance**. SQLite, MySQL and PostgreSQL are supported; an external database does not imply multi-replica support. Managed hosts require Linux, root access and connectivity to the panel.
+The panel runs as a single instance and stores data in SQLite, MySQL or PostgreSQL. Managed hosts must run Linux, give you root access and be able to reach the panel.
 
 | Method | Use case | Guide |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ Production requires a **single panel instance**. SQLite, MySQL and PostgreSQL ar
 | Manual Compose / release bundle | You maintain configuration, services and upgrades | [Deployment overview](docs/guide/deploy-panel.md) |
 | Local development | Source/UI testing, never public production | [Development](docs/guide/development.md) |
 
-Run commands as root; otherwise replace the Bash command after the pipe with `sudo bash`. The default public port is **9810**, unless changed during installation.
+Run the commands below as root, or replace `bash` after the pipe with `sudo bash`. The panel listens on port **9810** by default; you can change it during installation.
 
 ### Docker installation
 
@@ -41,7 +41,7 @@ Run commands as root; otherwise replace the Bash command after the pipe with `su
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | bash -s -- install --language en
 ```
 
-Default host directory: `/opt/forwardx-docker`; container: `forwardx-panel`; container port: `3000`. Database configuration, SQLite and persistent data live in a named volume mounted at `/data`, **not in a data subdirectory of the default host deployment directory**.
+Installs to `/opt/forwardx-docker` with a container named `forwardx-panel`; the host port maps to container port `3000`. Database settings, the SQLite file and other data live in a Docker named volume mounted at `/data`, **not under the deployment directory**.
 
 ### Linux local installation
 
@@ -49,17 +49,17 @@ Default host directory: `/opt/forwardx-docker`; container: `forwardx-panel`; con
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- install --language en
 ```
 
-Default directory: `/opt/forwardx-panel`; data: `/opt/forwardx-panel/data`; service: `forwardx-panel`. Supports systemd / OpenRC / SysV. The installer prepares Node.js 22+ and pnpm, then installs a Release bundle.
+Installs to `/opt/forwardx-panel` with data in its `data` directory and a service named `forwardx-panel`. systemd, OpenRC and SysV are supported. The installer sets up Node.js 22+ and pnpm for you.
 
-English commands pass `--language en`; the Chinese README passes `--language zh-CN`. The setup wizard can switch between Simplified Chinese and English without losing form input. A saved browser preference takes priority.
+`--language` sets the default language of the installer and the setup wizard (`en` or `zh-CN`). You can still switch inside the wizard.
 
 ## 2. Initialize and connect hosts
 
-1. Open `http://SERVER_IP:9810`, check database settings and create the first administrator. Reused databases retain existing accounts.
-2. Configure [HTTPS/reverse proxy](docs/guide/reverse-proxy.md) and set the public panel URL reachable by Agents.
+1. Open `http://SERVER_IP:9810`, confirm the database settings and create the administrator. If you reuse an existing database, sign in with the existing account.
+2. Configure [HTTPS and a reverse proxy](docs/guide/reverse-proxy.md), then enter the panel address that Agents can reach under **Settings**.
 3. In **Hosts → Token Management**, create a **separate Token for each host** and copy its installation command.
-4. Run it as root on the managed Linux host and verify the Agent is online.
-5. Create a link resource (port forward/tunnel), add a forwarding rule, then test real application traffic.
+4. Run the command as root on the managed host, then check in the panel that the host is online.
+5. Create a port forward or tunnel under **Links**, add a rule under **Forwarding Rules**, and connect through it once to confirm it works.
 
 Example Agent installation:
 
@@ -67,17 +67,17 @@ Example Agent installation:
 curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
-Replace the URL and Token. Inside Docker, `127.0.0.1` is not the host database address. NAT hosts need their actual mapped port ranges configured; allow ports through both security groups and host firewalls. See [Quick Start](docs/guide/quick-start.md), [Setup](docs/guide/first-setup.md) and [Agent installation](docs/guide/agent.md).
+Replace the URL and Token with your own. Common pitfalls: when the panel runs in Docker and uses a database on the host, `127.0.0.1` points at the container, not the host; NAT hosts need their actual mapped port range; forwarding ports must be open in both the cloud security group and the host firewall. See [Quick Start](docs/guide/quick-start.md), [Setup](docs/guide/first-setup.md) and [Agent installation](docs/guide/agent.md).
 
 ## 3. SSH management
 
-New official installation/upgrade workflows register the four-letter command. In SSH, run:
+Installing or upgrading with the official scripts adds the `fwxm` command to the host:
 
 ```bash
 fwxm
 ```
 
-With one installed role, its menu opens directly. With both roles on the same host, choose panel or Agent first. Menus provide status, logs, restart, proxies, upgrades, repair and removal; the panel menu also offers administrator password reset. Manage Docker panels from the **host**, not the container. Non-root users run `sudo fwxm`.
+Without arguments it opens an interactive menu for status, logs, restart, proxy settings, upgrade, repair and removal; the panel menu can also reset the administrator password. If the panel and an Agent share a host, it asks which one to manage first. For a Docker panel, run it on the **host**, not in the container. Non-root users run `sudo fwxm`. Common subcommands:
 
 ```bash
 fwxm panel status
@@ -92,11 +92,11 @@ fwxm agent logs
 fwxm agent upgrade
 ```
 
-Older/manual deployments may not have this command. Official script-managed installations register it on upgrade; do not blindly apply default installers to manually managed deployments. [Full command and proxy guide](docs/guide/agent-proxy-manager.en.md).
+Older versions and manual deployments do not have this command until they are upgraded with the official installer; do not run the installer over a manual deployment. See the [full command and proxy guide](docs/guide/agent-proxy-manager.en.md).
 
 ## 4. Agent installation, runtime and upgrades through SOCKS
 
-Downloading the bootstrap and running it are separate steps: **configure both proxies**.
+Downloading the install script and running it are two steps, and **both need the proxy**:
 
 ```bash
 curl --proxy 'socks5h://127.0.0.1:1080' -fsSL \
@@ -107,7 +107,7 @@ PANEL_URL='https://panel.example.com' bash /tmp/forwardx-install-agent.sh \
   install YOUR_AGENT_TOKEN --proxy 'socks5h://127.0.0.1:1080'
 ```
 
-The installer saves `proxyUrl` in `/etc/forwardx/agent/config.json`; upgrades reuse it. Existing newer Agents can edit the field and restart, or use:
+The proxy address is saved as `proxyUrl` in `/etc/forwardx/agent/config.json` and reused on upgrade. To change it later, edit that field and restart the Agent, or use:
 
 ```bash
 fwxm agent proxy show
@@ -115,20 +115,20 @@ fwxm agent proxy set
 fwxm agent proxy off
 ```
 
-`set` uses hidden input, saves and restarts Agent; `off` saves direct mode and restarts. Removing/clearing `proxyUrl` and restarting also means explicit direct mode, ignoring host proxy variables. Only management/download traffic is proxied, **not forwarding or network probes**.
+`set` and `off` both restart the Agent. An empty `proxyUrl` means a direct connection; the Agent does not read the system proxy environment variables. The proxy only carries Agent-to-panel traffic and downloads; **forwarded traffic and network probes do not use it**.
 
-Supports SOCKS5 / HTTP / HTTPS; SOCKS uses remote DNS. Dependency installation depends on package-manager support; preinstall Alpine APK dependencies when using SOCKS. Docker pulls need a separate Docker daemon HTTP/HTTPS proxy. Panel maintenance proxy settings do not proxy Node runtime traffic. See the [proxy guide](docs/guide/agent-proxy-manager.en.md).
+SOCKS5, HTTP and HTTPS proxies are supported. System dependencies are installed by the package manager, which this proxy does not control, so preinstall them on Alpine when using SOCKS. Docker image pulls need a proxy configured on the Docker daemon. See the [proxy guide](docs/guide/agent-proxy-manager.en.md).
 
 ## 5. Upgrades, backups and recovery
 
-[Back up databases and configuration](docs/guide/upgrade-backup.md) first. With the manager:
+[Back up the database and configuration](docs/guide/upgrade-backup.md) before upgrading. If you have `fwxm`:
 
 ```bash
 fwxm panel upgrade
 fwxm agent upgrade
 ```
 
-For older script-managed deployments:
+For older deployments without `fwxm`:
 
 ```bash
 # Docker panel
@@ -138,11 +138,11 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | bash -s -- upgrade
 ```
 
-In-place upgrades restart services/recreate containers; uninterrupted traffic is not guaranteed. Installers retain data and recognized settings, but regenerate `.env`/Compose. Back up and recheck custom variables, mounts and services. Downgrading binaries alone is not a safe rollback after database migrations.
+An upgrade restarts the service or recreates the container, so the panel is briefly unavailable; upgrading an Agent can briefly interrupt forwarding on that host. The scripts keep your data and core settings but rewrite `.env` and the Compose file, so back up any custom variables, mounts or service settings and check them afterwards. Once the database schema has been upgraded you cannot simply switch back to the old program; restore the pre-upgrade backup to roll back.
 
-Use a [trusted GitHub accelerator](docs/guide/deploy-docker.md#github-下载加速) if necessary. It is different from a SOCKS proxy and does not proxy GHCR image pulls.
+If GitHub is hard to reach, use a [download accelerator](docs/guide/deploy-docker.md#github-下载加速). It only speeds up GitHub downloads; it is not a proxy and does not cover GHCR image pulls.
 
-For forgotten passwords use `fwxm panel reset-admin`, or the [older deployment recovery methods](docs/guide/account-recovery.md). Reinstallation does not reset accounts in an existing database. **Agent removal interrupts managed forwarding; confirmed Docker removal deletes its volume, while local removal can retain data.** See [removal guidance](docs/guide/uninstall.md).
+If you forget the administrator password, run `fwxm panel reset-admin` (older deployments: see [account recovery](docs/guide/account-recovery.md)). Reinstalling the panel does not reset it. **Removing an Agent stops forwarding on that host; removing a Docker panel deletes its data volume, while a local removal lets you keep the data.** See [removal guidance](docs/guide/uninstall.md).
 
 ## Documentation map
 
@@ -156,13 +156,13 @@ Most detailed guides are in Chinese; English guides cover [SSH/proxies](docs/gui
 | Accounts/notifications | [Users/plans](docs/guide/users-billing.md) · [Notifications](docs/guide/notifications.md) · [Tickets](docs/guide/support-tickets.md) · [Referrals](docs/guide/affiliates.md) |
 | Extensions/recovery | [Google sign-in](docs/guide/google-login.md) · [AI](docs/guide/ai-assistant.md) · [Plugins](docs/guide/plugins.md) · [Migration](docs/guide/migration.md) · [Troubleshooting](docs/guide/troubleshooting.md) |
 
-See the [full index](docs/guide/index.md). Without a manual preference, language follows the installation hint during setup, then browser languages/trusted country hints; no extra third-party visitor IP lookup is made. Manual selection is saved in the current browser. Normal language switching reloads the page, so save changes first. The selector offers only Simplified Chinese / English.
+See the [full index](docs/guide/index.md). The interface is available in Simplified Chinese and English; it follows your browser language by default and can be switched in the interface.
 
 ## Mobile clients
 
-Download Android APK or `forwardx-ios-v<version>-unsigned.ipa` from [GitHub Releases](https://github.com/poouo/Forwardx/releases/latest). iOS/iPadOS 15+ is supported. The IPA is **unsigned**: users provide certificates, signing and installation; App Store/TestFlight distribution is not provided.
+Download the Android APK or the iOS `forwardx-ios-v<version>-unsigned.ipa` from [GitHub Releases](https://github.com/poouo/Forwardx/releases/latest). The IPA is **unsigned**: sign and install it yourself (iOS/iPadOS 15+). There is no App Store or TestFlight build.
 
-Android and iOS share an app version, independent of panel/Agent/FXP versions. Availability depends on workflow completion and actual Release assets. See [mobile clients](docs/guide/mobile-app.md).
+Android and iOS share one app version number, which is independent of the panel and Agent versions. See [mobile clients](docs/guide/mobile-app.md).
 
 ## Local development
 
@@ -171,13 +171,16 @@ pnpm install
 pnpm dev:panel
 ```
 
-Requires Node.js 22+ and pnpm 10.28.1. `dev:panel` serves real pages at `http://127.0.0.1:5173` with isolated SQLite data under the repository's `.dev` and automatic developer-admin sign-in. **Never expose it publicly.** `pnpm dev` starts only the backend and is not the isolated launcher.
+Requires Node.js 22+ and pnpm 10.28.1. `dev:panel` serves the panel at `http://127.0.0.1:5173` using separate SQLite data under `.dev` and signs you in as a development administrator, so **never expose it publicly**. `pnpm dev` starts only the backend, without that isolated data.
 
-Checks: `pnpm exec tsc --noEmit`, `pnpm test:agent-proxy`, `pnpm test:server`, `pnpm build`, `pnpm docs:build`, `pnpm check:versions`. See [development](docs/guide/development.md).
+Before submitting, run `pnpm exec tsc --noEmit`, `pnpm test:agent-proxy`, `pnpm test:server`, `pnpm build`, `pnpm docs:build` and `pnpm check:versions`. See [development](docs/guide/development.md).
 
 ## Security
 
-Keep a fixed random `JWT_SECRET`, use HTTPS/strong passwords/least privilege, and disable public registration when unnecessary. Human verification defaults to enabled; administrators can select click verification or obfuscated image CAPTCHA in system configuration, or disable it. Keep it enabled on public panels. Protect Agent/DDNS Tokens, proxy credentials and backups; verify restores. Never publish `.env`, database configuration or migration credentials.
+- Set a fixed random `JWT_SECRET`, enable HTTPS and use strong passwords.
+- Turn off registration if you do not need it. Sign-in human verification is on by default; keep it on for public panels.
+- Treat Agent Tokens, DDNS Tokens, proxy credentials and backups like passwords. Never publish `.env`, database settings or migration keys.
+- Back up regularly and confirm that a backup restores.
 
 ## Support the author
 

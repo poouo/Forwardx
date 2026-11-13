@@ -1,4 +1,5 @@
 import { t as translateText } from "@/i18n";
+import { LinkSpeedTestButton } from "@/components/LinkSpeedTest";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import { HintSwitch } from "@/components/ui/hint-switch";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -1660,6 +1661,7 @@ export function ForwardGroupsContent({
 
   const chainLatencyActions = (group: any) => group.groupMode === "chain" ? (
     <>
+      <LinkSpeedTestButton resourceType="chain" resourceId={Number(group.id)} name={group.name} />
       <Button
         variant="ghost"
         size="icon"

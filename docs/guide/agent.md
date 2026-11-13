@@ -38,8 +38,6 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install Y
 
 若填错地址导致离线，先修正面板内该主机的配置，再通过 SSH 修改 `/etc/forwardx/agent/config.json` 中的 `panelUrl` 为可达入口并执行 `systemctl restart forwardx-agent`。只在本地修改、却不修正面板设置，会在下次通信时再次被覆盖。进行面板迁移时，需要同步调整自建反向代理的后端；迁移流程的显式切换指令仍优先于普通配置。
 
-English: In **Hosts → Edit → Other settings**, enable **Agent panel URL** to use a per-host reverse-proxy URL, including custom ports. Off uses the global URL and retains the saved value. The URL must lead to the same panel and forward Agent APIs, authentication headers and SSE correctly, with valid TLS. Installation for bound tokens, communication, upgrades and rollback use this URL. Existing Agents adopt it on the next heartbeat; the updated Agent also reconnects SSE without restarting forwarding. Offline Agents must regain connectivity first. If the URL is wrong, correct it in the panel, fix `panelUrl` in `/etc/forwardx/agent/config.json`, and restart `forwardx-agent` over SSH. This is not a local URL lock or an automatic reverse-proxy setup.
-
 ## 3. SOCKS / HTTP 代理（可选）
 
 需要使用代理时，下载入口脚本与安装执行均需设置：

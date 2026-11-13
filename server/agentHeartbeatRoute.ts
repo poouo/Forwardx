@@ -36,6 +36,7 @@ import { isIP } from "net";
 import { resolve4, resolve6 } from "dns/promises";
 import { hasQueuedLookingGlassAgentTasks, takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { hasQueuedIperf3AgentTasks, takeIperf3AgentTasks } from "./iperf3AgentTasks";
+import { hasQueuedLinkSpeedTasks, takeLinkSpeedTasks, recordLinkSpeedCapability } from "./linkSpeedTasks";
 import { recordIpSwitchAgentCapability, hasQueuedIpSwitchAgentTasks, takeIpSwitchAgentTasks } from "./agentIpSwitchTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
@@ -1819,6 +1820,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return;
     }
 
+    recordLinkSpeedCapability(host.id, req.body?.linkSpeedSupported === true);
     const reportedPluginInventoryForFastPath = getAgentPluginInventory(host.id);
     const pluginInventorySignature = agentPluginInventorySignature(reportedPluginInventoryForFastPath);
     const mimicEnvironmentSignature = stableStateSignature(mimicEnvironment || null);
@@ -1830,6 +1832,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         || hasHostTcpingRequest(host.id)
         || hasQueuedLookingGlassAgentTasks(host.id)
         || hasQueuedIperf3AgentTasks(host.id)
+        || hasQueuedLinkSpeedTasks(host.id)
         || hasQueuedIpSwitchAgentTasks(host.id)
         || hasQueuedPluginAgentTasks(host.id),
       recoveryTriggered,
@@ -6580,6 +6583,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
+    const linkSpeedTasks = takeLinkSpeedTasks(host.id);
     const ipSwitchTasks = takeIpSwitchAgentTasks(host.id);
     const pluginsAwaitingSync = new Set(pluginSyncTasks.map((task) => task.pluginId));
     const pluginTasks = supportsPluginTasks && reportedPluginInventory && !pluginSyncActionQueued
@@ -6591,6 +6595,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const hasPendingPluginTasks = supportsPluginTasks && hasQueuedPluginAgentTasks(host.id);
     const hasInteractiveTasks = lookingGlassTests.length > 0
       || iperf3Tasks.length > 0
+      || linkSpeedTasks.length > 0
       || ipSwitchTasks.length > 0
       || pluginTasks.length > 0
       || hasPendingPluginTasks
@@ -6723,6 +6728,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       interactiveTasks: hasInteractiveTasks ? (
         lookingGlassTests.length
         + iperf3Tasks.length
+        + linkSpeedTasks.length
         + ipSwitchTasks.length
         + pluginTasks.length
         + (hasPendingPluginTasks ? 1 : 0)
@@ -6739,6 +6745,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       stateSignatures: stateSections.signatures,
       lookingGlassTests,
       iperf3Tasks,
+      linkSpeedTasks,
       ipSwitchTasks,
       pluginTasks,
       trafficShutdownCheck,

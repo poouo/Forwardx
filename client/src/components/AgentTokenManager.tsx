@@ -925,7 +925,7 @@ export default function AgentTokenManager({
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>{translateText("当前安装地址是本机回环地址")}</AlertTitle>
-                <AlertDescription>{translateText("Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。")}</AlertDescription>
+                <AlertDescription>{translateText("localhost、127.0.0.1 和 ::1 指向的是 Agent 所在的机器，装到其他主机上连不上面板，装在面板本机也可能不上线。请先在系统设置里填写面板公开地址，或用实际 IP、域名打开面板后再复制命令。")}</AlertDescription>
               </Alert>
             )}
             <div className="space-y-2">
@@ -1034,7 +1034,7 @@ export default function AgentTokenManager({
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>{translateText("当前安装地址是本机回环地址")}</AlertTitle>
-                <AlertDescription>{translateText("Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。")}</AlertDescription>
+                <AlertDescription>{translateText("localhost、127.0.0.1 和 ::1 指向的是 Agent 所在的机器，装到其他主机上连不上面板，装在面板本机也可能不上线。请先在系统设置里填写面板公开地址，或用实际 IP、域名打开面板后再复制命令。")}</AlertDescription>
               </Alert>
             )}
             <CommandRow

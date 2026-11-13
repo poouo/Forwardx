@@ -7177,6 +7177,7 @@ function RulesContent() {
         <SelfTestDialog
           ruleId={selfTestRule.id}
           ruleName={selfTestRule.name}
+          probeMethod={ruleLatencyProbeMethodForRule(selfTestRuleDetail || selfTestRule)}
           sourceLabel={selfTestLinkTestNodeData.sourceLabel}
           targetLabel={selfTestLinkTestNodeData.targetLabel}
           nodeMeta={selfTestLinkTestNodeData.nodeMeta}
@@ -8460,6 +8461,7 @@ function RulesContent() {
 function SelfTestDialog({
   ruleId,
   ruleName,
+  probeMethod,
   sourceLabel,
   targetLabel,
   nodeMeta,
@@ -8469,6 +8471,7 @@ function SelfTestDialog({
 }: {
   ruleId: number;
   ruleName: string;
+  probeMethod?: "tcping" | "ping";
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, any>;
@@ -8584,6 +8587,8 @@ function SelfTestDialog({
             <Activity className="h-5 w-5" />{translateText("延迟探测")}</DialogTitle>
           <DialogDescription>{ruleName}</DialogDescription>
         </DialogHeader>
+
+        {probeMethod === "ping" && <p className="text-xs leading-5 text-muted-foreground">{translateText("UDP 延迟仅供参考，不代表实际延迟。")}</p>}
 
         <LinkTestProbeView
           parsed={parsedMessage}

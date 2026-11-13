@@ -28,6 +28,7 @@ import { getTunnelMultiEntryLatency, recordTunnelMultiEntryLatency } from "./tun
 import { tunnelMultiEntryProbeMessage } from "./tunnelMultiEntryProbeMessage";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
+import { claimLinkSpeedTask, reportLinkSpeedTask } from "./linkSpeedTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
 import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
@@ -595,6 +596,20 @@ agentRouter.post("/api/agent/ip-switch-result", async (req: Request, res: Respon
   } catch { res.status(500).json({ error: "IP switch result failed" }); }
 });
 
+agentRouter.post("/api/agent/link-speed-claim", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    res.json({ allowed: claimLinkSpeedTask(host.id, String(req.body?.taskId || ""), String(req.body?.jobId || "")) });
+  } catch { res.status(500).json({ error: "Speed test claim failed" }); }
+});
+agentRouter.post("/api/agent/link-speed-result", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    res.json({ success: reportLinkSpeedTask(host.id, req.body?.result) });
+  } catch { res.status(500).json({ error: "Speed test report failed" }); }
+});
 agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
   try {
     const host = await getAgentHostIdentityFromRequest(req);

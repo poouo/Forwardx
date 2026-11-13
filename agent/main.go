@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.211"
+var Version = "2.2.212"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -853,6 +853,7 @@ type heartbeatResp struct {
 	DNSWatch                []dnsWatchItem           `json:"dnsWatch"`
 	LookingGlassTests       []lookingGlassTask       `json:"lookingGlassTests"`
 	Iperf3Tasks             []iperf3Task             `json:"iperf3Tasks"`
+	LinkSpeedTasks         []linkSpeedTask           `json:"linkSpeedTasks"`
 	IPSwitchTasks           []ipSwitchTask           `json:"ipSwitchTasks"`
 	PluginTasks             []pluginAgentTask        `json:"pluginTasks"`
 	AgentUpgrade            *agentUpgrade            `json:"agentUpgrade"`
@@ -3555,7 +3556,7 @@ func logHeartbeatResponse(mode string, resp *heartbeatResp, duration time.Durati
 	anomalous = anomalous || resp.ReconciliationCoalesced
 	anomalous = anomalous || resp.AgentUpgrade != nil || resp.PanelMigration != nil
 	anomalous = anomalous || len(resp.Actions) > 0 || len(resp.SelfTests) > 0
-	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.PluginTasks) > 0 || len(resp.IPSwitchTasks) > 0
+	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.LinkSpeedTasks) > 0 || len(resp.PluginTasks) > 0 || len(resp.IPSwitchTasks) > 0
 	interval := agentHeartbeatSummaryLogInterval
 	if anomalous {
 		interval = agentReportLogInterval
@@ -3825,6 +3826,7 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 		heartbeatStaticChanged(currentStatic, previousStatic) ||
 		time.Since(previousStatic.ReportedAt) >= heartbeatStaticReportInterval
 	payload := map[string]any{}
+	payload["linkSpeedSupported"] = true
 	payload["agentBootId"] = agentBootID
 	payload["agentBootedAt"] = time.Now().Unix() - uptimeValue
 	payload["agentProcessId"] = os.Getpid()
@@ -3956,6 +3958,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 	}
 	for _, task := range resp.Iperf3Tasks {
 		go handleIperf3Task(cfg, task)
+	}
+	for _, task := range resp.LinkSpeedTasks {
+		go handleLinkSpeedTask(cfg, task)
 	}
 	for _, task := range resp.IPSwitchTasks {
 		go handleIPSwitchTask(cfg, task)

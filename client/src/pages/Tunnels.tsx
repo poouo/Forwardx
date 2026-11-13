@@ -1,4 +1,5 @@
 import { t as translateText } from "@/i18n";
+import { LinkSpeedTestButton } from "@/components/LinkSpeedTest";
 import { useMotionEnabled } from "@/components/MotionPolicy";
 import { manualProbeDeadline } from "@/lib/manualProbe";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -4146,6 +4147,7 @@ function TunnelsContent() {
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
+                          <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
                           <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
@@ -4234,6 +4236,7 @@ function TunnelsContent() {
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
+                          <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
                           <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
@@ -4345,6 +4348,7 @@ function TunnelsContent() {
                         <div className="flex items-center justify-end gap-1">
                           {supported && (
                             <>
+                              <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
                               <Button
                                 variant="ghost"
                                 size="icon"

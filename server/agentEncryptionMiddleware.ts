@@ -25,6 +25,8 @@ export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/looking-glass-result",
   "/api/agent/looking-glass-progress",
   "/api/agent/iperf3-result",
+  "/api/agent/link-speed-claim",
+  "/api/agent/link-speed-result",
   "/api/agent/ip-switch-claim",
   "/api/agent/ip-switch-result",
   "/api/agent/plugin-action-result",
