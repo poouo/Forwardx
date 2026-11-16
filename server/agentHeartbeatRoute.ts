@@ -30,6 +30,7 @@ import {
 } from "./agentHeartbeatGate";
 import { mapWithConcurrency } from "./asyncPool";
 import { ipAccessLimitAction, ipAccessLimitSpecs } from "./ipAccessLimits";
+import { connectionLimitAction, connectionLimitSpecs } from "./connectionLimits";
 import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
@@ -487,6 +488,7 @@ function stableActionSignature(actions: any[]) {
     managedConfigs: action?.managedConfigs || [],
     portAccessLimits: action?.portAccessLimits || [],
     ipAccessLimits: action?.ipAccessLimits || [],
+    connectionLimits: action?.connectionLimits || [],
     rollbackCommands: action?.rollbackCommands || [],
     preCommands: action?.preCommands || [],
     postCommands: action?.postCommands || [],
@@ -1170,6 +1172,15 @@ function forwardGroupRateLimitMbps(group: any) {
   return normalizeRateLimitMbps(group?.rateLimitMbps);
 }
 
+export function hasReportedRuleGuard(rule: { id: unknown; sourcePort: unknown; protocol?: unknown }, reportedRules: AgentLocalRuntimeRuleState[] = []) {
+  return reportedRules.some(local => (
+    local.forwardType === "guard"
+    && Number(local.ruleId) === Number(rule.id)
+    && Number(local.port) === Number(rule.sourcePort)
+    && normalizeForwardRuleProtocol(local.protocol, "both") === normalizeForwardRuleProtocol(rule.protocol, "both")
+  ));
+}
+
 export function selectEffectiveForwardRateLimit(options: {
   userId: number;
   hostId: number;
@@ -1181,39 +1192,33 @@ export function selectEffectiveForwardRateLimit(options: {
   ruleId?: unknown;
   ruleLimitMbps?: unknown;
 }) {
-  const userId = Math.max(0, Number(options.userId) || 0);
   const hostId = Math.max(0, Number(options.hostId) || 0);
   const tunnelId = Math.max(0, Number(options.tunnelId) || 0);
   const forwardGroupId = Math.max(0, Number(options.forwardGroupId) || 0);
   const candidates = [
     {
       mbps: normalizeRateLimitMbps(options.userLimitMbps),
-      scope: `user-${userId}-host-${hostId}`,
     },
     {
       mbps: normalizeRateLimitMbps(options.tunnelLimitMbps),
-      scope: `user-${userId}-host-${hostId}-tunnel-${tunnelId}`,
       enabled: tunnelId > 0,
     },
     {
       mbps: normalizeRateLimitMbps(options.forwardGroupLimitMbps),
-      scope: `user-${userId}-host-${hostId}-group-${forwardGroupId}`,
       enabled: forwardGroupId > 0,
     },
     {
       mbps: normalizeRateLimitMbps(options.ruleLimitMbps),
-      scope: `rule-${Number(options.ruleId) || 0}-host-${hostId}`,
       enabled: Number(options.ruleId) > 0,
     },
   ].filter((candidate) => candidate.enabled !== false && candidate.mbps > 0);
   if (candidates.length === 0) return { mbps: 0, scope: "" };
-  // Keep the broader user scope on equal limits so multiple resources still
-  // share the user's aggregate bucket. A stricter resource limit gets its own
-  // shared bucket across that resource's generated rules.
   const selected = candidates.reduce((current, candidate) => (
     candidate.mbps < current.mbps ? candidate : current
   ));
-  return { mbps: selected.mbps, scope: selected.scope };
+  // Plans and resources supply a per-rule ceiling. Every engine must use the
+  // same rule identity so unrelated listeners never consume one another's rate.
+  return { mbps: selected.mbps, scope: `rule-${Number(options.ruleId) || 0}-host-${hostId}` };
 }
 
 function mbpsToBytesPerSecond(mbps: unknown) {
@@ -2734,7 +2739,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : `u${Number(rule.userId) || 0}_h${host.id}`
     );
     const buildRuleAccessLimitCmds = (rule: any): string[] => (
-      rule.tunnelId
+      rule.tunnelId && req.body.connectionLimitsSupported !== true
         ? buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))
         : buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))
     );
@@ -3497,11 +3502,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const nginxTunnelEntry = isNginxTunnelEntryRule(rule, tunnel);
       const rateLimits = guardRateLimitForRule(rule);
       if (rateLimits.limitIn > 0 || rateLimits.limitOut > 0) {
-        // GOST already applies the same user bucket in its runtime config.
+        // GOST already applies this rule's bucket in its runtime config.
         // Keep the Agent guard for process backends and Nginx tunnel entries
         // only, otherwise two serial buckets halve the effective rate.
         if (rule.forwardType !== "gost" || nginxTunnelEntry) return true;
       }
+      // Removing a rate/policy must not replace a live proxy listener and
+      // disconnect its clients. Keep an existing Guard with an unlimited bucket.
+      if ((!tunnel || nginxTunnelEntry)
+        && (RATE_LIMIT_GUARD_FORWARD_TYPES.has(String(rule.forwardType)) || shouldUseProcessBackendGuard(rule))
+        && hasReportedRuleGuard(rule, localRuntimeState.state?.rules || [])) return true;
       if (tunnel) return false;
       if (!shouldUseProcessBackendGuard(rule)) return false;
       if (!isAgentVersionAtLeast(String((host as any).agentVersion || ""), AGENT_PROTOCOL_GUARD_BACKEND_VERSION)) return false;
@@ -5093,7 +5103,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           );
         }
       }
-      if (runtimeBool(rule.isEnabled) && (!runtimeBool(rule.isRunning) || shouldRepairLocalRule || shouldRefreshTunnelEntryRule || shouldRefreshForwardXMultiHopRule || shouldRefreshGuardBackend)) {
+      if (runtimeBool(rule.isEnabled) && (!runtimeBool(rule.isRunning) || shouldRepairLocalRule || shouldRefreshTunnelEntryRule || shouldRefreshForwardXMultiHopRule || shouldRefreshGuardBackend || isForwardXEntryRule)) {
         const cmds: string[] = [];
         if (useRuleGuard) {
           const guardTarget = guardTargetForRule(rule, useRuleGuard);
@@ -5209,7 +5219,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 "",
                 "[Service]",
                 "Type=simple",
-                `ExecStart=/usr/bin/socat TCP4-LISTEN:${guardTarget.backendPort},fork,reuseaddr,bind=127.0.0.1 ${socatDialEndpoint("TCP", processTarget(rule), rule.targetPort)}`,
+                `ExecStart=/usr/bin/socat TCP4-LISTEN:${guardTarget.backendPort},fork,reuseaddr,backlog=128,bind=127.0.0.1 ${socatDialEndpoint("TCP", processTarget(rule), rule.targetPort)}`,
                 "Restart=always",
                 "RestartSec=5",
                 "LimitNOFILE=65535",
@@ -5250,7 +5260,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 "",
                 "[Service]",
                 "Type=simple",
-                `ExecStart=/usr/bin/socat ${listenProto}-LISTEN:${guardTarget.backendPort},fork,reuseaddr,bind=127.0.0.1 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`,
+                `ExecStart=/usr/bin/socat ${listenProto}-LISTEN:${guardTarget.backendPort},fork,reuseaddr,${protoUpper === "TCP" ? "backlog=128," : ""}bind=127.0.0.1 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`,
                 "Restart=always",
                 "RestartSec=5",
                 "LimitNOFILE=65535",
@@ -5408,7 +5418,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat TCP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint("TCP", processTarget(rule), rule.targetPort)}`,
+              `ExecStart=/usr/bin/socat TCP6-LISTEN:${rule.sourcePort},fork,reuseaddr,backlog=128,ipv6only=0 ${socatDialEndpoint("TCP", processTarget(rule), rule.targetPort)}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -5456,7 +5466,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } else {
             const protoUpper = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "UDP" : "TCP";
             const listenProto = protoUpper === "UDP" ? "UDP6" : "TCP6";
-            const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`;
+            const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,${protoUpper === "TCP" ? "backlog=128," : ""}ipv6only=0 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`;
             const singleSvcName = socatServiceNameForPort(rule.sourcePort, rule.protocol);
             const unit = [
               "[Unit]",
@@ -6474,6 +6484,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       )), userAccessLimits);
       const limitAction = ipAccessLimitAction(ipLimits, req.body.ipAccessLimitsSupported === true);
       if (limitAction) actions.push(limitAction);
+      const connectionLimits = connectionLimitSpecs((agentHostRules as any[]).filter(rule => (
+        rule && !runtimeBool(rule.pendingDelete) && runtimeBool(rule.isEnabled)
+        && isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnelById.get(Number(rule.tunnelId || 0)) || null)
+      )), userAccessLimits);
+      const connectionAction = connectionLimitAction(connectionLimits, req.body.connectionLimitsSupported === true);
+      if (connectionAction) actions.push(connectionAction);
     }
     const effectiveActions = dropStalePortRemoveActions(actions, protectedRuleRemoveActionKeys);
     const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);

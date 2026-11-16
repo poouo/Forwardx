@@ -301,6 +301,10 @@ do_uninstall() {
 
   remove_service_by_name "$SERVICE_NAME"
 
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet forwardx_connection_limits 2>/dev/null || true
+  fi
+
   # Remove only distinct-IP admission owned by ForwardX, after stopping its
   # observer. Leave NAT, other applications' sets and unrelated chains alone.
   for bin in iptables ip6tables; do

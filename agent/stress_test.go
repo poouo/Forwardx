@@ -192,6 +192,71 @@ func TestTunnelPortChangeSupersedesOlderAction(t *testing.T) {
 	}
 }
 
+func TestConfigRevisionSupersedesIssuedAtForActionStaleness(t *testing.T) {
+	actionEpochMu.Lock()
+	previousIssuedAt := latestActionIssuedAt
+	previousRevision := latestActionConfigRevision
+	latestActionIssuedAt = map[string]int64{}
+	latestActionConfigRevision = map[string]int64{}
+	actionEpochMu.Unlock()
+	t.Cleanup(func() {
+		actionEpochMu.Lock()
+		latestActionIssuedAt = previousIssuedAt
+		latestActionConfigRevision = previousRevision
+		actionEpochMu.Unlock()
+	})
+
+	old := action{StatusType: "rule", RuleID: 901, Op: "apply", ForwardType: "gost", SourcePort: 19001, Protocol: "tcp", IssuedAt: 200, ConfigRevision: 41}
+	newer := old
+	newer.IssuedAt = 100 // delivery order and wall-clock time can race
+	newer.ConfigRevision = 42
+	if isOlderAction(old, true) || isOlderAction(newer, true) {
+		t.Fatal("versioned actions in increasing revision order must be accepted")
+	}
+	if !isOlderAction(old, false) {
+		t.Fatal("older config revision must be discarded even with a later IssuedAt")
+	}
+
+	legacy := newer
+	legacy.ConfigRevision = 0
+	legacy.IssuedAt = 999
+	if !isOlderAction(legacy, false) {
+		t.Fatal("legacy unversioned action must not overwrite a versioned generation")
+	}
+}
+
+func TestDesiredStateReceptionRejectsOlderSnapshots(t *testing.T) {
+	desiredRevisionMu.Lock()
+	previousReceivedRevision := desiredLastReceivedRevision
+	previousReceivedHash := desiredLastReceivedHash
+	desiredLastReceivedRevision = 0
+	desiredLastReceivedHash = ""
+	desiredRevisionMu.Unlock()
+	t.Cleanup(func() {
+		desiredRevisionMu.Lock()
+		desiredLastReceivedRevision = previousReceivedRevision
+		desiredLastReceivedHash = previousReceivedHash
+		desiredRevisionMu.Unlock()
+	})
+
+	if !rememberDesiredStateReceived(&desiredState{ConfigRevision: 12, ConfigHash: "new"}) {
+		t.Fatal("first versioned desired state must be accepted")
+	}
+	if rememberDesiredStateReceived(&desiredState{ConfigRevision: 11, ConfigHash: "old"}) {
+		t.Fatal("older desired state must be rejected")
+	}
+	if rememberDesiredStateReceived(&desiredState{ConfigRevision: 0}) {
+		t.Fatal("unversioned empty desired state must not replace a versioned snapshot")
+	}
+	if !rememberDesiredStateReceived(&desiredState{ConfigRevision: 12, ConfigHash: "replacement"}) {
+		t.Fatal("same revision with a changed hash must be accepted for recovery")
+	}
+	received, _, hash, _ := desiredRevisionSnapshot()
+	if received != 12 || hash != "replacement" {
+		t.Fatalf("desired-state reception state = revision=%d hash=%q", received, hash)
+	}
+}
+
 func TestRulePortChangeSupersedesOlderAction(t *testing.T) {
 	actionEpochMu.Lock()
 	previous := latestActionIssuedAt
@@ -1022,10 +1087,12 @@ ingressDrained:
 
 	queuedActionMu.Lock()
 	queuedActionKeys = map[string]int64{}
+	queuedActionConfigRevision = map[string]int64{}
 	queuedActionMu.Unlock()
 
 	actionEpochMu.Lock()
 	latestActionIssuedAt = map[string]int64{}
+	latestActionConfigRevision = map[string]int64{}
 	actionEpochMu.Unlock()
 
 	protectedActionPortMu.Lock()

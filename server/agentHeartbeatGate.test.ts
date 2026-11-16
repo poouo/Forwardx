@@ -12,6 +12,7 @@ import {
   buildGostRuleListener,
   forwardXUDPTargetAddress,
   selectEffectiveForwardRateLimit,
+  hasReportedRuleGuard,
   selectProtocolGuardRateLimit,
   selectProtocolGuardProxyProtocol,
   selectForwardChainListenerPort,
@@ -222,31 +223,35 @@ test("protocol guard rate limits require a supported rule and a current Agent", 
   }
 });
 
-test("resource rate limits use the strictest configured scope", () => {
-  const base = { userId: 7, hostId: 3, forwardGroupId: 19 };
+test("each rule independently uses the strictest plan, resource and rule rate", () => {
+  const base = { userId: 7, hostId: 3, forwardGroupId: 19, ruleId: 42 };
   assert.deepEqual(selectEffectiveForwardRateLimit(base), { mbps: 0, scope: "" });
   assert.deepEqual(selectEffectiveForwardRateLimit({
     ...base,
     userLimitMbps: 200,
     forwardGroupLimitMbps: 80,
-  }), { mbps: 80, scope: "user-7-host-3-group-19" });
+  }), { mbps: 80, scope: "rule-42-host-3" });
   assert.deepEqual(selectEffectiveForwardRateLimit({
     ...base,
     userLimitMbps: 80,
     forwardGroupLimitMbps: 200,
-  }), { mbps: 80, scope: "user-7-host-3" });
+  }), { mbps: 80, scope: "rule-42-host-3" });
   assert.deepEqual(selectEffectiveForwardRateLimit({
     ...base,
     userLimitMbps: 80,
     forwardGroupLimitMbps: 80,
-  }), { mbps: 80, scope: "user-7-host-3" });
+  }), { mbps: 80, scope: "rule-42-host-3" });
   assert.deepEqual(selectEffectiveForwardRateLimit({
     ...base,
     userLimitMbps: 300,
     tunnelId: 11,
     tunnelLimitMbps: 160,
     forwardGroupLimitMbps: 120,
-  }), { mbps: 120, scope: "user-7-host-3-group-19" });
+  }), { mbps: 120, scope: "rule-42-host-3" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({ ...base, userLimitMbps: 80, ruleId: 43 }),
+    { mbps: 80, scope: "rule-43-host-3" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({ ...base, userLimitMbps: 80, ruleLimitMbps: 20 }),
+    { mbps: 20, scope: "rule-42-host-3" });
 });
 
 test("running process-backed Guards remain in desired reconciliation", () => {
@@ -769,4 +774,16 @@ test("empty address reports during Agent restart preserve the last valid address
     ipv4Addresses: '["198.51.100.8"]',
     ipv6Addresses: '["2001:db8::9"]',
   });
+});
+
+
+test("retains only the matching reported Guard when removing a rate limit", () => {
+  const rule = { id: 9, sourcePort: 22009, protocol: "both" };
+  const state = { ruleId: 9, port: 22009, protocol: "both", forwardType: "guard" } as any;
+  assert.equal(hasReportedRuleGuard(rule, [state]), true);
+  assert.equal(hasReportedRuleGuard(rule), false);
+  assert.equal(hasReportedRuleGuard(rule, [{ ...state, ruleId: 10 }]), false);
+  assert.equal(hasReportedRuleGuard(rule, [{ ...state, port: 22010 }]), false);
+  assert.equal(hasReportedRuleGuard(rule, [{ ...state, protocol: "tcp" }]), false);
+  assert.equal(hasReportedRuleGuard(rule, [{ ...state, forwardType: "nginx" }]), false);
 });

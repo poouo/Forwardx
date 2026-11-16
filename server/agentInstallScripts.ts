@@ -919,6 +919,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '    done',
     '  done',
     '  echo "[INFO] iptables/ip6tables rules cleaned"',
+    '  if command -v nft >/dev/null 2>&1; then nft delete table inet forwardx_connection_limits 2>/dev/null || true; fi',
     '  if command -v ipset >/dev/null 2>&1; then',
     '    for SET in $(ipset list -name 2>/dev/null | grep -E "^FWX_I[AB]_[0-9a-f]{20}(_T)?$"); do ipset destroy "$SET" 2>/dev/null || true; done',
     '  fi',

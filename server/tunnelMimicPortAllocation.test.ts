@@ -48,6 +48,25 @@ test("reconciles a stale mimic UDP port inside the host policy", () => {
         "mimic port escaped the NAT range: " + repaired.mimicPort);
       assert.notEqual(Number(repaired.mimicPort), 56645);
       assert.equal(Number(result.tunnel.mimicPort), Number(repaired.mimicPort));
+
+      // A heartbeat allocation started outside the transaction must not be
+      // joined while the editor holds SQLite's single connection lock.
+      const { AsyncResource } = await import("node:async_hooks");
+      const outside = new AsyncResource("mimic-heartbeat");
+      let heartbeat;
+      const concurrent = runtime.withDatabaseTransaction(async () => {
+        heartbeat = outside.runInAsyncScope(() => tunnelRepo.ensureForwardXMimicPorts(result.tunnel, [], []));
+        await new Promise((resolve) => setImmediate(resolve));
+        return tunnelRepo.ensureForwardXMimicPorts(result.tunnel, [], []);
+      });
+      let timer;
+      try {
+        await Promise.race([
+          concurrent.then(() => heartbeat),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("mimic allocator/SQLite lock inversion")), 3000); }),
+        ]);
+      } finally { clearTimeout(timer); outside.emitDestroy(); }
+
     } finally {
       await runtime.closeDatabase();
     }

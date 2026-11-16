@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -178,6 +179,79 @@ func requireOnlyRuntimeDependency(t *testing.T, job actionJob, done <-chan struc
 	}
 	if len(job.resultPrereqs) != 1 || job.resultPrereqs[0] != result {
 		t.Fatalf("result prerequisites=%d, want only selected runtime", len(job.resultPrereqs))
+	}
+}
+
+func TestSharedFXPGroupWaitsForIncomingMembersOldRuntime(t *testing.T) {
+	for _, success := range []bool{true, false} {
+		t.Run(fmt.Sprintf("runtime-success-%v", success), func(t *testing.T) {
+			done := make(chan struct{})
+			entry := func(rule, tunnel, port int) action {
+				spec := &fxpSpec{Role: "entry", TransportVersion: "v1", TunnelID: tunnel, RuleID: rule, ListenPort: port, Protocol: "tcp"}
+				return action{Op: "apply", StatusType: "rule", ForwardType: "forwardx", RuleID: rule, TunnelID: tunnel, SourcePort: port, Protocol: "tcp", Fxp: spec}
+			}
+			jobs := prepareDesiredActionJobsWithOwnerResolver([]actionJob{
+				{action: action{Op: "apply", StatusType: "runtime", ForwardType: "nginx-runtime-sync"}, done: done},
+				{action: entry(1, 10, 24001), previousRuntime: localActionRuntimeSnapshot{valid: true, ruleID: 1, tunnelID: 10, forwardType: "forwardx", protocol: "tcp", hasProtocol: true}},
+				{action: entry(2, 10, 24002), previousRuntime: localActionRuntimeSnapshot{valid: true, ruleID: 2, forwardType: "nginx", protocol: "tcp", hasProtocol: true, handoffState: &actionHandoffState{}}},
+				{action: entry(3, 11, 24003), previousRuntime: localActionRuntimeSnapshot{valid: true, ruleID: 3, tunnelID: 11, forwardType: "forwardx", protocol: "tcp", hasProtocol: true}},
+			}, nil)
+			var runtime actionJob
+			var handoff actionJob
+			members := map[int]actionJob{}
+			for _, job := range jobs {
+				if isSharedRuntimeSyncAction(job.action) {
+					runtime = job
+				} else if job.action.HandoffOnly {
+					handoff = job
+				} else {
+					members[job.action.RuleID] = job
+				}
+			}
+			if handoff.result == nil || len(handoff.prerequisites) != 0 || len(handoff.resultPrereqs) != 0 {
+				t.Fatal("handoff must run before shared runtime and group members")
+			}
+			for _, id := range []int{1, 2} {
+				requireOnlyRuntimeDependency(t, members[id], done, runtime.result)
+			}
+			if len(members[3].resultPrereqs) != 0 || len(members[3].prerequisites) != 0 {
+				t.Fatal("unrelated FXP group was blocked")
+			}
+			handoff.result.complete(true)
+			if !waitForActionPrerequisites(runtime) {
+				t.Fatal("handoff did not release runtime")
+			}
+			runtime.result.complete(success)
+			close(done)
+			for _, id := range []int{1, 2} {
+				if waitForActionPrerequisites(members[id]) != success {
+					t.Fatalf("member %d ignored old runtime result", id)
+				}
+			}
+		})
+	}
+}
+
+func TestSharedRuntimeHandoffCleansOrphanBeforeBinding(t *testing.T) {
+	target := action{Op: "apply", StatusType: "rule", RuleID: 48, ForwardType: "nginx", SourcePort: 24001, Protocol: "tcp"}
+	for _, previous := range []localActionRuntimeSnapshot{
+		{},
+		{valid: true, ruleID: 48, forwardType: "nginx", protocol: "tcp", hasProtocol: true},
+	} {
+		job := actionJob{action: target, previousRuntime: previous}
+		if !actionJobNeedsPreRuntimeHandoffWithListenerProbe(job, func(a action) bool { return a.SourcePort == 24001 && a.Protocol == "tcp" }) {
+			t.Fatal("orphaned listener must be handed off before nginx runtime sync despite missing or stale markers")
+		}
+		if actionJobNeedsPreRuntimeHandoffWithListenerProbe(job, func(action) bool { return false }) {
+			t.Fatal("ready/empty listener unexpectedly requires a handoff")
+		}
+	}
+	for _, op := range []string{"remove", ""} {
+		a := target
+		a.Op = op
+		if actionJobNeedsPreRuntimeHandoffWithListenerProbe(actionJob{action: a}, func(action) bool { return true }) {
+			t.Fatal("non-apply action scheduled an orphan handoff")
+		}
 	}
 }
 

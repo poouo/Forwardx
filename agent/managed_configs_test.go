@@ -53,6 +53,31 @@ func TestManagedConfigRollbackRestoresPreviousContent(t *testing.T) {
 	}
 }
 
+func TestRuntimeReadinessRejectsRolledBackDesiredConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.json")
+	if err := os.WriteFile(path, []byte(`{"services":[]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	spec := managedConfigSpec{Path: path, Format: "json", ContentBase64: base64.StdEncoding.EncodeToString([]byte(`{"services":[],"revision":2}`))}
+	a := action{Op: "apply", StatusType: "runtime", ForwardType: "nginx-runtime-sync", ManagedConfigs: []managedConfigSpec{spec}}
+	if managedRuntimeSyncReady(a) {
+		t.Fatal("healthy previous configuration was adopted as the desired revision")
+	}
+	tx, err := applyManagedConfigs(a.ManagedConfigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !managedRuntimeSyncReady(a) {
+		t.Fatal("applied desired configuration was not ready")
+	}
+	if !tx.rollback() {
+		t.Fatal("rollback failed")
+	}
+	if managedRuntimeSyncReady(a) {
+		t.Fatal("rolled-back configuration incorrectly suppressed retry of the desired revision")
+	}
+}
+
 func TestManagedConfigBatchFailureRestoresEarlierFiles(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "server.crt")

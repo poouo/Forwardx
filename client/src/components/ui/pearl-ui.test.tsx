@@ -206,13 +206,20 @@ test("Dashboard traffic shares one card with responsive internal sections", asyn
   for (const loading of [false, true]) {
     const html = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[]} portData={[]} groupData={[]} loading={loading} />);
     assert.equal((html.match(/glass-panel pearl-card /g) || []).length, 1);
-    assert.equal((html.match(/<section /g) || []).length, 3);
+    assert.equal((html.match(/<section /g) || []).length, loading ? 3 : 0);
     for (const label of ["隧道流量", "端口转发流量", "转发组流量"]) assert.match(html, new RegExp(label));
-    assert.match(html, /divide-y divide-border\/50 lg:grid-cols-3 lg:divide-x lg:divide-y-0/);
+    if (loading) assert.match(html, /divide-y divide-border\/50 lg:grid-cols-3 lg:divide-x lg:divide-y-0/);
+    else assert.match(html, /暂无数据/);
     assert.doesNotMatch(html, /backdrop-blur/);
-    if (!loading) assert.equal((html.match(/暂无流量数据/g) || []).length, 3);
+    if (!loading) assert.equal((html.match(/暂无/g) || []).length, 4);
     else assert.match(html, /animate-spin/);
   }
+  const single = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[]} portData={[{ id: 2, name: "Port example", value: 4096 }]} groupData={[]} loading={false} />);
+  assert.equal((single.match(/<section /g) || []).length, 1);
+  assert.match(single, /lg:grid-cols-1/);
+  assert.match(single, /隧道流量/);
+  assert.match(single, /转发组流量/);
+  assert.match(single, /lg:max-w-4xl/);
   const html = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[{ id: 1, name: "Tunnel example", value: 2048 }]} portData={[{ id: 2, name: "Port example", value: 4096 }]} groupData={[{ id: 3, name: "Group example", value: 1024 }]} loading={false} />);
   for (const label of ["Tunnel example", "Port example", "Group example", "2 KB", "4 KB", "1 KB"]) assert.ok(html.includes(label));
   assert.doesNotMatch(html, /暂无流量数据/);

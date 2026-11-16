@@ -1486,6 +1486,13 @@ async function allocateTunnelMimicPort(
 }
 
 export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[] = [], exitNodesInput: any[] = []) {
+  // Acquire the database connection before joining the in-flight allocator.
+  // A heartbeat may otherwise wait for SQLite while a tunnel edit holding
+  // that connection waits for the heartbeat's allocation promise.
+  return withDatabaseTransaction(() => ensureForwardXMimicPortsInTransaction(tunnelInput, hopsInput, exitNodesInput));
+}
+
+async function ensureForwardXMimicPortsInTransaction(tunnelInput: any, hopsInput: any[], exitNodesInput: any[]) {
   const tunnelId = Number(tunnelInput?.id || 0);
   if (tunnelId <= 0) {
     return { tunnel: tunnelInput, hops: hopsInput, exitNodes: exitNodesInput, changed: false };

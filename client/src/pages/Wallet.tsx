@@ -7,6 +7,7 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import BillingExportButton from "@/components/BillingExportButton";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
+import { paymentStatusText } from "@/lib/paymentStatus";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -204,7 +205,7 @@ export default function Wallet() {
                       </TableCell>
                       <TableCell>
                         <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>
-                          {translateText(item.statusLabel || item.status)}
+                          {item.statusLabel ? translateText(item.statusLabel) : paymentStatusText(item.status)}
                         </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
@@ -300,7 +301,7 @@ export default function Wallet() {
                     <TableCell>{money(order.amountCents, order.currency || "CNY")}</TableCell>
                     <TableCell>
                       <Badge variant={order.status === "completed" || order.status === "paid" ? "default" : "secondary"}>
-                        {order.status}
+                        {paymentStatusText(order.status)}
                       </Badge>
                       {order.status === "pending" && (order.payUrl || order.qrCode) && (!order.expiresAt || new Date(order.expiresAt).getTime() > Date.now()) && (
                         <Button size="sm" variant="link" onClick={() => setCheckoutOrder(order)}>{translateText("继续支付")}</Button>

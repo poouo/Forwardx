@@ -282,10 +282,12 @@ function TrafficPieSection({
   title,
   data,
   loading,
+  className,
 }: {
   title: string;
   data: Array<{ id: number; name: string; value: number }>;
   loading: boolean;
+  className?: string;
 }) {
   const [hasAnimated, setHasAnimated] = useState(false);
   const chartData = useMemo<TrafficPieDatum[]>(() => {
@@ -312,7 +314,7 @@ function TrafficPieSection({
   const shouldAnimate = motionEnabled && chartData.length > 0 && total > 0 && !hasAnimated;
 
   return (
-    <section aria-label={title} className="min-w-0 p-4 sm:p-5">
+    <section aria-label={title} className={`min-w-0 p-4 sm:p-5 ${className || ""}`}>
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <BarChart3 className="h-4 w-4" />
@@ -402,18 +404,48 @@ function TrafficPieSection({
 
 type TrafficSectionData = Array<{ id: number; name: string; value: number }>;
 
+function hasTrafficData(data: TrafficSectionData) {
+  return data.some((item) => Number(item.value) > 0);
+}
+
 export function DashboardTrafficOverview({ tunnelData, portData, groupData, loading }: {
   tunnelData: TrafficSectionData;
   portData: TrafficSectionData;
   groupData: TrafficSectionData;
   loading: boolean;
 }) {
+  const sections = [
+    { key: "tunnel", title: translateText("隧道流量"), data: tunnelData },
+    { key: "port", title: translateText("端口转发流量"), data: portData },
+    { key: "group", title: translateText("转发组流量"), data: groupData },
+  ];
+  const visibleSections = loading ? sections : sections.filter((section) => hasTrafficData(section.data));
+  const emptySections = loading ? [] : sections.filter((section) => !hasTrafficData(section.data));
+  const columns = visibleSections.length >= 3 ? "lg:grid-cols-3 lg:divide-x lg:divide-y-0" : visibleSections.length === 2 ? "lg:grid-cols-2 lg:divide-x lg:divide-y-0" : "lg:grid-cols-1";
+
   return (
     <Card className="border-border/40">
-      <div className="grid min-w-0 divide-y divide-border/50 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
-        <TrafficPieSection title={translateText("隧道流量")} data={tunnelData} loading={loading} />
-        <TrafficPieSection title={translateText("端口转发流量")} data={portData} loading={loading} />
-        <TrafficPieSection title={translateText("转发组流量")} data={groupData} loading={loading} />
+      {!loading && emptySections.length > 0 && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/50 px-4 py-3 text-xs sm:px-5">
+          <span className="shrink-0 font-medium text-muted-foreground">{translateText("暂无数据")}</span>
+          {emptySections.map((section) => (
+            <span key={section.key} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-muted/35 px-2 py-1 text-muted-foreground">
+              <span className="truncate">{section.title}</span>
+              <span className="shrink-0 text-muted-foreground/70">{translateText("暂无")}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className={`grid min-w-0 divide-y divide-border/50 ${columns}`}>
+        {visibleSections.map((section) => (
+          <TrafficPieSection
+            key={section.key}
+            title={section.title}
+            data={section.data}
+            loading={loading}
+            className={visibleSections.length === 1 && !loading ? "lg:mx-auto lg:w-full lg:max-w-4xl" : undefined}
+          />
+        ))}
       </div>
     </Card>
   );

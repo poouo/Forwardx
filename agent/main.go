@@ -269,6 +269,10 @@ var runtimePanelURL atomic.Value
 var actionQueue = make(chan actionJob, actionQueueCapacity)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
+
+// latestActionConfigRevision is kept separately so existing tests and legacy
+// callers that reset latestActionIssuedAt remain source-compatible.
+var latestActionConfigRevision = map[string]int64{}
 var desiredRunningRuleMu sync.Mutex
 var desiredRunningRulesByPort = map[string]runningRule{}
 var desiredRunningRulesByRulePort = map[string]runningRule{}
@@ -319,6 +323,12 @@ var agentEventStreamConnected atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
+
+// queuedActionConfigRevision tracks the desired-state generation represented
+// by a queued action. IssuedAt remains for backwards compatibility with
+// legacy panel messages, but revision is the authoritative ordering signal
+// when both are available.
+var queuedActionConfigRevision = map[string]int64{}
 var protectedActionPortMu sync.Mutex
 var protectedActionPorts = map[string]int{}
 var compactAgentReports atomic.Bool
@@ -853,7 +863,7 @@ type heartbeatResp struct {
 	DNSWatch                []dnsWatchItem           `json:"dnsWatch"`
 	LookingGlassTests       []lookingGlassTask       `json:"lookingGlassTests"`
 	Iperf3Tasks             []iperf3Task             `json:"iperf3Tasks"`
-	LinkSpeedTasks         []linkSpeedTask           `json:"linkSpeedTasks"`
+	LinkSpeedTasks          []linkSpeedTask          `json:"linkSpeedTasks"`
 	IPSwitchTasks           []ipSwitchTask           `json:"ipSwitchTasks"`
 	PluginTasks             []pluginAgentTask        `json:"pluginTasks"`
 	AgentUpgrade            *agentUpgrade            `json:"agentUpgrade"`
@@ -2364,6 +2374,7 @@ type action struct {
 
 	PortAccessLimits []portAccessLimitSpec `json:"portAccessLimits,omitempty"`
 	IPAccessLimits   []ipAccessLimitSpec   `json:"ipAccessLimits,omitempty"`
+	ConnectionLimits []connectionLimitSpec `json:"connectionLimits,omitempty"`
 }
 
 type desiredState struct {
@@ -4967,6 +4978,13 @@ func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
 	if push.DesiredState == nil && len(push.RunningRules) == 0 && len(push.RuleLatencyProbes) == 0 && len(push.StateSignatures) == 0 {
 		return
 	}
+	if push.DesiredState != nil && desiredStateRevisionIsStale(push.DesiredState) {
+		if shouldLogAgentReport("desired-state-push-stale-skip", agentReportLogInterval) {
+			logf("stale desired state push ignored before applying runtime snapshot revision=%d hash=%s", push.DesiredState.ConfigRevision, compactLogField(push.DesiredState.ConfigHash, 80))
+		}
+		wakeHeartbeat()
+		return
+	}
 	// 先应用 running rules，stale-remove 保护依赖这份数据。
 	if len(push.RunningRules) > 0 || len(push.RuleLatencyProbes) > 0 || len(push.StateSignatures) > 0 {
 		partial := heartbeatResp{
@@ -5046,6 +5064,23 @@ func handleActionJobWithRuntimeSnapshot(cfg Config, a action, releaseRuntimeGate
 				}
 			} else {
 				actionMessage.set("IP限制已同步 users=%d; different source IPs share entry-host quota; probation=5s bidirectionalBytes>=512", len(a.IPAccessLimits))
+			}
+			if a.ReportStatus != nil && *a.ReportStatus {
+				reportActionStatus(cfg, a, ok, actionMessage.get())
+			}
+			return ok
+		}
+		if a.ForwardType == "connection-limit-sync" {
+			err := syncConnectionLimits(a.ConnectionLimits, false)
+			ok = err == nil
+			rememberRuntimeActionResult(a, ok)
+			if err != nil {
+				actionMessage.set("%v", err)
+				if shouldLogAgentReport("connection-limit-sync", agentReportLogInterval) {
+					logf("%v", err)
+				}
+			} else {
+				actionMessage.set("连接数限制已同步 users=%d; TCP/UDP IPv4/IPv6 share entry-host user quota", len(a.ConnectionLimits))
 			}
 			if a.ReportStatus != nil && *a.ReportStatus {
 				reportActionStatus(cfg, a, ok, actionMessage.get())
@@ -5743,6 +5778,9 @@ func runtimeActionKey(a action) string {
 }
 
 func runtimeActionServicesHealthy(a action) bool {
+	if a.ForwardType == "connection-limit-sync" {
+		return syncConnectionLimits(a.ConnectionLimits, true) == nil
+	}
 	if a.ForwardType == "port-access-limit-sync" {
 		return portAccessLimitsReady(a)
 	}
@@ -5825,6 +5863,10 @@ func waitForManagedRuntimeSyncReady(a action, timeout time.Duration) bool {
 func managedRuntimeSyncReady(a action) bool {
 	snapshot := newRuntimeListenSnapshot()
 	for _, spec := range a.ManagedConfigs {
+		// A rollback can leave healthy old listeners; only adopt the desired content.
+		if !managedConfigMatchesDesired(spec) {
+			return false
+		}
 		service := sanitizeServiceName(spec.ServiceName)
 		if service == "" {
 			continue
@@ -6271,6 +6313,11 @@ func actionCommandSignature(a action) string {
 	if len(a.IPAccessLimits) > 0 {
 		if raw, err := json.Marshal(a.IPAccessLimits); err == nil {
 			write("ip-access-limits:" + string(raw))
+		}
+	}
+	if len(a.ConnectionLimits) > 0 {
+		if raw, err := json.Marshal(a.ConnectionLimits); err == nil {
+			write("connection-limits:" + string(raw))
 		}
 	}
 	if a.ForceRuntimeSync {
@@ -13701,6 +13748,7 @@ func postHeartbeatAfterStart(client *http.Client, cfg Config, path string, paylo
 		if fields, ok := payload.(map[string]any); ok {
 			fields["portAccessLimitsSupported"] = true
 			fields["ipAccessLimitsSupported"] = true
+			fields["connectionLimitsSupported"] = true
 			fields["trafficShutdownSupported"] = trafficShutdownSupported()
 		}
 	}
@@ -15232,6 +15280,11 @@ func pruneAgentMemoryCaches() {
 	agentReportLogMu.Unlock()
 	actionEpochMu.Lock()
 	pruneIssuedAtMapLocked(latestActionIssuedAt, now, agentMemoryCacheRetention)
+	for key := range latestActionConfigRevision {
+		if _, exists := latestActionIssuedAt[key]; !exists {
+			delete(latestActionConfigRevision, key)
+		}
+	}
 	actionEpochMu.Unlock()
 	runtimeActionMu.Lock()
 	for key, state := range runtimeActionCache {

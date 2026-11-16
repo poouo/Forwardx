@@ -115,7 +115,7 @@ test("iptables forwarding gets only conntrack-scoped DNAT counters", () => {
   assert.match(commands, /for c in input output forward; do/);
 });
 
-test("native nft return counters keep shared targets isolated by original listener port", () => {
+test("native nft counters count every packet in forward, isolated by original listener port", () => {
   const commands = buildNftForwardCmds({
     id: 42,
     sourcePort: 22022,
@@ -130,6 +130,13 @@ test("native nft return counters keep shared targets isolated by original listen
   assert.match(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct original proto-dst 22022 ct state established,related comment '\"fwx-rule-42-out\"' counter accept/);
   assert.match(commands, /forward meta l4proto tcp ip daddr 203\.0\.113\.10 tcp dport 443 ct original proto-dst 22022 accept comment '\"fwx-rule-42\"'/);
   assert.doesNotMatch(commands, /forward meta l4proto tcp ip saddr 203\.0\.113\.10 tcp sport 443 ct state established,related counter accept comment/);
+  // A successful NAT rule must never prevent the upload counter being added;
+  // NAT sees only the first packet, so its counters cannot represent usage.
+  const actions = buildNftForwardCmds({ id: 42, sourcePort: 22022, targetIp: "203.0.113.10", targetPort: 443, protocol: "both" });
+  for (const proto of ["tcp", "udp"]) {
+    assert.ok(actions.some(action => action.startsWith(`nft add rule inet forwardx forward meta l4proto ${proto} ip daddr 203.0.113.10 ${proto} dport 443 ct original proto-dst 22022 counter accept`)));
+  }
+  assert.doesNotMatch(commands, /prerouting[^\n]*counter/);
 });
 
 test("nft forwarding has compatibility fallbacks for selector and masquerade failures", () => {

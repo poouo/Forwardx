@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,15 @@ type managedConfigTransaction struct {
 var managedConfigMutationMu sync.Mutex
 var managedConfigGeneration atomic.Uint64
 var managedConfigCurrentGeneration = map[string]uint64{}
+
+func managedConfigMatchesDesired(spec managedConfigSpec) bool {
+	desired, err := base64.StdEncoding.DecodeString(spec.ContentBase64)
+	if err != nil || len(desired) == 0 {
+		return false
+	}
+	actual, err := os.ReadFile(strings.TrimSpace(spec.Path))
+	return err == nil && bytes.Equal(actual, desired)
+}
 
 func validateManagedConfigSpec(spec managedConfigSpec, data []byte, stagedPath string) error {
 	if len(data) == 0 {

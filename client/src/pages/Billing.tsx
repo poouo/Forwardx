@@ -4,6 +4,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import UserSelect from "@/components/UserSelect";
 import BillingExportButton from "@/components/BillingExportButton";
 import { subscriptionPortRangeText } from "@/lib/planDisplay";
+import { paymentStatusText } from "@/lib/paymentStatus";
 import { PersistentPagination, usePersistentPageRequest, useServerPagination } from "@/components/PersistentPagination";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -742,7 +743,7 @@ export default function Billing() {
                           <MobileInfoRow label={translateText("用户")}>{item.name || item.username || `#${item.userId}`}</MobileInfoRow>
                           <MobileInfoRow label={translateText("类型")}><Badge className="shrink-0 whitespace-nowrap" variant="outline">{item.category}</Badge></MobileInfoRow>
                           <MobileInfoRow label={translateText("状态")}>
-                            <Badge className="shrink-0 whitespace-nowrap" variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge>
+                            <Badge className="shrink-0 whitespace-nowrap" variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel ? translateText(item.statusLabel) : paymentStatusText(item.status)}</Badge>
                           </MobileInfoRow>
                           <MobileInfoRow label={translateText("关联")} valueClassName="font-mono text-xs text-muted-foreground">{relatedInfo}</MobileInfoRow>
                           {item.kind === "payment" && item.tradeNo && <MobileInfoRow label={translateText("网关流水")} valueClassName="font-mono text-xs text-muted-foreground">{item.tradeNo}</MobileInfoRow>}
@@ -792,7 +793,7 @@ export default function Billing() {
                           <TableCell className={`whitespace-nowrap ${ledgerTone(item)}`}>
                             {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
                           </TableCell>
-                          <TableCell className="whitespace-nowrap"><Badge className="shrink-0 whitespace-nowrap" variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{translateText(item.statusLabel || item.status)}</Badge></TableCell>
+                          <TableCell className="whitespace-nowrap"><Badge className="shrink-0 whitespace-nowrap" variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel ? translateText(item.statusLabel) : paymentStatusText(item.status)}</Badge></TableCell>
                           <TableCell className="font-mono text-xs text-muted-foreground">
                             <p>{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</p>
                             {item.kind === "payment" && item.tradeNo && <p className="mt-1">{translateText("网关流水")}：{item.tradeNo}</p>}

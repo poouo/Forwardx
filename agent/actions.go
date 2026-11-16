@@ -16,6 +16,11 @@ import (
 const desiredActionFailureRetryInterval = 30 * time.Second
 const desiredRuntimeReadyCacheTTL = 2 * time.Second
 
+// Give an SSE/heartbeat burst a short window to coalesce before a structural
+// FXP replacement stops a shared listener group. The action is rechecked
+// after the window, so only the newest revision reaches the restart path.
+const desiredFXPActionQuietPeriod = 200 * time.Millisecond
+
 // Bump this only when an Agent release must rebuild otherwise unchanged local
 // runtime configuration. It is intentionally independent from Version so
 // ordinary binary upgrades keep their idempotent restart behavior.
@@ -56,16 +61,44 @@ var desiredLastReceivedHash string
 var desiredLastAppliedHash string
 var desiredLastAppliedAggregate bool
 
-func rememberDesiredStateReceived(state *desiredState) {
+// rememberDesiredStateReceived accepts only monotonic desired-state
+// generations. A heartbeat can race an SSE delivery, so an older response
+// must never be allowed to enqueue work after a newer snapshot was received.
+// Revision zero is the legacy protocol; once a versioned snapshot has been
+// seen, an unversioned snapshot is treated as stale as well.
+func rememberDesiredStateReceived(state *desiredState) bool {
 	if state == nil {
-		return
+		return false
 	}
 	desiredRevisionMu.Lock()
-	if state.ConfigRevision >= desiredLastReceivedRevision {
-		desiredLastReceivedRevision = state.ConfigRevision
-		desiredLastReceivedHash = strings.TrimSpace(state.ConfigHash)
+	revision := state.ConfigRevision
+	hash := strings.TrimSpace(state.ConfigHash)
+	if revision > 0 && desiredLastReceivedRevision > 0 && revision < desiredLastReceivedRevision {
+		desiredRevisionMu.Unlock()
+		return false
+	}
+	if revision == 0 && desiredLastReceivedRevision > 0 {
+		desiredRevisionMu.Unlock()
+		return false
+	}
+	if revision > desiredLastReceivedRevision || (revision == desiredLastReceivedRevision && hash != "" && hash != desiredLastReceivedHash) {
+		desiredLastReceivedRevision = revision
+		desiredLastReceivedHash = hash
 	}
 	desiredRevisionMu.Unlock()
+	return true
+}
+
+func desiredStateRevisionIsStale(state *desiredState) bool {
+	if state == nil {
+		return true
+	}
+	desiredRevisionMu.Lock()
+	defer desiredRevisionMu.Unlock()
+	if state.ConfigRevision > 0 && desiredLastReceivedRevision > 0 && state.ConfigRevision < desiredLastReceivedRevision {
+		return true
+	}
+	return state.ConfigRevision == 0 && desiredLastReceivedRevision > 0
 }
 
 func rememberDesiredActionApplied(a action) {
@@ -147,7 +180,7 @@ func (b *actionIngressBuffer) push(job actionJob) (int, *actionJob) {
 		if current := b.byKey[key]; current != nil {
 			// A producer may have waited for capacity while a newer action for
 			// this key arrived. Do not replace that newer pending generation.
-			if job.action.IssuedAt > 0 && current.job.action.IssuedAt > job.action.IssuedAt {
+			if compareActionGeneration(job.action, current.job.action) < 0 {
 				return b.items.Len(), &job
 			}
 			b.items.Remove(current.node)
@@ -209,13 +242,24 @@ type actionSerialLock struct {
 func reserveQueuedAction(a action) bool {
 	if key := actionQueueKey(a); key != "" && a.IssuedAt > 0 {
 		queuedActionMu.Lock()
-		existing := queuedActionKeys[key]
-		if existing == a.IssuedAt {
+		existing, exists := queuedActionKeys[key]
+		if !exists {
+			// Tests and recovery paths reset the legacy timestamp map directly;
+			// do not let a stale generation map survive that reset.
+			delete(queuedActionConfigRevision, key)
+		}
+		existingAction := action{IssuedAt: existing, ConfigRevision: queuedActionConfigRevision[key]}
+		if exists && compareActionGeneration(a, existingAction) == 0 {
 			queuedActionMu.Unlock()
 			logActionDuplicateSkip(a, key)
 			return false
 		}
+		if exists && compareActionGeneration(a, existingAction) < 0 {
+			queuedActionMu.Unlock()
+			return false
+		}
 		queuedActionKeys[key] = a.IssuedAt
+		queuedActionConfigRevision[key] = a.ConfigRevision
 		queuedActionMu.Unlock()
 	}
 	return true
@@ -247,7 +291,16 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	if state == nil || agentSuperseded.Load() {
 		return nil
 	}
-	rememberDesiredStateReceived(state)
+	if !rememberDesiredStateReceived(state) {
+		received, applied, receivedHash, _ := desiredRevisionSnapshot()
+		if shouldLogAgentReport("desired-state-stale-skip", agentReportLogInterval) {
+			logf("desired state stale snapshot skipped revision=%d hash=%s latestReceivedRevision=%d latestReceivedHash=%s appliedRevision=%d", state.ConfigRevision, compactLogField(state.ConfigHash, 80), received, compactLogField(receivedHash, 80), applied)
+		}
+		// Ask the next heartbeat for the current snapshot. This also repairs the
+		// case where an older in-flight heartbeat completed after an SSE push.
+		wakeHeartbeat()
+		return nil
+	}
 	attachDesiredSharedFXPEntryGroups(state.Actions)
 	wireGuardReplacementTunnels := desiredWireGuardReplacementTunnels(state.Actions)
 	kernelSnapshot := newKernelForwardSnapshot()
@@ -267,6 +320,11 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		if a.IssuedAt <= 0 {
 			a.IssuedAt = state.IssuedAt
 		}
+		// Record every generation, including actions adopted from an already
+		// healthy local runtime. Legacy one-off actions arriving on the same
+		// heartbeat must not bypass the revision ordering just because no worker
+		// was needed for this desired action.
+		isOlderAction(a, true)
 		key := desiredActionKey(a)
 		if key == "" {
 			doneCh := make(chan struct{})
@@ -1380,6 +1438,9 @@ func actionWorkerLoop(workerID int) {
 			if unlock != nil {
 				defer unlock()
 			}
+			if !waitForDesiredFXPActionQuietPeriod(job.action) {
+				return
+			}
 			started := time.Now()
 			ok := handleActionJobWithRuntimeSnapshot(job.cfg, job.action, releaseRuntimeGate, &job.previousRuntime, job.result)
 			job.resultOK = ok
@@ -1462,12 +1523,34 @@ func prepareDesiredActionJobsWithOwnerResolver(jobs []actionJob, resolveOwner fu
 	}
 	handoffJobs := make([]actionJob, 0)
 	handoffBatches := map[string]*actionHandoffBatch{}
+	// Starting any entry member applies the complete shared FXP group. A sibling
+	// must therefore wait for the old shared owners of every incoming member,
+	// otherwise it can hold the group lock while a handoff waits to free a port.
+	groupRuntimeDependencies := map[string]map[int]bool{}
+	for index, job := range remainingJobs {
+		if job.action.Op != "apply" || job.action.Fxp == nil || !isSharedFXPEntry(*job.action.Fxp) {
+			continue
+		}
+		key := fxpEntryGroupKey(job.action.Fxp.TransportVersion, job.action.Fxp.TunnelID)
+		if groupRuntimeDependencies[key] == nil {
+			groupRuntimeDependencies[key] = map[int]bool{}
+		}
+		for runtimeIndex, runtimeJob := range sharedRuntimeJobs {
+			if sharedRuntimeActionRequiredBy(runtimeJob.action, job.action, previousForwardTypes[index]) {
+				groupRuntimeDependencies[key][runtimeIndex] = true
+			}
+		}
+	}
 	for remainingIndex := range remainingJobs {
 		job := &remainingJobs[remainingIndex]
 		previousForwardType := previousForwardTypes[remainingIndex]
+		var groupDependencies map[int]bool
+		if job.action.Op == "apply" && job.action.Fxp != nil && isSharedFXPEntry(*job.action.Fxp) {
+			groupDependencies = groupRuntimeDependencies[fxpEntryGroupKey(job.action.Fxp.TransportVersion, job.action.Fxp.TunnelID)]
+		}
 		relevantRuntimeIndexes := make([]int, 0, len(sharedRuntimeJobs))
 		for runtimeIndex := range sharedRuntimeJobs {
-			if sharedRuntimeActionRequiredBy(sharedRuntimeJobs[runtimeIndex].action, job.action, previousForwardType) {
+			if groupDependencies[runtimeIndex] || sharedRuntimeActionRequiredBy(sharedRuntimeJobs[runtimeIndex].action, job.action, previousForwardType) {
 				relevantRuntimeIndexes = append(relevantRuntimeIndexes, runtimeIndex)
 			}
 		}
@@ -1586,9 +1669,21 @@ func actionJobHasResultPrerequisite(job actionJob, prerequisite *actionJobResult
 }
 
 func actionJobNeedsPreRuntimeHandoff(job actionJob) bool {
+	return actionJobNeedsPreRuntimeHandoffWithListenerProbe(job, func(a action) bool {
+		return !desiredActionLocalRuntimeReady(a) && unknownManagedListenerCleanupNeeded(a.SourcePort, a.Protocol)
+	})
+}
+
+func actionJobNeedsPreRuntimeHandoffWithListenerProbe(job actionJob, needsCleanup func(action) bool) bool {
 	a := job.action
 	if strings.TrimSpace(a.Op) != "apply" || !actionNeedsSharedRuntimePhase(a) || !validActionPort(a.SourcePort) {
 		return false
+	}
+	// Missing/stale markers must not defer cleanup until after the shared
+	// runtime binds its ports. That phase cannot succeed while an orphaned
+	// managed Realm/Socat/FXP listener still owns the requested protocol lane.
+	if sharedRuntimeOwnsDesiredActionListener(a) && needsCleanup != nil && needsCleanup(a) {
+		return true
 	}
 	previous := job.previousRuntime
 	if !previous.valid {
@@ -1619,7 +1714,13 @@ func fxpEntryGroupHandoffBatchKey(job actionJob) string {
 func localForwardTypeForAction(a action) string {
 	snapshot := captureLocalActionRuntimeSnapshot(a)
 	forwardType := strings.TrimSpace(snapshot.forwardType)
-	if !snapshot.valid || forwardType == "" || forwardType != strings.TrimSpace(a.ForwardType) || desiredActionLocalRuntimeReady(a) {
+	if !snapshot.valid || forwardType == "" {
+		if sharedRuntimeOwnsDesiredActionListener(a) {
+			return activeSharedRuntimeForwardType(a.SourcePort, a.Protocol)
+		}
+		return forwardType
+	}
+	if forwardType != strings.TrimSpace(a.ForwardType) || desiredActionLocalRuntimeReady(a) {
 		return forwardType
 	}
 	if owner := activeSharedRuntimeForwardType(a.SourcePort, a.Protocol); owner != "" {
@@ -2018,6 +2119,16 @@ func acquireCurrentActionSerialLocks(a action) (func(), bool) {
 	return unlock, true
 }
 
+func waitForDesiredFXPActionQuietPeriod(a action) bool {
+	if a.Fxp == nil || a.ConfigRevision <= 0 || strings.TrimSpace(a.Op) != "apply" {
+		return true
+	}
+	timer := time.NewTimer(desiredFXPActionQuietPeriod)
+	defer timer.Stop()
+	<-timer.C
+	return !isOlderAction(a, false)
+}
+
 func acquireActionSerialLocks(keys []string) func() {
 	if len(keys) == 0 {
 		return nil
@@ -2197,6 +2308,34 @@ func actionDiagnosticKey(a action) string {
 	return fmt.Sprintf("%s:%s:%d:%d:%d", statusType, strings.TrimSpace(a.Op), a.RuleID, a.TunnelID, a.SourcePort)
 }
 
+// compareActionGeneration orders desired actions by panel revision first and
+// falls back to IssuedAt for legacy or same-revision messages. A versioned
+// action always supersedes an unversioned action, even when the latter has a
+// later wall-clock timestamp.
+func compareActionGeneration(a, b action) int {
+	if a.ConfigRevision > 0 || b.ConfigRevision > 0 {
+		if a.ConfigRevision <= 0 {
+			return -1
+		}
+		if b.ConfigRevision <= 0 {
+			return 1
+		}
+		if a.ConfigRevision < b.ConfigRevision {
+			return -1
+		}
+		if a.ConfigRevision > b.ConfigRevision {
+			return 1
+		}
+	}
+	if a.IssuedAt < b.IssuedAt {
+		return -1
+	}
+	if a.IssuedAt > b.IssuedAt {
+		return 1
+	}
+	return 0
+}
+
 func actionStaleKeys(a action) []string {
 	keys := []string{}
 	isRemove := strings.TrimSpace(a.Op) == "remove"
@@ -2246,26 +2385,37 @@ func isOlderAction(a action, remember bool) bool {
 		return false
 	}
 	actionEpochMu.Lock()
-	latest := int64(0)
+	var latest action
+	latestSet := false
 	for _, key := range keys {
-		if ts := latestActionIssuedAt[key]; ts > latest {
-			latest = ts
+		ts, exists := latestActionIssuedAt[key]
+		if !exists {
+			delete(latestActionConfigRevision, key)
+			continue
+		}
+		candidate := action{IssuedAt: ts, ConfigRevision: latestActionConfigRevision[key]}
+		if !latestSet || compareActionGeneration(candidate, latest) > 0 {
+			latest = candidate
+			latestSet = true
 		}
 	}
 	if remember {
 		for _, key := range keys {
-			if a.IssuedAt > latestActionIssuedAt[key] {
+			existing := action{IssuedAt: latestActionIssuedAt[key], ConfigRevision: latestActionConfigRevision[key]}
+			if _, exists := latestActionIssuedAt[key]; !exists || compareActionGeneration(a, existing) > 0 {
 				latestActionIssuedAt[key] = a.IssuedAt
+				latestActionConfigRevision[key] = a.ConfigRevision
 			}
 		}
-		if a.IssuedAt > latest {
-			latest = a.IssuedAt
+		if !latestSet || compareActionGeneration(a, latest) > 0 {
+			latest = a
+			latestSet = true
 		}
 	}
 	actionEpochMu.Unlock()
-	if a.IssuedAt < latest {
+	if latestSet && compareActionGeneration(a, latest) < 0 {
 		if shouldLogAgentReport("action-stale-drop", agentReportLogInterval) {
-			logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d latest=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, latest)
+			logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d revision=%d latestIssuedAt=%d latestRevision=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, a.ConfigRevision, latest.IssuedAt, latest.ConfigRevision)
 		}
 		return true
 	}
@@ -2290,8 +2440,9 @@ func releaseQueuedAction(a action) {
 		return
 	}
 	queuedActionMu.Lock()
-	if queuedActionKeys[key] == a.IssuedAt {
+	if queuedActionKeys[key] == a.IssuedAt && queuedActionConfigRevision[key] == a.ConfigRevision {
 		delete(queuedActionKeys, key)
+		delete(queuedActionConfigRevision, key)
 	}
 	queuedActionMu.Unlock()
 }
