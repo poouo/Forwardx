@@ -23,6 +23,7 @@ import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-ta
 import { Textarea } from "@/components/ui/textarea";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   CheckCircle2,
   CircleDollarSign,
@@ -225,8 +226,8 @@ function Field({ label, children, hint }: { label: string; children: React.React
 
 function CallbackItem({ label, value }: { label: string; value: string }) {
   const copy = async () => {
-    await navigator.clipboard.writeText(value);
-    toast.success(translateText("已复制"));
+    if (await copyTextToClipboard(value)) toast.success(translateText("已复制"));
+    else toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
   };
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border bg-background/70 px-3 py-2">

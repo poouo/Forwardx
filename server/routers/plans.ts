@@ -165,6 +165,7 @@ export const plansRouter = router({
       userId: z.number().int().positive(),
       planId: z.number().int().positive(),
       durationDays: z.union([z.literal(0), z.literal(30), z.literal(90), z.literal(180)]).optional(),
+      allowSelfRenew: z.boolean().default(false),
     }))
     .mutation(async ({ input }) => {
       const plan = await db.getSubscriptionPlanById(input.planId);
@@ -172,9 +173,16 @@ export const plansRouter = router({
       const overrideDurationDays = input.durationDays !== undefined && Number(plan.durationDays) === 30
         ? input.durationDays
         : null;
-      const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null, undefined, overrideDurationDays);
+      const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null, undefined, overrideDurationDays, undefined, input.allowSelfRenew);
       await refreshUserForwardEndpoints(input.userId, "plan-assigned");
       appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} duration=${overrideDurationDays ?? plan.durationDays} ports=${result.portRangeStart && result.portRangeEnd ? `${result.portRangeStart}-${result.portRangeEnd}` : "unlimited"}`);
+      return result;
+    }),
+  setSubscriptionSelfRenewal: adminProcedure
+    .input(z.object({ id: z.number().int().positive(), allowSelfRenew: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await db.setUserSubscriptionSelfRenewal(input.id, input.allowSelfRenew);
+      appendPanelLog("info", `[Plan] updated self-renewal subscription=${input.id} user=${result.userId} enabled=${input.allowSelfRenew} operator=${ctx.user.id}`);
       return result;
     }),
   cancelSubscription: adminProcedure

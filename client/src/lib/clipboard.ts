@@ -12,11 +12,17 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 
   if (typeof document === "undefined") return false;
 
-  const host = (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) || document.body;
-  if (!host) return false;
-
-  const textarea = document.createElement("textarea");
+  let textarea: HTMLTextAreaElement | null = null;
+  let previousFocus: HTMLElement | null = null;
   try {
+    const host = (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) || document.body;
+    if (!host) return false;
+
+    const activeElement = document.activeElement;
+    previousFocus = activeElement && typeof (activeElement as HTMLElement).focus === "function"
+      ? activeElement as HTMLElement
+      : null;
+    textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "");
     textarea.style.position = "fixed";
@@ -26,18 +32,22 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
     textarea.style.height = "1px";
     textarea.style.opacity = "0";
     textarea.style.pointerEvents = "none";
-    textarea.style.zIndex = "-1";
+    textarea.style.zIndex = "2147483647";
 
     host.appendChild(textarea);
     textarea.focus();
     textarea.select();
     textarea.setSelectionRange(0, text.length);
 
-    return document.execCommand("copy");
+    return document.execCommand("copy") === true;
   } catch (error) {
     console.warn("[Clipboard] execCommand fallback failed:", error);
     return false;
   } finally {
-    textarea.remove();
+    textarea?.remove();
+    if (previousFocus && (!("isConnected" in previousFocus) || previousFocus.isConnected)) {
+      try { previousFocus.focus({ preventScroll: true }); }
+      catch { previousFocus.focus(); }
+    }
   }
 }

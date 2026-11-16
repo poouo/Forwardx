@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.212"
+var Version = "2.2.213"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -190,7 +190,7 @@ var fxpControlMu sync.Mutex
 var fxpWireGuardRefSequence uint64
 var fxpEndpointEventMu sync.Mutex
 var fxpEndpointEvents = map[string]fxpEndpointEvent{}
-var fxpEndpointLogPattern = regexp.MustCompile(`exit endpoint (unhealthy|recovered) index=[0-9]+ endpoint=([^[:space:]]+)(?: reason=(.*))?`)
+var fxpEndpointLogPattern = regexp.MustCompile(`exit endpoint (unhealthy|recovered|setup) index=[0-9]+ endpoint=([^[:space:]]+)(?: setupMs=([0-9]+))?(?: reason=(.*))?`)
 
 type fxpEndpointEvent struct {
 	TunnelID   int    `json:"tunnelId"`
@@ -220,8 +220,10 @@ func recordFXPEndpointLog(spec fxpSpec, message string) {
 			startedAt = now
 		}
 		eventMessage := ""
-		if len(match) > 3 {
-			eventMessage = compactLogOutput(match[3])
+		if status == "setup" && strings.TrimSpace(match[3]) != "" {
+			eventMessage = "setupMs=" + strings.TrimSpace(match[3])
+		} else if len(match) > 4 {
+			eventMessage = compactLogOutput(match[4])
 		}
 		fxpEndpointEvents[key] = fxpEndpointEvent{
 			TunnelID: spec.TunnelID, RuleID: spec.RuleID, Role: spec.Role, Endpoint: endpoint,
@@ -9415,7 +9417,7 @@ func normalizeFXPSpec(spec fxpSpec) fxpSpec {
 	spec.ListenHost = strings.TrimSpace(spec.ListenHost)
 	spec.ExitHost = strings.TrimSpace(spec.ExitHost)
 	switch strings.ToLower(strings.TrimSpace(spec.ExitStrategy)) {
-	case "fallback", "random", "ip_hash":
+	case "fallback", "random", "ip_hash", "latency":
 		spec.ExitStrategy = strings.ToLower(strings.TrimSpace(spec.ExitStrategy))
 	default:
 		spec.ExitStrategy = "round_robin"

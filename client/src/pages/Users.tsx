@@ -90,11 +90,9 @@ import { FORWARD_TYPES } from "@shared/forwardTypes";
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
-  if (!num || isNaN(num) || num === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(Math.abs(num)) / Math.log(k));
-  return parseFloat((num / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  if (!Number.isFinite(num) || num <= 0) return "0 GB";
+  const gigabytes = num / (1024 ** 3);
+  return `${parseFloat(gigabytes.toFixed(2))} GB`;
 }
 
 function parseTrafficInputGB(value: string): number {
@@ -702,6 +700,14 @@ function UsersContent() {
       setHiddenCancelledSubscriptionIds((ids) => ids.filter((item) => item !== id));
       toast.error(err.message || translateText("取消订阅失败"));
     },
+  });
+  const setSubscriptionSelfRenewalMutation = trpc.plans.setSubscriptionSelfRenewal.useMutation({
+    onSuccess: (_result, variables) => {
+      utils.plans.subscriptions.invalidate();
+      utils.plans.subscriptionsPage.invalidate();
+      toast.success(variables.allowSelfRenew ? translateText("已允许用户自行续费") : translateText("已关闭用户自行续费"));
+    },
+    onError: (err) => toast.error(err.message || translateText("更新续费设置失败")),
   });
 
   const adminCount = Number(userSummary?.adminUsers ?? userPageQuery.data?.adminItems ?? 0);
@@ -1700,6 +1706,21 @@ function UsersContent() {
                             <p className="mt-1 truncate font-medium">{billingDateTimeText(sub.nextTrafficResetAt)}</p>
                           </div>
                         </div>
+
+                        {sub.source === "admin" && sub.status !== "cancelled" && (
+                          <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium">{translateText("允许用户自行续费")}</p>
+                              <p className="mt-0.5 text-[11px] text-muted-foreground">{translateText("续费按当前套餐价格支付")}</p>
+                            </div>
+                            <Switch
+                              className="shrink-0"
+                              checked={sub.allowSelfRenew === true || Number(sub.allowSelfRenew) === 1}
+                              disabled={setSubscriptionSelfRenewalMutation.isPending}
+                              onCheckedChange={(allowSelfRenew) => setSubscriptionSelfRenewalMutation.mutate({ id: Number(sub.id), allowSelfRenew })}
+                            />
+                          </div>
+                        )}
 
                         <div className="flex flex-wrap gap-2 pt-1">
                           <Button

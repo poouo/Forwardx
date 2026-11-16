@@ -16,6 +16,8 @@ export const personalRuleGroupChangeFilterSchema = z.object({
 });
 export type PersonalRuleGroupChangeFilter = z.infer<typeof personalRuleGroupChangeFilterSchema>;
 export const ruleGroupFilterSchema = z.number().int().min(0).nullable().optional();
+export const personalRuleGroupCategorySchema = z.enum(["all", "local", "tunnel", "chain", "group"]);
+export type PersonalRuleGroupCategory = z.infer<typeof personalRuleGroupCategorySchema>;
 export function matchesPersonalRuleGroup(groupIds: readonly number[] | undefined, filter: number | null): boolean {
   if (filter === null) return true;
   if (filter === 0) return !groupIds?.length;

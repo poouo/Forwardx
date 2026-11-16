@@ -50,6 +50,7 @@ test("group rule tests follow active host/tunnel members and persist their selec
       const first = await start();
       assert.equal(first.ruleId, 100, "results belong to the user's logical rule");
       assert.equal(first.hostId, 2, "offline first member must not receive tests after failover");
+      assert.equal(first.message, null, "forward-group metadata must not be exposed as an error message");
       const meta = utils.parseSelfTestMeta(first.requestMessage);
       assert.equal(meta.kind, "forward-group");
       assert.equal(meta.runtimeRuleId, 120);
@@ -90,9 +91,20 @@ test("group rule tests follow active host/tunnel members and persist their selec
       await runtime.executeRaw('UPDATE "forward_groups" SET "isEnabled" = 1, "domain" = NULL, "activeMemberId" = NULL WHERE "id" = 10');
       assert.equal((await start()).hostId, 2);
 
+      // Chain probe settings belong in requestMessage, never in the visible result message.
+      await runtime.executeRaw('UPDATE "forward_groups" SET "groupMode" = ? WHERE "id" = 10', ["chain"]);
+      const chainFirst = await start();
+      assert.equal(chainFirst.message, null);
+      const chainRows = await runtime.queryRaw('SELECT "requestMessage", "message" FROM "forward_tests" WHERE "batchId" = ? ORDER BY "id"', [chainFirst.batchId]);
+      assert.ok(chainRows.length > 0);
+      assert.ok(chainRows.every(row => row.message == null && utils.parseSelfTestMeta(row.requestMessage)?.kind === "forward-chain"));
+      // Keep the later tunnel assertions independent from the chain sync.
+      await runtime.executeRaw('UPDATE "forward_groups" SET "groupMode" = ?, "targetPort" = ? WHERE "id" = ?', ["failover", 443, 10]);
+      await runtime.executeRaw('UPDATE "forward_rules" SET "targetPort" = ? WHERE "id" IN (100, 110, 120)', [443]);
+
       // Tunnel members must execute the existing tunnel+target test, not direct template testing.
       for (const [id, entryHostId, exitHostId] of [[20, 1, 3], [21, 2, 4]]) await insert("tunnels", { id, name: "tunnel-" + id, entryHostId, exitHostId, userId: 1, listenPort: 19000 + id, mode: "tls", isEnabled: 1 });
-      await runtime.executeRaw('UPDATE "forward_groups" SET "groupType" = ?, "domain" = ?, "activeMemberId" = 102 WHERE "id" = 10', ["tunnel", "entry.example.test"]);
+      await runtime.executeRaw('UPDATE "forward_groups" SET "groupType" = ?, "groupMode" = ?, "domain" = ?, "activeMemberId" = 102 WHERE "id" = 10', ["tunnel", "failover", "entry.example.test"]);
       for (const [memberId, tunnelId, childId] of [[101, 20, 110], [102, 21, 120]]) {
         await runtime.executeRaw('UPDATE "forward_group_members" SET "memberType" = ?, "hostId" = NULL, "tunnelId" = ? WHERE "id" = ?', ["tunnel", tunnelId, memberId]);
         await runtime.executeRaw('UPDATE "forward_rules" SET "tunnelId" = ? WHERE "id" = ?', [tunnelId, childId]);

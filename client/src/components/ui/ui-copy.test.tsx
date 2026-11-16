@@ -114,11 +114,11 @@ test("cancelled subscriptions stay in default billing history, not in the packag
   const packages = readFileSync("client/src/pages/Subscriptions.tsx", "utf8");
   assert.doesNotMatch(billing, /showCancelledSubscriptions|visibleLedger|查看已取消|隐藏已取消/);
   assert.match(billing, /\{ledger\.map\(\(item: any\) =>/);
-  assert.match(billing, /translateText\(item\.statusLabel \|\| item\.status\)/);
+  assert.match(billing, /item\.statusLabel \? translateText\(item\.statusLabel\) : paymentStatusText\(item\.status\)/);
   assert.doesNotMatch(packages, /showCancelled|cancelledCount|已取消记录当前处于隐藏状态|删除已取消订阅/);
   assert.match(packages, /subscriptions\.filter\(\(sub: any\) => sub\.status !== "cancelled"\)/);
   const wallet = readFileSync("client/src/pages/Wallet.tsx", "utf8");
-  assert.match(wallet, /translateText\(item\.statusLabel \|\| item\.status\)/);
+  assert.match(wallet, /item\.statusLabel \? translateText\(item\.statusLabel\) : paymentStatusText\(item\.status\)/);
 });
 
 test("secondary help is native, collapsed, touch/keyboard accessible and retains full content", () => {

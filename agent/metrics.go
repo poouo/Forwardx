@@ -531,6 +531,54 @@ type tcpingTask struct {
 	ProbeKey        string
 	TopologyKey     string
 	GroupHealth     *forwardGroupHealthSpec
+	// shared lets tasks of one collection round reuse a measurement of the
+	// same target. It is set by runTCPingTasks and nil everywhere else.
+	shared *probeRoundCache
+}
+
+// probeRoundCache measures each distinct target once per collection round.
+// Several rules, tunnel hops or group members often point at the same
+// address:port; probing it separately for each of them opens a burst of
+// short-lived connections that the target sees as dozens of connects and
+// closes within the same second, without making the result any more accurate.
+type probeRoundCache struct {
+	mu      sync.Mutex
+	entries map[string]*probeRoundEntry
+}
+
+type probeRoundEntry struct {
+	once        sync.Once
+	measurement probeMeasurement
+}
+
+func newProbeRoundCache() *probeRoundCache {
+	return &probeRoundCache{entries: map[string]*probeRoundEntry{}}
+}
+
+// measure runs probe at most once per key. Concurrent callers of the same key
+// wait for the first measurement instead of starting their own. A nil cache
+// simply runs the probe.
+func (c *probeRoundCache) measure(key string, probe func() probeMeasurement) probeMeasurement {
+	if c == nil || key == "" {
+		return probe()
+	}
+	c.mu.Lock()
+	entry := c.entries[key]
+	if entry == nil {
+		entry = &probeRoundEntry{}
+		c.entries[key] = entry
+	}
+	c.mu.Unlock()
+	entry.once.Do(func() { entry.measurement = probe() })
+	return entry.measurement
+}
+
+func probeRoundKey(method, host string, port int) string {
+	target := strings.ToLower(strings.TrimSpace(host))
+	if target == "" {
+		return ""
+	}
+	return method + "|" + target + "|" + strconv.Itoa(port)
 }
 
 type tcpingTaskResult struct {
@@ -1857,6 +1905,7 @@ func rotateTCPingTasks(tasks []tcpingTask, cursor *int, limit int) []tcpingTask 
 func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
 	workerCount := tcpingTaskConcurrency(len(tasks))
 	out := make(chan tcpingTaskResult, len(tasks))
+	shared := newProbeRoundCache()
 	jobs := make(chan tcpingTask, workerCount)
 	var wg sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
@@ -1869,6 +1918,7 @@ func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []m
 		}()
 	}
 	for _, task := range tasks {
+		task.shared = shared
 		jobs <- task
 	}
 	close(jobs)
@@ -1935,7 +1985,9 @@ func executeTCPingTaskWithProbes(
 		measurement.ProbeSuccesses = 1
 	} else if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		if pingProbe != nil {
-			measurement = pingProbe(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
+			measurement = task.shared.measure(probeRoundKey("ping", task.TargetIP, 0), func() probeMeasurement {
+				return pingProbe(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
+			})
 		}
 		if !measurement.Reachable && shouldLogAgentReport("icmp-probe-failed", time.Minute) {
 			logf("latency probe failed kind=%s rule=%d method=icmp target=%s replies=%d/%d detail=%q", task.Kind, task.RuleID, task.TargetIP, measurement.ProbeSuccesses, measurement.ProbeCount, measurement.Detail)
@@ -1957,7 +2009,9 @@ func executeTCPingTaskWithProbes(
 	} else if task.Kind == "service" && task.Method == "url" {
 		measurement = urlConnectionProbe(task.TargetURL, task.TimeoutSeconds, task.ExpectedStatus)
 	} else {
-		measurement = tcpLatencyWithProbes(task.TargetIP, task.TargetPort, tcpingProbeTimeout, tcpingTCPProbeCount)
+		measurement = task.shared.measure(probeRoundKey("tcp", task.TargetIP, task.TargetPort), func() probeMeasurement {
+			return tcpLatencyWithProbes(task.TargetIP, task.TargetPort, tcpingProbeTimeout, tcpingTCPProbeCount)
+		})
 	}
 	if measurement.ProbeCount < 1 {
 		measurement.ProbeCount = 1

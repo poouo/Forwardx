@@ -65,7 +65,7 @@ const forwardXV3InputFields = {
   v3Multiplex: z.boolean().nullable().optional(),
 };
 const proxyProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
-const tunnelLoadBalanceStrategySchema = z.enum(["none", "round_robin", "random", "least_conn", "ip_hash", "fallback"]);
+const tunnelLoadBalanceStrategySchema = z.enum(["none", "round_robin", "random", "least_conn", "ip_hash", "fallback", "latency"]);
 const tunnelRelayModeSchema = z.enum(["chain", "failover"]);
 const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
@@ -355,6 +355,12 @@ function inheritedExitGroupStrategy(group: any, requested: unknown) {
     return normalizeExitGroupStrategy(group.exitStrategy);
   }
   return normalizeTunnelLoadBalanceStrategy(requested);
+}
+
+function validateTunnelExitStrategyRuntime(mode: string, strategy: unknown) {
+  if (normalizeExitGroupStrategy(strategy) === "latency" && normalizeTunnelMode(mode) !== "forwardx") {
+    throw new Error("低延迟优先策略仅支持 ForwardX Runtime，请切换隧道类型或改用其他出口策略");
+  }
 }
 
 async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined, requireEnabled = false) {
@@ -1035,6 +1041,7 @@ export const tunnelsRouter = router({
         const loadBalanceStrategy = loadBalanceEnabled
           ? inheritedExitGroupStrategy(exitGroup, input.loadBalanceStrategy)
           : "round_robin";
+        validateTunnelExitStrategyRuntime(normalizedMode, loadBalanceStrategy);
         const extraExitNodes = await buildExtraExitNodes(ctx, {
           primaryHostId: exitHostId,
           blockedHostIds: hopHostIds || [entryHostId, exitHostId],
@@ -1518,6 +1525,7 @@ export const tunnelsRouter = router({
         if ((data as any).loadBalanceEnabled && nextExitGroup) {
           (data as any).loadBalanceStrategy = inheritedExitGroupStrategy(nextExitGroup, (data as any).loadBalanceStrategy);
         }
+        validateTunnelExitStrategyRuntime(nextModeForRuntime, (data as any).loadBalanceStrategy);
         if ((data as any).isEnabled !== undefined) (data as any).disabledByGroup = false;
         if (nextWireGuardEnabled && nextTunnelEnabled) {
           const entryHostIds = await getTunnelEntryTestHostIds({

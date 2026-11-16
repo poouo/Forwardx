@@ -34,7 +34,7 @@ export default function DiscordAccountCard({ showAnnouncementPreference = true }
       </> : <>
         {code && <div className="space-y-2 rounded-lg border p-3"><code className="block break-all">/bind {code.code}</code>
           <p className="text-xs text-muted-foreground">{valid ? t("绑定码 5 分钟内有效，请在机器人私聊中发送。") : t("绑定码已过期，请重新生成。")}</p>
-          <Button variant="outline" size="sm" disabled={!valid} onClick={async () => { if (await copyTextToClipboard(`/bind ${code.code}`)) toast.success(t("已复制到剪贴板")); else toast.error(t("复制失败，请手动复制")); }}>{t("复制")}</Button>
+          <Button variant="outline" size="sm" disabled={!valid} onClick={async () => { if (await copyTextToClipboard(`/bind ${code.code}`)) toast.success(t("已复制到剪贴板")); else toast.error(t("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。")); }}>{t("复制")}</Button>
         </div>}
         <Button disabled={!status?.enabled || bind.isPending} onClick={() => bind.mutate()}>{t("生成绑定码")}</Button>
       </>}

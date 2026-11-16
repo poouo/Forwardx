@@ -28,23 +28,62 @@ export const agentTokensRouter = router({
     }));
   }),
   create: adminProcedure
-    .input(z.object({ description: z.string().max(200).optional() }))
+    .input(z.object({
+      description: z.string().max(200).optional(),
+      registrationMode: z.enum(["single", "batch"]).optional().default("single"),
+      maxRegistrations: z.number().int().min(0).max(1000).optional().default(1),
+      registrationExpiryDays: z.number().int().min(0).max(365).optional().default(0),
+    }))
     .mutation(async ({ ctx, input }) => {
       const token = nanoid(32);
+      const registrationMode = input.registrationMode === "batch" ? "batch" : "single";
+      const maxRegistrations = registrationMode === "batch" ? Math.max(0, Number(input.maxRegistrations || 0)) : 1;
+      const expiryDays = registrationMode === "batch" ? Math.max(0, Number(input.registrationExpiryDays || 0)) : 0;
       const id = await db.createAgentToken({
         token,
         description: input.description ?? null,
+        registrationMode,
+        maxRegistrations,
+        registrationExpiresAt: expiryDays > 0 ? new Date(Date.now() + expiryDays * 86400 * 1000) : null,
+        usedRegistrations: 0,
         userId: ctx.user.id,
       });
       return { id, token };
     }),
   update: adminProcedure
-    .input(z.object({ id: z.number(), description: z.string().max(200).nullable().optional() }))
+    .input(z.object({
+      id: z.number(),
+      description: z.string().max(200).nullable().optional(),
+      maxRegistrations: z.number().int().min(0).max(1000).optional(),
+      registrationExpiryDays: z.number().int().min(0).max(365).optional(),
+    }))
     .mutation(async ({ input }) => {
       const token = await db.getAgentTokenById(input.id);
       if (!token) throw new Error("Token 不存在");
       const description = input.description?.trim() || null;
-      await db.updateAgentTokenDescription(input.id, description);
+      if (token.registrationMode === "batch" && (input.maxRegistrations !== undefined || input.registrationExpiryDays !== undefined)) {
+        const maxRegistrations = Math.max(Number(token.usedRegistrations || 0), Math.max(0, Number(input.maxRegistrations ?? token.maxRegistrations ?? 0)));
+        const expiryDays = input.registrationExpiryDays === undefined
+          ? null
+          : Math.max(0, Number(input.registrationExpiryDays));
+        await db.updateBatchAgentToken(input.id, {
+          description: input.description === undefined ? token.description : description,
+          maxRegistrations,
+          registrationExpiresAt: expiryDays === null
+            ? token.registrationExpiresAt
+            : expiryDays > 0 ? new Date(Date.now() + expiryDays * 86400 * 1000) : null,
+        });
+      } else {
+        await db.updateAgentTokenDescription(input.id, description);
+      }
+      return { success: true };
+    }),
+  removeHost: adminProcedure
+    .input(z.object({ id: z.number().int().positive(), hostId: z.number().int().positive() }))
+    .mutation(async ({ input }) => {
+      const token = await db.getAgentTokenById(input.id);
+      if (!token) throw new Error("Token 不存在");
+      await db.detachHostFromAgentToken(token.token, input.hostId);
       return { success: true };
     }),
   reorder: adminProcedure
@@ -62,8 +101,8 @@ export const agentTokensRouter = router({
       const hostIds = new Set<number>();
       if (token.hostId) hostIds.add(Number(token.hostId));
       if (token.token) {
-        const boundHost = await db.getHostByAgentToken(token.token);
-        if (boundHost?.id) hostIds.add(Number(boundHost.id));
+        const boundHosts = await db.getHostsByAgentToken(token.token);
+        for (const boundHost of boundHosts) if (boundHost?.id) hostIds.add(Number(boundHost.id));
       }
       for (const hostId of hostIds) {
         const blockers = await db.getHostRuleDeleteBlockers(hostId);

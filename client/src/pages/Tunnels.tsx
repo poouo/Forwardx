@@ -178,7 +178,7 @@ type TunnelForm = {
   tcpFastOpen: boolean;
   udpOverTcp: boolean;
   loadBalanceEnabled: boolean;
-  loadBalanceStrategy: "none" | "round_robin" | "random" | "least_conn" | "ip_hash" | "fallback";
+  loadBalanceStrategy: "none" | "round_robin" | "random" | "least_conn" | "ip_hash" | "fallback" | "latency";
   loadBalanceExits: Array<{ hostId: number | null; connectHost: string }>;
   exitGroupId: number | null;
   blockHttp: boolean;
@@ -2785,7 +2785,7 @@ function TunnelsContent() {
       tcpFastOpen: transportTuningSupported && !!tunnel.tcpFastOpen,
       udpOverTcp: transportTuningSupported && !!tunnel.udpOverTcp,
       loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
-      loadBalanceStrategy: (["none", "round_robin", "random", "least_conn", "ip_hash", "fallback"].includes(String(tunnel.loadBalanceStrategy || ""))
+      loadBalanceStrategy: (["none", "round_robin", "random", "least_conn", "ip_hash", "fallback", "latency"].includes(String(tunnel.loadBalanceStrategy || ""))
         ? tunnel.loadBalanceStrategy
         : "round_robin") as TunnelForm["loadBalanceStrategy"],
       loadBalanceExits: exitGroupId ? loadBalanceExits : [],

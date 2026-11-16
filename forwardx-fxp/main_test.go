@@ -187,6 +187,26 @@ func TestExitSelectorStrategies(t *testing.T) {
 	if got := normalizeExitStrategy("none"); got != "round_robin" {
 		t.Fatalf("none strategy should use the single-endpoint default, got %q", got)
 	}
+	latency := newExitEndpointSelector(endpoints, exitEndpoint{Host: "127.0.0.1", Port: 10001}, "latency")
+	for _, sample := range []struct {
+		index int
+		delay time.Duration
+	}{
+		{0, 80 * time.Millisecond},
+		{1, 20 * time.Millisecond},
+		{2, 40 * time.Millisecond},
+	} {
+		latency.markHealthy(sample.index, sample.delay)
+	}
+	_, selected, ok := latency.pick(nil)
+	if !ok || selected != 1 {
+		t.Fatalf("latency strategy selected endpoint %d, want lowest-latency endpoint 1", selected)
+	}
+	latency.markFailure(1, errors.New("temporary failure"))
+	_, selected, ok = latency.pick(nil)
+	if !ok || selected == 1 {
+		t.Fatalf("latency strategy selected failed endpoint %d", selected)
+	}
 }
 
 func TestForwardXFallbackUsesBackupForTCPAndUDP(t *testing.T) {
@@ -812,6 +832,27 @@ func TestFXPUDPExitTargetIsConfigurationBound(t *testing.T) {
 	}
 	if _, ok := udpTargetForRule(cfg, 8); ok {
 		t.Fatal("UDP exit accepted a destination that was not configured for the rule")
+	}
+}
+
+func TestLatencySelectorSamplesStalestExitPeriodically(t *testing.T) {
+	selector := newExitEndpointSelector([]exitEndpoint{
+		{Host: "198.51.100.2", Port: 2002, Key: "key"},
+	}, exitEndpoint{Host: "198.51.100.1", Port: 2001, Key: "key"}, "latency")
+	now := time.Now()
+	selector.mu.Lock()
+	selector.latency = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}
+	selector.latencyN = []uint32{4, 4}
+	selector.latencyAt = []time.Time{now, now.Add(-time.Minute)}
+	selector.selectN = 31
+	selector.mu.Unlock()
+	endpoint, index, ok := selector.pick(nil)
+	if !ok || index != 1 || endpoint.Host != "198.51.100.2" {
+		t.Fatalf("periodic sample did not select stalest exit: endpoint=%+v index=%d ok=%v", endpoint, index, ok)
+	}
+	endpoint, index, ok = selector.pick(nil)
+	if !ok || index != 0 || endpoint.Host != "198.51.100.1" {
+		t.Fatalf("selector did not return to lowest-latency exit: endpoint=%+v index=%d ok=%v", endpoint, index, ok)
 	}
 }
 

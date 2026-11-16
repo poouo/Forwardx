@@ -47,6 +47,8 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
         ip: `198.51.100.${id}`,
         ipv4: `198.51.100.${id}`,
         agentToken: `speed-test-${id}`,
+        agentVersion: id === 1 ? "2.2.212" : null,
+        osInfo: id === 1 ? "Debian 12" : null,
         userId: 1,
         isOnline: 1,
         lastHeartbeat: Math.floor(Date.now() / 1000),
@@ -84,6 +86,8 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
       plan.route.map((node) => node.hostId),
       [1, 2, 3],
     );
+    assert.equal(plan.route[0].agentVersion, "2.2.212");
+    assert.equal(plan.route[0].osInfo, "Debian 12");
     const entry = plan.hosts.get(1)!.find((c) => c.kind === "gost")!;
     assert.equal(entry.listenHost, "127.0.0.1");
     assert.equal(entry.config.chains[0].hops.length, 2);
@@ -118,6 +122,9 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
       token,
     );
     assert.equal(created.state, "preparing");
+    assert.deepEqual(created.benchmark?.routeHostIds, [1, 2, 3]);
+    assert.equal(created.benchmark?.agentVersions["1"], "2.2.212");
+    assert.equal(created.benchmark?.panelVersion, "2.3.300");
     assert.throws(
       () => getLinkSpeedJob(created.id, { id: 2, role: "user" }),
       /无权/,

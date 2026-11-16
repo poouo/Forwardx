@@ -1568,12 +1568,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const role = normalizeAgentText(rawEvent?.role, 16) || "unknown";
       const endpoint = normalizeAgentText(rawEvent?.endpoint, 256);
       const status = normalizeAgentText(rawEvent?.status, 16);
-      if (!endpoint || (status !== "unhealthy" && status !== "recovered")) continue;
+      if (!endpoint || (status !== "unhealthy" && status !== "recovered" && status !== "setup")) continue;
       const key = `${host.id}:${role}:${tunnelId}:${ruleId}:${endpoint}`;
-      if (fxpEndpointStatusCache.get(key) === status) continue;
-      setBoundedMapValue(fxpEndpointStatusCache, key, status, AGENT_DYNAMIC_CACHE_MAX);
       const startedAt = Number(rawEvent?.startedAt || 0);
       const occurredAt = Number(rawEvent?.occurredAt || 0);
+      // Successful connection setup samples are useful for diagnosis, but
+      // should not turn heartbeat replay into a panel-log flood.
+      const statusSignature = status === "setup"
+        ? `${status}:${Math.floor(Math.max(0, occurredAt) / (5 * 60_000))}`
+        : status;
+      if (fxpEndpointStatusCache.get(key) === statusSignature) continue;
+      setBoundedMapValue(fxpEndpointStatusCache, key, statusSignature, AGENT_DYNAMIC_CACHE_MAX);
       const durationMs = status === "recovered" && startedAt > 0 && occurredAt >= startedAt ? occurredAt - startedAt : 0;
       const message = normalizeAgentText(rawEvent?.message, 512);
       appendPanelLog(

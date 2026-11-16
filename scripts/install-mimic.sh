@@ -15,7 +15,22 @@ DEFAULT_MIRRORS="https://gh.ddlc.top/,https://gh-proxy.com/,https://ghproxy.net/
 TS="$(date +%s)"
 MIMIC_BUILD_FLAGS=()
 MIMIC_DKMS_FLAGS=()
+MIMIC_KMOD_TOOL_FLAGS=()
+MIMIC_KMOD_MAKE_FLAGS=()
 MIMIC_RESOLVE_BTFIDS=""
+
+# Panel build cache. A kernel module only loads on the exact kernel build it
+# was compiled for, so the first host of each kernel compiles it once and the
+# panel hands the result to every other host running the same kernel.
+FORWARDX_PANEL_URL="${FORWARDX_PANEL_URL:-${PANEL_URL:-}}"
+FORWARDX_AGENT_TOKEN="${FORWARDX_AGENT_TOKEN:-}"
+MIMIC_CACHE_URL=""
+MIMIC_CACHE_TOKEN=""
+MIMIC_CACHE_CURL_ARGS=()
+MIMIC_BUILT_VARIANT=""
+MIMIC_CLI_BUILT_FROM_SOURCE=0
+MIMIC_INSTALLED_FROM_CACHE=0
+MIMIC_CLI_VARIANT_FILE="/usr/local/lib/forwardx/mimic-cli.variant"
 
 while [ "${GITHUB_ACCELERATOR_URL%/}" != "$GITHUB_ACCELERATOR_URL" ]; do
   GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL%/}"
@@ -481,6 +496,382 @@ download_mimic_asset() {
   fetch_github_file "$raw_url" "$dest"
 }
 
+# ---------------------------------------------------------------------------
+# Panel build cache
+# ---------------------------------------------------------------------------
+
+mimic_cache_enabled() {
+  case "${FORWARDX_MIMIC_CACHE:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+mimic_config_value() {
+  local file="$1" key="$2"
+  [ -r "$file" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg key "$key" '.[$key] // empty' "$file" 2>/dev/null || true
+  else
+    sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/p" "$file" 2>/dev/null | head -n 1
+  fi
+}
+
+# Resolve the panel address and Agent token. The Agent installer passes both in
+# the environment; a manual or boot-time run falls back to the Agent config.
+mimic_cache_credentials() {
+  mimic_cache_enabled || return 1
+  if [ -n "${MIMIC_CACHE_URL}" ] && [ -n "${MIMIC_CACHE_TOKEN}" ]; then
+    return 0
+  fi
+  local url="${FORWARDX_PANEL_URL}" token="${FORWARDX_AGENT_TOKEN}" config
+  for config in /etc/forwardx/agent/config.json /etc/forwardx-agent/config.json; do
+    [ -n "$url" ] || url="$(mimic_config_value "$config" panelUrl)"
+    [ -n "$token" ] || token="$(mimic_config_value "$config" token)"
+  done
+  while [ "${url%/}" != "$url" ]; do url="${url%/}"; done
+  case "$url" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "$token" ] || return 1
+  command -v sha256sum >/dev/null 2>&1 || return 1
+  command -v openssl >/dev/null 2>&1 || return 1
+  MIMIC_CACHE_URL="$url"
+  MIMIC_CACHE_TOKEN="$token"
+}
+
+mimic_libc() {
+  local out
+  out="$(ldd --version 2>&1 || true)"
+  case "$out" in
+    *musl*|*MUSL*) echo "musl" ;;
+    *) echo "glibc" ;;
+  esac
+}
+
+# The token itself never travels with the request: the panel receives its
+# SHA-256 as an identifier and an HMAC over the artifact description and body.
+mimic_cache_request_args() {
+  local kind="$1" hack="$2" method="$3" body_sha="$4"
+  local kernel_release="" kernel_build="" libc="" token_id signature
+  if [ "$kind" = "kmod" ]; then
+    kernel_release="$(uname -r)"
+    kernel_build="$(uname -v | sha256sum | awk '{print $1}')"
+  else
+    libc="$(mimic_libc)"
+  fi
+  token_id="$(printf '%s' "$MIMIC_CACHE_TOKEN" | sha256sum | awk '{print $1}')"
+  # Piped straight into openssl: a command substitution would drop the
+  # trailing newlines that stand for empty fields and change the signature.
+  signature="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "forwardx-mimic-cache-v1" "$method" "$kind" "$TARGET_VERSION" "$(uname -m)" "$hack" \
+    "$kernel_release" "$kernel_build" "$libc" "$body_sha" \
+    | openssl dgst -sha256 -hmac "$MIMIC_CACHE_TOKEN" 2>/dev/null | awk '{print $NF}')"
+  [ -n "$token_id" ] && [ -n "$signature" ] || return 1
+  MIMIC_CACHE_CURL_ARGS=(
+    -H "X-ForwardX-Token-Id: ${token_id}"
+    -H "X-ForwardX-Signature: ${signature}"
+    -H "X-Mimic-Kind: ${kind}"
+    -H "X-Mimic-Version: ${TARGET_VERSION}"
+    -H "X-Mimic-Arch: $(uname -m)"
+    -H "X-Mimic-Hack: ${hack}"
+    -H "X-Mimic-Kernel-Release: ${kernel_release}"
+    -H "X-Mimic-Kernel-Build: ${kernel_build}"
+    -H "X-Mimic-Libc: ${libc}"
+  )
+}
+
+mimic_cache_download() {
+  local kind="$1" hack="$2" dest="$3" headers expected actual
+  mimic_cache_credentials || return 1
+  mimic_cache_request_args "$kind" "$hack" "GET" "" || return 1
+  headers="$(mktemp /tmp/forwardx-mimic-headers.XXXXXX)"
+  if ! curl -fsS --connect-timeout 8 --max-time 120 -D "$headers" -o "$dest" \
+    "${MIMIC_CACHE_CURL_ARGS[@]}" "${MIMIC_CACHE_URL}/api/agent/mimic-cache" 2>/dev/null; then
+    rm -f -- "${headers:?}" "${dest:?}"
+    return 1
+  fi
+  expected="$(tr -d '\r' < "$headers" | awk -F': *' 'tolower($1) == "x-mimic-sha256" { print tolower($2) }' | tail -n 1)"
+  rm -f -- "${headers:?}"
+  actual="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')"
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    rm -f -- "${dest:?}"
+    return 1
+  fi
+  return 0
+}
+
+mimic_cache_upload() {
+  local kind="$1" hack="$2" file="$3" body_sha
+  [ -s "$file" ] || return 1
+  mimic_cache_credentials || return 1
+  body_sha="$(sha256sum "$file" | awk '{print $1}')"
+  mimic_cache_request_args "$kind" "$hack" "PUT" "$body_sha" || return 1
+  curl -fsS --connect-timeout 8 --max-time 180 -X PUT -o /dev/null \
+    -H "Content-Type: application/octet-stream" \
+    -H "X-Mimic-Sha256: ${body_sha}" \
+    "${MIMIC_CACHE_CURL_ARGS[@]}" \
+    --data-binary "@${file}" "${MIMIC_CACHE_URL}/api/agent/mimic-cache" 2>/dev/null
+}
+
+# True when a package manager or DKMS already owns a Mimic module. The cache
+# path only handles clean hosts so two copies of mimic.ko never compete.
+mimic_has_packaged_install() {
+  if command -v dkms >/dev/null 2>&1 && [ -n "$(dkms status mimic 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  if command -v dpkg-query >/dev/null 2>&1 \
+    && dpkg-query -W -f='${db:Status-Abbrev}' mimic-dkms 2>/dev/null | grep -q '^.i'; then
+    return 0
+  fi
+  if command -v rpm >/dev/null 2>&1 && rpm -q mimic-dkms >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+mimic_cached_kmod_dir() {
+  printf '/lib/modules/%s/updates/forwardx-mimic\n' "$(uname -r)"
+}
+
+remove_cached_mimic_kmod() {
+  modprobe -r mimic >/dev/null 2>&1 || true
+  rm -f -- "$(mimic_cached_kmod_dir)/mimic.ko"
+  rmdir -- "$(mimic_cached_kmod_dir)" >/dev/null 2>&1 || true
+  depmod -a "$(uname -r)" >/dev/null 2>&1 || true
+}
+
+install_cached_mimic_kmod() {
+  local ko="$1" dir
+  dir="$(mimic_cached_kmod_dir)"
+  mkdir -p "$dir"
+  install -m 0644 "$ko" "$dir/mimic.ko"
+  depmod -a "$(uname -r)" >/dev/null 2>&1 || true
+  if modprobe mimic >/dev/null 2>&1; then
+    return 0
+  fi
+  remove_cached_mimic_kmod
+  return 1
+}
+
+# Shared libraries the prebuilt CLI links against. Much lighter than the
+# clang/llvm/bpftool toolchain a source build of the CLI needs.
+install_mimic_cli_runtime_libs() {
+  local family="${1:-$(detect_distro_family)}"
+  case "${family}" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q libbpf1 >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q libffi8 >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q libelf1t64 >/dev/null 2>&1 \
+        || DEBIAN_FRONTEND=noninteractive apt-get install -y -q libelf1 >/dev/null 2>&1 || true
+      ;;
+    rhel)
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q libbpf libffi elfutils-libelf >/dev/null 2>&1 || true
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q libbpf libffi elfutils-libelf >/dev/null 2>&1 || true
+      fi
+      ;;
+    arch)
+      pacman -Sy --noconfirm --needed libbpf libffi libelf >/dev/null 2>&1 || true
+      ;;
+    alpine)
+      apk add --no-cache libbpf libffi libelf >/dev/null 2>&1 || true
+      ;;
+    opensuse)
+      zypper -n install libbpf1 libffi8 libelf1 >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+mimic_cli_candidate_version() {
+  "$1" --version 2>/dev/null \
+    | sed -nE 's/.*v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
+    | head -n 1
+}
+
+# A prebuilt CLI is only usable when it actually starts on this host.
+mimic_cli_candidate_ok() {
+  local candidate="$1" family="$2"
+  [ -s "$candidate" ] || return 1
+  chmod +x "$candidate" 2>/dev/null || return 1
+  if [ "$(mimic_cli_candidate_version "$candidate" || true)" = "${TARGET_VERSION}" ]; then
+    return 0
+  fi
+  install_mimic_cli_runtime_libs "$family"
+  [ "$(mimic_cli_candidate_version "$candidate" || true)" = "${TARGET_VERSION}" ]
+}
+
+record_mimic_cli_variant() {
+  mkdir -p "$(dirname "${MIMIC_CLI_VARIANT_FILE}")" 2>/dev/null || return 0
+  printf '%s %s\n' "${TARGET_VERSION}" "$1" > "${MIMIC_CLI_VARIANT_FILE}" 2>/dev/null || true
+}
+
+install_prebuilt_mimic_cli() {
+  local candidate="$1" hack="$2"
+  mkdir -p /usr/local/bin
+  install -m 0755 "$candidate" /usr/local/bin/mimic
+  hash -r 2>/dev/null || true
+  record_mimic_cli_variant "$hack"
+}
+
+# Upstream only publishes the CLI inside Debian packages. The binary is taken
+# out of the package so RPM, Arch and openSUSE hosts can use it as well.
+extract_upstream_mimic_cli() {
+  local dest="$1" work="$2" family="$3" arch codename deb unpack found
+  arch="$(detect_arch)"
+  [ -n "$arch" ] || return 1
+  [ -d "$work" ] || return 1
+  while IFS= read -r codename; do
+    [ -n "$codename" ] || continue
+    deb="${codename}_mimic_${TARGET_VERSION}-1_${arch}.deb"
+    unpack="$(mktemp -d "${work:?}/deb.XXXXXX")" || return 1
+    download_mimic_asset "$deb" "$unpack/$deb" || continue
+    if command -v dpkg-deb >/dev/null 2>&1; then
+      dpkg-deb -x "$unpack/$deb" "$unpack/root" >/dev/null 2>&1 || continue
+    elif command -v ar >/dev/null 2>&1; then
+      mkdir -p "$unpack/root"
+      ( cd "$unpack/root" && ar x "../$deb" >/dev/null 2>&1 \
+        && tar -xf "$(find . -maxdepth 1 -name 'data.tar*' | head -n 1)" >/dev/null 2>&1 ) || continue
+    else
+      log "neither dpkg-deb nor ar is available to unpack the prebuilt Mimic CLI"
+      return 1
+    fi
+    found="$(find "$unpack/root" -type f -name mimic \( -path '*/bin/*' -o -path '*/sbin/*' \) | head -n 1)"
+    [ -n "$found" ] || continue
+    cp "$found" "$dest"
+    if mimic_cli_candidate_ok "$dest" "$family"; then
+      log "using the prebuilt Mimic CLI from the ${codename} package"
+      return 0
+    fi
+  done < <(
+    if [ "$family" = "debian" ]; then
+      detect_deb_codenames
+    else
+      printf '%s\n' bookworm trixie noble
+    fi
+  )
+  return 1
+}
+
+# Get a CLI that matches the kernel module variant without compiling it.
+# The upstream package is built for kfunc; kprobe hosts rely on a CLI another
+# host of this panel has already built.
+obtain_prebuilt_mimic_cli() {
+  local hack="$1" family="$2" work="$3" candidate="$3/mimic-cli"
+  if [ -x /usr/local/bin/mimic ] \
+    && [ "$(cat "${MIMIC_CLI_VARIANT_FILE}" 2>/dev/null || true)" = "${TARGET_VERSION} ${hack}" ] \
+    && [ "$(mimic_cli_candidate_version /usr/local/bin/mimic || true)" = "${TARGET_VERSION}" ]; then
+    return 0
+  fi
+  if mimic_cache_download cli "$hack" "$candidate" && mimic_cli_candidate_ok "$candidate" "$family"; then
+    log "using the Mimic CLI from the panel cache"
+    install_prebuilt_mimic_cli "$candidate" "$hack"
+    return 0
+  fi
+  if [ "$hack" = "kfunc" ] && extract_upstream_mimic_cli "$candidate" "$work" "$family"; then
+    install_prebuilt_mimic_cli "$candidate" "$hack"
+    return 0
+  fi
+  return 1
+}
+
+# Fast path: reuse a module another host built for this exact kernel.
+install_mimic_from_panel_cache() {
+  local family="$1" hack work ko
+  mimic_cache_credentials || return 1
+  if mimic_has_packaged_install; then
+    return 1
+  fi
+  work="$(mktemp -d /tmp/forwardx-mimic-cache.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$work'" RETURN
+  for hack in kfunc kprobe; do
+    ko="$work/mimic-${hack}.ko"
+    mimic_cache_download kmod "$hack" "$ko" || continue
+    log "panel cache has a Mimic kernel module for $(uname -r) (${hack})"
+    if ! install_cached_mimic_kmod "$ko"; then
+      log "cached Mimic kernel module did not load on this kernel; building locally instead"
+      continue
+    fi
+    if ! obtain_prebuilt_mimic_cli "$hack" "$family" "$work"; then
+      log "no prebuilt Mimic CLI fits this host; building locally instead"
+      remove_cached_mimic_kmod
+      continue
+    fi
+    if ! _install_mimic_service_from_src; then
+      remove_cached_mimic_kmod
+      continue
+    fi
+    MIMIC_INSTALLED_FROM_CACHE=1
+    log "installed Mimic from the panel cache without compiling"
+    return 0
+  done
+  return 1
+}
+
+# After a local build, hand the results to the panel for the next host.
+upload_mimic_build_artifacts() {
+  [ -n "${MIMIC_BUILT_VARIANT}" ] || return 0
+  mimic_cache_credentials || return 0
+  local ko work plain
+  ko="$(modinfo -n mimic 2>/dev/null || true)"
+  work="$(mktemp -d /tmp/forwardx-mimic-upload.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$work'" RETURN
+  plain="$work/mimic.ko"
+  case "$ko" in
+    *.ko) cp "$ko" "$plain" 2>/dev/null || true ;;
+    *.ko.xz) xz -dc "$ko" > "$plain" 2>/dev/null || : > "$plain" ;;
+    *.ko.zst) zstd -dc "$ko" > "$plain" 2>/dev/null || : > "$plain" ;;
+    *.ko.gz) gzip -dc "$ko" > "$plain" 2>/dev/null || : > "$plain" ;;
+  esac
+  if [ -s "$plain" ] && mimic_cache_upload kmod "${MIMIC_BUILT_VARIANT}" "$plain"; then
+    log "shared the Mimic kernel module for $(uname -r) with the panel cache"
+  fi
+  if [ "${MIMIC_CLI_BUILT_FROM_SOURCE}" = "1" ] && [ -x /usr/local/bin/mimic ] \
+    && mimic_cache_upload cli "${MIMIC_BUILT_VARIANT}" /usr/local/bin/mimic; then
+    log "shared the Mimic CLI with the panel cache"
+  fi
+  return 0
+}
+
+# Without headers for the next kernel the module disappears after a kernel
+# upgrade. This unit re-runs the installer at boot when that happens; the
+# panel cache usually makes that a download rather than a build.
+install_mimic_boot_repair() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local self="${BASH_SOURCE[0]:-}" lib="/usr/local/lib/forwardx" unit="/etc/systemd/system/forwardx-mimic-repair.service"
+  [ -n "$self" ] && [ -f "$self" ] || return 0
+  mkdir -p "$lib" || return 0
+  if ! [ "$self" -ef "$lib/install-mimic.sh" ]; then
+    install -m 0755 "$self" "$lib/install-mimic.sh" || return 0
+  fi
+  cat > "$unit" <<EOF
+[Unit]
+Description=ForwardX Mimic kernel module repair after kernel upgrades
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=${lib}/install-mimic.sh
+
+[Service]
+Type=oneshot
+Environment=FORWARDX_INSTALL_MIMIC=yes
+Environment=FORWARDX_MIMIC_VERSION=${TARGET_VERSION}
+Environment=GITHUB_ACCELERATOR_ENABLED=${GITHUB_ACCELERATOR_ENABLED}
+Environment=GITHUB_ACCELERATOR_URL=${GITHUB_ACCELERATOR_URL}
+ExecStart=/bin/sh -c 'modprobe mimic 2>/dev/null || exec bash ${lib}/install-mimic.sh'
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 644 "$unit"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable forwardx-mimic-repair.service >/dev/null 2>&1 || true
+}
+
 # Install via pre-built .deb packages (Debian / Ubuntu family)
 install_mimic_deb() {
   local arch tmp rc=0 codename bin_deb dkms_deb
@@ -515,6 +906,8 @@ install_mimic_deb() {
       return 1
     fi
     log "installed Mimic Debian assets for ${codename}"
+    # Upstream packages build the DKMS module with CHECKSUM_HACK=kfunc.
+    MIMIC_BUILT_VARIANT="kfunc"
     return 0
   done < <(detect_deb_codenames)
 
@@ -574,6 +967,9 @@ _install_mimic_binary_from_src() {
   if [ -n "$bin_file" ] && [ -x "$bin_file" ]; then
     mkdir -p /usr/local/bin
     install -m 0755 "$bin_file" /usr/local/bin/mimic
+    hash -r 2>/dev/null || true
+    record_mimic_cli_variant "${MIMIC_CHECKSUM_HACK:-kfunc}"
+    MIMIC_CLI_BUILT_FROM_SOURCE=1
     return 0
   fi
   log "userspace mimic binary was not produced by the source build"
@@ -763,6 +1159,133 @@ install_mimic_dkms_source() {
   _install_mimic_service_from_src || return 1
   modprobe mimic \
     || { log "modprobe mimic failed after DKMS install; check Secure Boot / MOK signing"; return 1; }
+  MIMIC_BUILT_VARIANT="${MIMIC_CHECKSUM_HACK}"
+  return 0
+}
+
+# Dependencies for building only the kernel module. The CLI toolchain (clang,
+# llvm, bpftool) is by far the largest part of a full source build and is not
+# needed when a prebuilt CLI is available.
+install_mimic_kmod_build_deps() {
+  local family="${1:-$(detect_distro_family)}"
+  case "${family}" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+        build-essential pahole bubblewrap binutils \
+        libbpf-dev libelf-dev zlib1g-dev libffi-dev pkg-config \
+        xz-utils lz4 zstd bzip2 lzma \
+        >/dev/null 2>&1 || true
+      ;;
+    rhel)
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q gcc make pahole bubblewrap libbpf-devel elfutils-libelf-devel zlib-devel libffi-devel pkgconf-pkg-config >/dev/null 2>&1 || true
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q gcc make pahole bubblewrap libbpf-devel elfutils-libelf-devel zlib-devel libffi-devel pkgconfig >/dev/null 2>&1 || true
+      fi
+      ;;
+    arch)
+      pacman -Sy --noconfirm --needed base-devel pahole bubblewrap libbpf libelf zlib libffi pkgconf >/dev/null 2>&1 || true
+      ;;
+    alpine)
+      apk add --no-cache build-base pahole bubblewrap libbpf-dev elfutils-dev zlib-dev libffi-dev pkgconf >/dev/null 2>&1 || true
+      ;;
+    opensuse)
+      zypper -n install gcc make pahole bubblewrap libbpf-devel libelf-devel zlib-devel libffi-devel pkg-config >/dev/null 2>&1 || true
+      ;;
+  esac
+  command -v make >/dev/null 2>&1 || { log "make is required to build the Mimic kernel module"; return 1; }
+  command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 \
+    || { log "a C compiler is required to build the Mimic kernel module"; return 1; }
+  return 0
+}
+
+# Build flags for the kernel module alone; unlike mimic_prepare_build_options
+# this does not require bpftool or llvm-strip.
+mimic_prepare_kmod_options() {
+  MIMIC_KMOD_TOOL_FLAGS=(
+    "KERNEL_UNAME=$(uname -r)"
+    "USE_LIBXDP=0"
+    "CHECKSUM_HACK=${MIMIC_CHECKSUM_HACK}"
+  )
+  MIMIC_KMOD_MAKE_FLAGS=(
+    "KERNEL_UNAME=$(uname -r)"
+    "CHECKSUM_HACK=${MIMIC_CHECKSUM_HACK}"
+  )
+  MIMIC_DKMS_FLAGS=(
+    "KERNEL_UNAME=\$kernelver"
+    "CHECKSUM_HACK=${MIMIC_CHECKSUM_HACK}"
+  )
+  if [ "${MIMIC_CHECKSUM_HACK}" = "kfunc" ]; then
+    MIMIC_RESOLVE_BTFIDS="$(mimic_resolve_btfids_path 2>/dev/null || true)"
+    command -v bwrap >/dev/null 2>&1 \
+      || { log "bubblewrap is required for the kfunc Mimic kernel module build"; return 1; }
+    command -v pahole >/dev/null 2>&1 \
+      || { log "pahole is required for the kfunc Mimic kernel module build"; return 1; }
+    [ -n "${MIMIC_RESOLVE_BTFIDS}" ] \
+      || { log "resolve_btfids is required for the kfunc Mimic kernel module build"; return 1; }
+    MIMIC_KMOD_MAKE_FLAGS+=("RESOLVE_BTFIDS=${MIMIC_RESOLVE_BTFIDS}")
+    MIMIC_DKMS_FLAGS+=("RESOLVE_BTFIDS=${MIMIC_RESOLVE_BTFIDS}")
+  fi
+}
+
+# Slim source install: compile only the kernel module and pair it with a
+# prebuilt CLI. Any failure returns non-zero and leaves nothing behind that
+# the full source build does not overwrite, so callers fall through to it.
+install_mimic_kmod_with_prebuilt_cli() {
+  local family="${1:-$(detect_distro_family)}" tmp src_dir dkms_src ko_file kmod_dir
+  _cleanup_mimic_dkms_package_state
+  install_mimic_kmod_build_deps "${family}" || return 1
+  check_kernel_build_requirements || return 1
+  MIMIC_CHECKSUM_HACK="$(mimic_checksum_hack_for_kernel)" || return 1
+  tmp="$(mktemp -d /tmp/forwardx-mimic-slim.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$tmp'" RETURN
+
+  if ! obtain_prebuilt_mimic_cli "${MIMIC_CHECKSUM_HACK}" "${family}" "$tmp"; then
+    log "no prebuilt Mimic CLI for CHECKSUM_HACK=${MIMIC_CHECKSUM_HACK}; a full source build is needed"
+    return 1
+  fi
+  mimic_prepare_kmod_options || return 1
+  src_dir="$(_fetch_mimic_source "$tmp")" || return 1
+
+  if [ "${MIMIC_CHECKSUM_HACK}" = "kfunc" ]; then
+    log "building Mimic helper tools"
+    ( cd "$src_dir" && make "${MIMIC_KMOD_TOOL_FLAGS[@]}" build-tools ) \
+      || { log "Mimic helper tool build failed"; return 1; }
+  fi
+
+  if command -v dkms >/dev/null 2>&1; then
+    dkms_src="/usr/src/mimic-${TARGET_VERSION}"
+    rm -rf -- "/usr/src/mimic-${TARGET_VERSION:?}"
+    cp -r "$src_dir" "$dkms_src"
+    _write_mimic_dkms_conf "$dkms_src"
+    _cleanup_mimic_dkms_target
+    log "compiling only the Mimic kernel module with DKMS"
+    dkms add -m mimic -v "${TARGET_VERSION}" \
+      || { log "DKMS could not add Mimic ${TARGET_VERSION}"; return 1; }
+    if ! dkms build -m mimic -v "${TARGET_VERSION}" -k "$(uname -r)" --force \
+      || ! dkms install -m mimic -v "${TARGET_VERSION}" -k "$(uname -r)" --force; then
+      log "kernel-module-only DKMS build failed; falling back to the full source build"
+      _cleanup_mimic_dkms_target
+      return 1
+    fi
+  else
+    log "compiling only the Mimic kernel module"
+    ( cd "$src_dir" && make -C kmod "${MIMIC_KMOD_MAKE_FLAGS[@]}" ) \
+      || { log "kernel-module-only build failed; falling back to the full source build"; return 1; }
+    ko_file="$(find "$src_dir" -name "mimic.ko" | head -1)"
+    [ -n "$ko_file" ] || { log "mimic.ko not found after build"; return 1; }
+    kmod_dir="/lib/modules/$(uname -r)/updates/dkms"
+    mkdir -p "$kmod_dir"
+    install -m 0644 "$ko_file" "$kmod_dir/mimic.ko"
+    depmod -a 2>/dev/null || true
+  fi
+
+  _install_mimic_service_from_src || return 1
+  modprobe mimic \
+    || { log "modprobe mimic failed after the kernel-module-only build; check Secure Boot / MOK signing"; return 1; }
+  MIMIC_BUILT_VARIANT="${MIMIC_CHECKSUM_HACK}"
+  log "built the Mimic kernel module and reused a prebuilt CLI"
   return 0
 }
 
@@ -814,6 +1337,7 @@ install_mimic_make_only() {
     || { log "modprobe mimic failed; you may need to reboot or check Secure Boot / MOK signing"; return 1; }
 
   log "mimic kernel module loaded (no DKMS — will need recompile after kernel upgrade)"
+  MIMIC_BUILT_VARIANT="${MIMIC_CHECKSUM_HACK}"
   return 0
 }
 
@@ -912,21 +1436,35 @@ main() {
   local -a saved_units=()
   mapfile -t saved_units < <(capture_mimic_units)
 
-  install_dkms_deps "$family"
-
   local install_ok=0
+  # A module another host already built for this kernel needs no headers,
+  # compiler or DKMS at all, so try it before installing any of them.
+  install_mimic_from_panel_cache "$family" && install_ok=1 || true
+
+  if [ "$install_ok" != "1" ]; then
+    install_dkms_deps "$family"
+  fi
+
   case "$family" in
     debian)
       # Pre-built packages preferred; silent fallback to source build on 404
-      install_mimic_deb && install_ok=1 \
-        || { log "pre-built .deb packages unavailable; falling back to DKMS source build"; true; }
+      if [ "$install_ok" != "1" ]; then
+        install_mimic_deb && install_ok=1 \
+          || { log "pre-built .deb packages unavailable; falling back to DKMS source build"; true; }
+      fi
+      [ "$install_ok" = "1" ] \
+        || { install_mimic_kmod_with_prebuilt_cli "$family" && install_ok=1 || true; }
       [ "$install_ok" = "1" ] \
         || { install_mimic_dkms_source && install_ok=1 || true; }
       ;;
     rhel)
       # Pre-built packages preferred; silent fallback to source build on 404
-      install_mimic_rpm && install_ok=1 \
-        || { log "pre-built .rpm packages unavailable; falling back to DKMS source build"; true; }
+      if [ "$install_ok" != "1" ]; then
+        install_mimic_rpm && install_ok=1 \
+          || { log "pre-built .rpm packages unavailable; falling back to DKMS source build"; true; }
+      fi
+      [ "$install_ok" = "1" ] \
+        || { install_mimic_kmod_with_prebuilt_cli "$family" && install_ok=1 || true; }
       [ "$install_ok" = "1" ] \
         || { install_mimic_dkms_source && install_ok=1 || true; }
       ;;
@@ -934,11 +1472,12 @@ main() {
       # Arch / openSUSE / Alpine / unknown — no pre-built packages available.
       # Ask the user before starting a potentially lengthy source compile.
       # Non-interactive or FORWARDX_INSTALL_MIMIC=no → skip gracefully.
-      if is_enabled_value "${FORWARDX_INSTALL_MIMIC:-}"; then
-        # Explicitly forced via env var — skip the prompt
-        install_mimic_dkms_source && install_ok=1 || true
-      elif prompt_source_build "$family"; then
-        install_mimic_dkms_source && install_ok=1 || true
+      if [ "$install_ok" = "1" ]; then
+        :
+      elif is_enabled_value "${FORWARDX_INSTALL_MIMIC:-}" || prompt_source_build "$family"; then
+        install_mimic_kmod_with_prebuilt_cli "$family" && install_ok=1 || true
+        [ "$install_ok" = "1" ] \
+          || { install_mimic_dkms_source && install_ok=1 || true; }
       else
         log "mimic installation skipped by user"
         restore_mimic_units "${saved_units[@]}"
@@ -949,6 +1488,10 @@ main() {
 
   if [ "$install_ok" = "1" ]; then
     install_mimic_bpf_dropin || { log "failed to install Mimic systemd capability drop-in"; install_ok=0; }
+  fi
+  if [ "$install_ok" = "1" ]; then
+    upload_mimic_build_artifacts || true
+    install_mimic_boot_repair || true
   fi
 
   restore_mimic_units "${saved_units[@]}"
@@ -969,4 +1512,6 @@ main() {
   die "mimic installation did not complete"
 }
 
-main "$@"
+if [ "${FORWARDX_MIMIC_SOURCE_ONLY:-}" != "1" ]; then
+  main "$@"
+fi

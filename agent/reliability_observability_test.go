@@ -62,6 +62,17 @@ func TestFXPEndpointEventTracksFailureAndRecovery(t *testing.T) {
 	}
 }
 
+func TestFXPEndpointEventTracksSetupSample(t *testing.T) {
+	fxpEndpointEventMu.Lock()
+	fxpEndpointEvents = map[string]fxpEndpointEvent{}
+	fxpEndpointEventMu.Unlock()
+	recordFXPEndpointLog(fxpSpec{Role: "relay", TunnelID: 4, RuleID: 9}, "exit endpoint setup index=0 endpoint=198.51.100.4:443 setupMs=37")
+	events := fxpEndpointEventsSnapshot()
+	if len(events) != 1 || events[0].Status != "setup" || events[0].Message != "setupMs=37" {
+		t.Fatalf("unexpected setup event: %#v", events)
+	}
+}
+
 func TestSupportOutputRedactsCredentials(t *testing.T) {
 	redacted := redactSupportOutput("token=abc password: def safe=value")
 	if strings.Contains(redacted, "abc") || strings.Contains(redacted, "def") || !strings.Contains(redacted, "safe=value") {

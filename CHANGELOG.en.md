@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [2.3.301] - 2026-11-17
+
+- Added edit and remove actions to the batch-enrollment host dialog, with the registration count kept in sync.
+- Added upgrade and uninstall commands to the batch-enrollment command dialog; batch host editing now keeps the Agent-reported address read-only.
+- Batch enrollment Tokens can register multiple independent Agents; each registered host appears in Host Management and heartbeats/events are resolved by installation identity.
+- Moved the batch-enrollment switch below the description field; batch limits and expiry remain editable after creation.
+- Fixed the rule group bar showing counts from other rule categories and opening an empty list after switching categories.
+- Fixed batch exports retaining rules from the previously selected rule type after switching filters.
+- Allow administrators to enable or disable self-renewal for individual assigned plans.
+- Added a ForwardX low-latency exit strategy that selects by recent setup time and periodically rechecks routes.
+- Improved exit diagnostics with failure/recovery and sampled setup timing logs; speed-test exports now include reproducible report metadata.
+- Agent latency probes are now de-duplicated per target: when several rules, tunnel hops or group members point at the same address and port, it is probed once per round and the result is shared, instead of opening a burst of short-lived connections to that host.
+- Mimic installs now use a panel build cache: once any host has compiled the kernel module, it is uploaded to the panel and hosts with the same kernel and architecture download and load it without installing kernel headers or a compiler. The cache is limited to hosts holding a valid Agent token; requests carry a signature, never the token.
+- Slimmer Mimic source installs: distributions without packages compile only the kernel module and reuse a prebuilt CLI, so clang, llvm and bpftool are no longer installed. A full source build remains the fallback.
+- Added `forwardx-mimic-repair.service`, which reinstalls the module at boot when a kernel upgrade leaves it unloadable.
+- Version: panel `2.3.301`, Android / iOS `2.4.18`, Agent `2.2.213`, ForwardX FXP runtime `2.2.122` (unchanged). This release includes Agent probe and runtime-state changes; upgrade the Agent as well.
+
 ## [2.3.300] - 2026-11-13
 
 - Added full-path speed tests for tunnels and forwarding chains, including multiple relays, selectable TCP / UDP, 10 seconds per direction by default, and live speed, gauges and charts.

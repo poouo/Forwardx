@@ -110,14 +110,8 @@ function money(cents?: number, currency = "CNY") {
 function bytes(size?: number | null) {
   const value = Number(size || 0);
   if (!value) return translateText("不限");
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let n = value;
-  let idx = 0;
-  while (n >= 1024 && idx < units.length - 1) {
-    n /= 1024;
-    idx++;
-  }
-  return `${n >= 10 || idx === 0 ? n.toFixed(0) : n.toFixed(2)} ${units[idx]}`;
+  const gigabytes = value / (1024 ** 3);
+  return `${parseFloat(gigabytes.toFixed(2))} GB`;
 }
 
 function speed(value?: number | null) {
@@ -632,6 +626,7 @@ export default function Plans() {
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
   const [assignDurationDays, setAssignDurationDays] = useState("30");
+  const [assignAllowSelfRenew, setAssignAllowSelfRenew] = useState(false);
   const [activeTab, setActiveTab] = useUrlTab<PlanManageTab>({
     values: PLAN_MANAGE_TABS,
     defaultValue: "plans",
@@ -823,6 +818,7 @@ export default function Plans() {
       setAssignUserId("");
       setAssignPlanId("");
       setAssignDurationDays("30");
+      setAssignAllowSelfRenew(false);
       utils.plans.subscriptions.invalidate();
       utils.plans.subscriptionsPage.invalidate();
       utils.users.list.invalidate();
@@ -969,6 +965,7 @@ export default function Plans() {
       userId: Number(assignUserId),
       planId: Number(assignPlanId),
       durationDays,
+      allowSelfRenew: assignAllowSelfRenew,
     });
   };
   const addPlanResource = (key: PlanResourceKey, value: string) => {
@@ -1470,7 +1467,10 @@ export default function Plans() {
 
       <Dialog open={assignOpen} onOpenChange={(open) => {
         setAssignOpen(open);
-        if (!open) setAssignDurationDays("30");
+        if (!open) {
+          setAssignDurationDays("30");
+          setAssignAllowSelfRenew(false);
+        }
       }}>
         <DialogContent>
           <DialogHeader>
@@ -1512,6 +1512,13 @@ export default function Plans() {
                 <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">{translateText("当前套餐有效期为 ")}{durationLabel(selectedAssignPlanDurationDays)}{translateText("，将按套餐自身周期分配；如需其他周期，请先编辑套餐。")}</div>
               )
             )}
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+              <div className="min-w-0">
+                <Label className="text-sm font-medium">{translateText("允许用户自行续费")}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("用户续费时按当前套餐价格支付；关闭后只能由管理员续期。")}</p>
+              </div>
+              <Switch className="shrink-0" checked={assignAllowSelfRenew} onCheckedChange={setAssignAllowSelfRenew} />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignOpen(false)}>{translateText("取消")}</Button>

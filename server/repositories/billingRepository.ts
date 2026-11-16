@@ -813,6 +813,7 @@ function userSubscriptionsListQuery(db: any) {
       maxIPs: subscriptionPlans.maxIPs,
       status: userSubscriptions.status,
       source: userSubscriptions.source,
+      allowSelfRenew: userSubscriptions.allowSelfRenew,
       paymentOrderNo: userSubscriptions.paymentOrderNo,
       planSnapshot: userSubscriptions.planSnapshot,
       portRangeStart: userSubscriptions.portRangeStart,
@@ -1015,6 +1016,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
         planId: userSubscriptions.planId,
         status: userSubscriptions.status,
         source: userSubscriptions.source,
+        allowSelfRenew: userSubscriptions.allowSelfRenew,
         paymentOrderNo: userSubscriptions.paymentOrderNo,
         planSnapshot: userSubscriptions.planSnapshot,
         portRangeStart: userSubscriptions.portRangeStart,
@@ -1103,6 +1105,16 @@ export async function updateUserSubscription(id: number, data: Partial<InsertUse
   const db = await getDb();
   if (!db) return;
   await db.update(userSubscriptions).set({ ...data, updatedAt: nowDate() } as any).where(eq(userSubscriptions.id, id));
+}
+
+/** Change whether an administrator-assigned subscription can be renewed by its owner. */
+export async function setUserSubscriptionSelfRenewal(id: number, enabled: boolean) {
+  const subscription = await getUserSubscriptionById(id);
+  if (!subscription) throw new Error("订阅不存在");
+  if (subscription.source !== "admin") throw new Error("只有管理员分配的套餐可以修改续费权限");
+  if (subscription.status === "cancelled") throw new Error("已取消的订阅不能修改续费权限");
+  await updateUserSubscription(id, { allowSelfRenew: Boolean(enabled) } as any);
+  return (await getUserSubscriptionById(id)) || { ...subscription, allowSelfRenew: Boolean(enabled) };
 }
 
 function validDate(value: unknown): Date | null {
@@ -2405,10 +2417,10 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
 
 export type SubscriptionSource = "admin" | "payment" | "redeem" | "balance";
 
-/** Store purchases may be renewed by the owner; administrative grants and
- * redemption grants require a fresh assignment/administrative action. */
-export function isUserRenewableSubscriptionSource(source: unknown) {
-  return source === "payment" || source === "balance";
+/** Store purchases may be renewed by the owner; admin grants opt in per
+ * subscription, while redemption grants still require administrator action. */
+export function isUserRenewableSubscriptionSource(source: unknown, allowSelfRenew = false) {
+  return source === "payment" || source === "balance" || (source === "admin" && allowSelfRenew === true);
 }
 
 function addSubscriptionDays(base: Date, days: number) {
@@ -2423,6 +2435,7 @@ async function applySubscriptionToUserUnlocked(
   startsAt?: Date,
   overrideDurationDays?: number | null,
   targetSubscriptionId?: number | null,
+  allowSelfRenew = false,
 ) {
   const paymentOrder = source === "payment" && paymentOrderNo ? await getPaymentOrderByOutTradeNoForUpdate(paymentOrderNo) : null;
   if (source === "payment" && paymentOrderNo) {
@@ -2465,7 +2478,7 @@ async function applySubscriptionToUserUnlocked(
     if (sameActiveSubscription.status === "cancelled") {
       throw new Error("已取消的订阅不能续费");
     }
-    if (!isUserRenewableSubscriptionSource(sameActiveSubscription.source)) {
+    if (!isUserRenewableSubscriptionSource(sameActiveSubscription.source, sameActiveSubscription.allowSelfRenew === true || sameActiveSubscription.allowSelfRenew === 1)) {
       throw new Error("管理员分配的套餐不能自行续费，请联系管理员处理");
     }
     if (!isUserRenewableSubscriptionSource(source)) {
@@ -2551,6 +2564,7 @@ async function applySubscriptionToUserUnlocked(
     planId,
     status: "active",
     source,
+    allowSelfRenew: source === "admin" ? Boolean(allowSelfRenew) : false,
     paymentOrderNo: paymentOrderNo ?? null,
     planSnapshot: JSON.stringify(buildPlanSnapshot(plan)),
     portRangeStart: block.start,
@@ -2575,6 +2589,7 @@ export async function applySubscriptionToUser(
   startsAt?: Date,
   overrideDurationDays?: number | null,
   targetSubscriptionId?: number | null,
+  allowSelfRenew?: boolean,
 ) {
   return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(
     // Port blocks are allocated by reading all active reservations and then
@@ -2589,6 +2604,7 @@ export async function applySubscriptionToUser(
       startsAt,
       overrideDurationDays,
       targetSubscriptionId,
+      allowSelfRenew,
     )),
   ));
 }
@@ -3179,7 +3195,14 @@ export async function purchasePlanWithBalance(
 ) {
   return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(async () => {
   const plan = await getSubscriptionPlanById(planId);
-  if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
+  const target = subscriptionId ? await getUserSubscriptionById(subscriptionId) : null;
+  const adminSelfRenewal = !!target
+    && Number(target.userId) === Number(userId)
+    && Number(target.planId) === Number(planId)
+    && target.status !== "cancelled"
+    && target.source === "admin"
+    && (target.allowSelfRenew === true || target.allowSelfRenew === 1);
+  if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
   const discount = discountCodeId ? await getDiscountCodeById(discountCodeId) : null;
   if (discount) {
     const allowedPlanIds = Array.isArray((discount as any).planIds) ? (discount as any).planIds.map(Number) : [];

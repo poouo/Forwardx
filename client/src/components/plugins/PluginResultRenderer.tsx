@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import type { PluginResultFieldDefinition, PluginResultSchemaDefinition } from "@shared/pluginTypes";
 import { Clipboard, ExternalLink, Eye, EyeOff } from "lucide-react";
 import { toast } from "@/lib/localizedToast";
@@ -70,8 +71,8 @@ export function PluginResultRenderer({
   const base = valueAtPath(data, schema.resultPath);
 
   const copy = async (value: unknown, field: PluginResultFieldDefinition) => {
-    await navigator.clipboard.writeText(displayValue(value, field));
-    toast.success(translateText("已复制"));
+    if (await copyTextToClipboard(displayValue(value, field))) toast.success(translateText("已复制"));
+    else toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
   };
 
   const renderValue = (value: unknown, field: PluginResultFieldDefinition, revealKey: string) => {

@@ -72,6 +72,7 @@ import {
 } from "@/components/ui/table";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { pollingInterval } from "@/lib/polling";
 import { adaptivePollingInterval } from "@/lib/queryPolicy";
 import { handoffManualTestResult } from "@/lib/manualTestCache";
@@ -3805,9 +3806,10 @@ function RulesContent() {
   const copySelectedRules = useMemo(() => {
     const selected = new Set(copyRuleIds.map(Number));
     return transferSourceRules.filter((rule: any) => selected.has(Number(rule.id)) && !rule.forwardGroupRuleId && !rule.forwardGroupMemberId
+      && (copyRuleCategory === "all" || getRuleCategory(rule, forwardGroupById) === copyRuleCategory)
       && matchesRuleBatchHost(copyRuleEntryHosts.get(Number(rule.id)) || [], copyRuleHostId)
       && matchesPersonalRuleGroup(rule.personalGroupIds, isOwnRuleScope ? copyRulePersonalGroupId : null));
-  }, [copyRuleIds, copyRulePersonalGroupId, isOwnRuleScope, transferSourceRules, copyRuleEntryHosts, copyRuleHostId]);
+  }, [copyRuleCategory, copyRuleIds, copyRulePersonalGroupId, isOwnRuleScope, transferSourceRules, copyRuleEntryHosts, copyRuleHostId, forwardGroupById]);
   const copyTargetResources = useMemo(() => {
     if (copyTargetScopeType === "local") return availablePortForwardGroups;
     if (copyTargetScopeType === "tunnel") return supportedTunnels;
@@ -3909,7 +3911,13 @@ function RulesContent() {
           </SelectContent>
         </Select>
         <div className={cn("grid min-w-0 gap-2", isOwnRuleScope && "grid-cols-2")}>
-          <Select value={copyRuleCategory} onValueChange={(value) => setCopyRuleCategory(value as RuleCategory)} disabled={copyActionPending}>
+          <Select value={copyRuleCategory} onValueChange={(value) => {
+            setCopyRuleCategory(value as RuleCategory);
+            // A type switch changes the meaning of the selection list. Do not
+            // carry checked rules from the previous category into an export
+            // or batch operation.
+            setCopyRuleIds([]);
+          }} disabled={copyActionPending}>
             <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{translateText("全部规则")}</SelectItem>
@@ -5754,6 +5762,14 @@ function RulesContent() {
   };
 
   /** 复制入口 IP:端口 到剪贴板 */
+  const copyEntryText = async (text: string) => {
+    if (await copyTextToClipboard(text)) {
+      toast.success(translateText("已复制入口地址: {0}", [text]));
+    } else {
+      toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
+    }
+  };
+
   const copyEntryAddress = async (rule: any, entryValue?: string) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
@@ -5764,12 +5780,7 @@ function RulesContent() {
           return;
         }
         const text = formatAddressWithPort(entry, rule.sourcePort);
-        try {
-          await navigator.clipboard.writeText(text);
-          toast.success(translateText("已复制入口地址: {0}", [text]));
-        } catch {
-          toast.error(translateText("复制失败，请手动复制"));
-        }
+        await copyEntryText(text);
         return;
       }
       const entry = String(entryValue || getForwardGroupEntryAddresses(group)[0]?.value || "").trim();
@@ -5778,12 +5789,7 @@ function RulesContent() {
         return;
       }
       const text = formatAddressWithPort(entry, rule.sourcePort);
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success(translateText("已复制入口地址: {0}", [text]));
-      } catch {
-        toast.error(translateText("复制失败，请手动复制"));
-      }
+      await copyEntryText(text);
       return;
     }
     const entry = String(entryValue || getRuleEntry(rule)).trim();
@@ -5792,24 +5798,7 @@ function RulesContent() {
       return;
     }
     const text = formatAddressWithPort(entry, rule.sourcePort);
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // 回退方案：临时 textarea
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      }
-      toast.success(translateText("已复制入口地址: {0}", [text]));
-    } catch {
-      toast.error(translateText("复制失败，请手动复制"));
-    }
+    await copyEntryText(text);
   };
 
   const renderResolvedStatusDot = (visual: ReturnType<typeof resolveForwardRuleVisualStatus>) => {
@@ -6985,7 +6974,7 @@ function RulesContent() {
         </Card>
       </div>
 
-      {isOwnRuleScope && <RuleGroupBar value={activePersonalGroupId} onChange={setPersonalGroupFilter} />}
+      {isOwnRuleScope && <RuleGroupBar value={activePersonalGroupId} onChange={setPersonalGroupFilter} category={ruleCategory} />}
       <RuleContentTransition transitionKey={ruleContentTransitionKey}>
       {isLoading || (!ruleStatusSnapshotReady && !hasCachedRuleStatus) ? (
         <DataSectionLoading label={isLoading ? translateText("正在加载转发规则") : translateText("正在加载规则状态")} />

@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
 import { toast } from "@/lib/localizedToast";
 import { cn } from "@/lib/utils";
-import type { PersonalRuleGroup } from "@shared/ruleGroups";
+import type { PersonalRuleGroup, PersonalRuleGroupCategory } from "@shared/ruleGroups";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -164,10 +164,14 @@ export function RuleGroupMultiSelect({ value, onChange, disabled = false }: { va
   </div>;
 }
 
-export function RuleGroupBar({ value, onChange }: { value: number | null; onChange: (id: number | null) => void }) {
-  const query = trpc.rules.personalGroups.useQuery(undefined, { staleTime: 10_000, refetchInterval: pollingInterval("normal") });
+export function RuleGroupBar({ value, onChange, category = "all" }: { value: number | null; onChange: (id: number | null) => void; category?: PersonalRuleGroupCategory }) {
+  const query = trpc.rules.personalGroups.useQuery({ category }, { staleTime: 10_000, refetchInterval: pollingInterval("normal") });
   const [manager, setManager] = useState(false);
-  useEffect(() => { if (query.data && value && !query.data.groups.some(group => group.id === value)) onChange(null); }, [query.data, value, onChange]);
+  useEffect(() => {
+    if (!query.data || value === null) return;
+    const selected = query.data.groups.find(group => group.id === value);
+    if (!selected || Number(selected.count || 0) <= 0) onChange(null);
+  }, [query.data, value, onChange]);
   const options = [{ id: null, name: t("全部"), count: query.data?.total }, ...(query.data?.groups || []), { id: 0, name: t("未分组"), count: query.data?.ungrouped }];
   return <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/40 bg-card/50 p-2 backdrop-blur-md">
     <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto py-0.5">{options.map(group => {

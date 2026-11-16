@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { forwardGroupMembers, forwardRules, ruleGroups, ruleGroupMembers } from "../../drizzle/schema";
-import { MAX_PERSONAL_RULE_GROUPS, type PersonalRuleGroup } from "../../shared/ruleGroups";
+import { forwardGroupMembers, forwardGroups, forwardRules, ruleGroups, ruleGroupMembers } from "../../drizzle/schema";
+import { MAX_PERSONAL_RULE_GROUPS, type PersonalRuleGroup, type PersonalRuleGroupCategory } from "../../shared/ruleGroups";
 import { getDb, getDatabaseKind, insertAndGetId, queryRaw, withDatabaseTransaction } from "../dbRuntime";
 import { sqlBool } from "./repositoryUtils";
 import { quoteIdentifier } from "../dbCompat";
@@ -59,15 +59,29 @@ export async function replacePersonalRuleGroups(userId: number, ruleId: number, 
   if (groupIds.length) await db.insert(ruleGroupMembers).values([...new Set(groupIds)].map(groupId => ({ userId, ruleId, groupId })));
 }
 
-export async function getPersonalRuleGroups(userId: number): Promise<{ groups: PersonalRuleGroup[]; total: number; ungrouped: number }> {
+function personalRuleCategoryCondition(category: PersonalRuleGroupCategory) {
+  if (category === "all") return undefined;
+  return sql`CASE
+    WHEN ${forwardGroups.groupMode} = 'port' THEN 'local'
+    WHEN ${forwardGroups.groupMode} = 'chain' THEN 'chain'
+    WHEN ${forwardGroups.id} IS NOT NULL THEN 'group'
+    WHEN ${forwardRules.forwardType} = 'gost' AND COALESCE(${forwardRules.tunnelId}, 0) <> 0 THEN 'tunnel'
+    ELSE 'local'
+  END = ${category}`;
+}
+
+export async function getPersonalRuleGroups(userId: number, category: PersonalRuleGroupCategory = "all"): Promise<{ groups: PersonalRuleGroup[]; total: number; ungrouped: number }> {
   const db = await database();
+  const categoryCondition = personalRuleCategoryCondition(category);
+  const visibleRules = and(visibleOwnRules(userId), categoryCondition);
   const [groups, counts, totals] = await Promise.all([
     db.select().from(ruleGroups).where(eq(ruleGroups.userId, userId)).orderBy(ruleGroups.sortOrder, ruleGroups.id),
     db.select({ groupId: ruleGroupMembers.groupId, count: sql<number>`count(*)` }).from(ruleGroupMembers)
       .innerJoin(forwardRules, eq(forwardRules.id, ruleGroupMembers.ruleId))
-      .where(and(eq(ruleGroupMembers.userId, userId), visibleOwnRules(userId))).groupBy(ruleGroupMembers.groupId),
+      .leftJoin(forwardGroups, eq(forwardGroups.id, forwardRules.forwardGroupId))
+      .where(and(eq(ruleGroupMembers.userId, userId), visibleRules)).groupBy(ruleGroupMembers.groupId),
     db.select({ total: sql<number>`count(*)`, ungrouped: sql<number>`COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM ${ruleGroupMembers} WHERE ${ruleGroupMembers.ruleId} = ${outerRuleId()} AND ${ruleGroupMembers.userId} = ${userId}) THEN 1 ELSE 0 END), 0)` })
-      .from(forwardRules).where(visibleOwnRules(userId)),
+      .from(forwardRules).leftJoin(forwardGroups, eq(forwardGroups.id, forwardRules.forwardGroupId)).where(visibleRules),
   ]);
   const byGroup = new Map(counts.map((row: any) => [Number(row.groupId || 0), Number(row.count)]));
   return { groups: groups.map((group: any) => ({ id: group.id, name: group.name, sortOrder: group.sortOrder, count: byGroup.get(Number(group.id)) || 0 })),

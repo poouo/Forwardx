@@ -656,6 +656,9 @@ func restorePersistedForwardXRuntimes(cfg Config) {
 		}
 	}
 	fxpSpecs := loadPersistedFXPSpecs()
+	// Rules that share a tunnel entry run in one process, so the number of
+	// processes to start is usually smaller than the number of saved rules.
+	plannedFXP := len(planPersistedFXPRestoreSpecs(fxpSpecs))
 	restoredFXP := restorePersistedFXPSpecs(cfg, fxpSpecs)
 	restoredFailover := 0
 	failoverSpecs := loadPersistedFailovers()
@@ -670,10 +673,11 @@ func restorePersistedForwardXRuntimes(cfg Config) {
 		}
 	}
 	logf(
-		"local runtime restore complete wireguard=%d/%d fxp=%d/%d failover=%d/%d duration=%s",
+		"local runtime restore complete wireguard=%d/%d fxp=%d/%d processes (%d rules) failover=%d/%d duration=%s",
 		restoredWireGuard,
 		len(wireGuardSpecs),
 		restoredFXP,
+		plannedFXP,
 		len(fxpSpecs),
 		restoredFailover,
 		len(failoverSpecs),

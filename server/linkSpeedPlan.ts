@@ -97,11 +97,16 @@ export async function buildLinkSpeedPlan(
   const add = (id: number, component: SpeedComponent) => {
     plan.hosts.set(id, [...(plan.hosts.get(id) || []), component]);
   };
-  const routeNode = async (id: number, transport: string) => ({
-    hostId: id,
-    name: String((await host(id)).name || `#${id}`),
-    transport,
-  });
+  const routeNode = async (id: number, transport: string) => {
+    const row = await host(id);
+    return {
+      hostId: id,
+      name: String(row.name || `#${id}`),
+      transport,
+      agentVersion: String(row.agentVersion || "").trim() || undefined,
+      osInfo: String(row.osInfo || "").trim().slice(0, 160) || undefined,
+    };
+  };
   try {
     if (!enabled(resource.isEnabled)) throw new Error("请先启用链路");
     limit(resource.rateLimitMbps);

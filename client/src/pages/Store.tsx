@@ -50,14 +50,8 @@ function moneyFromMilliCents(milliCents?: number, currency = "CNY") {
 function bytes(size?: number | null) {
   const value = Number(size || 0);
   if (!value) return translateText("不限");
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let n = value;
-  let idx = 0;
-  while (n >= 1024 && idx < units.length - 1) {
-    n /= 1024;
-    idx++;
-  }
-  return `${n >= 10 || idx === 0 ? n.toFixed(0) : n.toFixed(2)} ${units[idx]}`;
+  const gigabytes = value / (1024 ** 3);
+  return `${parseFloat(gigabytes.toFixed(2))} GB`;
 }
 
 function speed(value?: number | null) {

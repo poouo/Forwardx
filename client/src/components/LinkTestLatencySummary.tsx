@@ -110,7 +110,16 @@ export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
         : [];
       return {
         kind: typeof source.kind === "string" ? source.kind : undefined,
-        message: typeof source.message === "string" ? source.message : text,
+        // Structured probe envelopes are also used as the pending test's
+        // request metadata. Never expose that internal JSON as an error when
+        // the Agent has not supplied an actual result message.
+        message: typeof source.message === "string"
+          ? source.message
+          : typeof source.error === "string"
+            ? source.error
+            : typeof source.reason === "string"
+              ? source.reason
+              : "",
         details,
         totalLatencyMs: typeof source.totalLatencyMs === "number" ? source.totalLatencyMs : null,
         tunnelProbeTimedOut: source.tunnelProbeTimedOut === true,

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -26,7 +27,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -40,6 +43,8 @@ import {
   Server,
   Terminal,
   Trash2,
+  Users,
+  Settings2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/localizedToast";
@@ -66,6 +71,105 @@ type InstallAddressOption = {
   description: string;
   url: string;
 };
+
+type EnrollmentHostPreview = {
+  id: number;
+  name: string;
+  address: string;
+  online: boolean;
+};
+
+type EnrollmentHostEditState = {
+  enrollmentId: string;
+  hostId: number;
+  name: string;
+};
+
+type EnrollmentPreview = {
+  id: string;
+  kind: "enrollment";
+  description: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string;
+  maxRegistrations: number;
+  usedRegistrations: number;
+  hosts: EnrollmentHostPreview[];
+  tokenId?: number;
+};
+
+type AgentCardItem =
+  | { kind: "token"; value: any }
+  | { kind: "enrollment"; value: EnrollmentPreview };
+
+function agentCardItemId(item: AgentCardItem) {
+  return item.kind === "token" ? Number(item.value.id) : item.value.id;
+}
+
+const DEV_ENROLLMENT_PREVIEW_ENABLED = typeof window !== "undefined"
+  && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname === "::1");
+
+const DEV_ENROLLMENT_HOSTS: EnrollmentHostPreview[] = [
+  { id: 901, name: "广州入口-01", address: "203.0.113.21", online: true },
+  { id: 902, name: "香港出口-02", address: "198.51.100.42", online: true },
+  { id: 903, name: "东京中转-03", address: "2001:db8:20::31", online: false },
+  { id: 904, name: "新加坡备用-04", address: "198.51.100.77", online: true },
+  { id: 905, name: "洛杉矶节点-05", address: "2001:db8:40::8", online: true },
+];
+
+function createDevEnrollmentPreview(overrides: Partial<EnrollmentPreview> = {}): EnrollmentPreview {
+  const now = Date.now();
+  return {
+    id: "dev-enrollment-main",
+    kind: "enrollment",
+    description: "生产节点批量注册",
+    token: "enroll_7F3k••••••••••••••••",
+    createdAt: new Date(now - 1000 * 60 * 60 * 3).toISOString(),
+    expiresAt: new Date(now + 1000 * 60 * 60 * 24 * 27).toISOString(),
+    maxRegistrations: 20,
+    usedRegistrations: DEV_ENROLLMENT_HOSTS.length,
+    hosts: DEV_ENROLLMENT_HOSTS,
+    ...overrides,
+  };
+}
+
+function enrollmentDate(value: unknown) {
+  if (!value) return "";
+  const date = value instanceof Date
+    ? value
+    : new Date(typeof value === "number" && value < 2_000_000_000 ? value * 1000 : String(value));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function enrollmentFromToken(tokenItem: any): EnrollmentPreview {
+  const hosts = Array.isArray(tokenItem?.hosts)
+    ? tokenItem.hosts
+    : tokenItem?.host
+      ? [tokenItem.host]
+      : [];
+  return {
+    id: `token-${tokenItem.id}`,
+    tokenId: Number(tokenItem.id),
+    kind: "enrollment",
+    description: String(tokenItem.description || translateText("批量注册")),
+    token: String(tokenItem.token || ""),
+    createdAt: enrollmentDate(tokenItem.createdAt) || new Date().toISOString(),
+    expiresAt: enrollmentDate(tokenItem.registrationExpiresAt),
+    maxRegistrations: Math.max(0, Number(tokenItem.maxRegistrations) || 0),
+    usedRegistrations: Math.max(0, Number(tokenItem.usedRegistrations) || hosts.length),
+    hosts: hosts.map((host: any) => ({
+      id: Number(host.id),
+      name: String(host.name || translateText("未命名主机")),
+      address: tokenHostAddress(host),
+      online: isTokenHostOnline(host),
+    })),
+  };
+}
+
+function nonNegativeInteger(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
 
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 function usePageVisible() {
@@ -185,6 +289,130 @@ function TokenHostInfo({ tokenItem, compact = false }: { tokenItem: any; compact
         )}
       </div>
     </div>
+  );
+}
+
+function EnrollmentStatusBadge({ enrollment }: { enrollment: EnrollmentPreview }) {
+  const expiresAt = enrollment.expiresAt ? new Date(enrollment.expiresAt).getTime() : Number.POSITIVE_INFINITY;
+  const expired = expiresAt <= Date.now();
+  return (
+    <Badge className={cn(
+      "shrink-0 gap-1.5 text-[11px]",
+      expired
+        ? "border-destructive/25 bg-destructive/10 text-destructive"
+        : "border-primary/25 bg-primary/10 text-primary",
+    )}>
+      <span className={cn("h-2 w-2 rounded-full", expired ? "bg-destructive" : "bg-primary")} />
+      {expired ? translateText("已过期") : translateText("批量注册")}
+    </Badge>
+  );
+}
+
+function EnrollmentHostSummary({
+  enrollment,
+  onOpen,
+}: {
+  enrollment: EnrollmentPreview;
+  onOpen: () => void;
+}) {
+  const visibleHosts = enrollment.hosts.slice(0, 2);
+  const remaining = Math.max(0, enrollment.hosts.length - visibleHosts.length);
+  return (
+    <button
+      type="button"
+      className="w-full rounded-md bg-muted/25 p-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      onClick={onOpen}
+      title={translateText("查看全部已注册主机")}
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">{translateText("已注册主机")}</p>
+        <span className="text-xs font-medium text-primary">{enrollment.usedRegistrations} / {enrollment.maxRegistrations > 0 ? enrollment.maxRegistrations : translateText("不限")}</span>
+      </div>
+      <div className="space-y-1.5">
+        {visibleHosts.map((host) => (
+          <div key={host.id} className="flex min-w-0 items-center gap-2 text-xs">
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", host.online ? "bg-chart-2" : "bg-muted-foreground/40")} />
+            <span className="min-w-0 flex-1 truncate font-medium" title={host.name}>{host.name}</span>
+            <span className="max-w-[9rem] truncate font-mono text-muted-foreground" title={host.address}>{host.address}</span>
+          </div>
+        ))}
+        {remaining > 0 && (
+          <span className="block pt-0.5 text-xs text-primary">{translateText("还有 {0} 台主机，点击查看", [remaining])}</span>
+        )}
+        {visibleHosts.length === 0 && (
+          <span className="block text-xs text-muted-foreground">{translateText("还没有注册主机")}</span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function EnrollmentCard({
+  enrollment,
+  onOpenHosts,
+  onInstall,
+  onEdit,
+  onDelete,
+  dragHandle,
+  sortableClassName,
+}: {
+  enrollment: EnrollmentPreview;
+  onOpenHosts: (enrollment: EnrollmentPreview) => void;
+  onInstall: (enrollment: EnrollmentPreview) => void;
+  onEdit: (enrollment: EnrollmentPreview) => void;
+  onDelete: (enrollment: EnrollmentPreview) => void;
+  dragHandle?: any;
+  sortableClassName?: string;
+}) {
+  const createdAtText = new Date(enrollment.createdAt).toLocaleString(getFormatLocale());
+  const expiresAtText = enrollment.expiresAt
+    ? new Date(enrollment.expiresAt).toLocaleDateString(getFormatLocale())
+    : translateText("不限时");
+  return (
+    <Card className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", sortableClassName)}>
+      <CardContent className="action-card-content space-y-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Key className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium" title={enrollment.description}>{enrollment.description}</p>
+              <p className="truncate text-xs text-muted-foreground" title={translateText("创建时间 · {0} · 有效期至 {1}", [createdAtText, expiresAtText])}>
+                {translateText("创建时间 · ")}{createdAtText} · {translateText("有效期至 {0}", [expiresAtText])}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {dragHandle}
+            <EnrollmentStatusBadge enrollment={enrollment} />
+          </div>
+        </div>
+
+        <code className="block break-all rounded-md border border-border/40 bg-background/60 px-3 py-2 font-mono text-xs" title={enrollment.token}>
+          {enrollment.token}
+        </code>
+
+        <EnrollmentHostSummary enrollment={enrollment} onOpen={() => onOpenHosts(enrollment)} />
+
+        <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
+          <div className="flex items-center justify-end gap-1">
+            <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看安装命令")} onClick={() => onInstall(enrollment)}>
+              <Terminal className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("管理主机")} onClick={() => onOpenHosts(enrollment)}>
+              <Settings2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("编辑批量注册")} onClick={() => onEdit(enrollment)}>
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title={translateText("删除批量注册")} onClick={() => onDelete(enrollment)}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -422,6 +650,19 @@ export default function AgentTokenManager({
   const [loadingScriptTokenId, setLoadingScriptTokenId] = useState<number | null>(null);
   const [newToken, setNewToken] = useState("");
   const [description, setDescription] = useState("");
+  const [registrationMode, setRegistrationMode] = useState<"single" | "batch">("single");
+  const [batchRegistrationLimit, setBatchRegistrationLimit] = useState("20");
+  const [batchRegistrationExpiryDays, setBatchRegistrationExpiryDays] = useState("30");
+  const [devEnrollmentItems, setDevEnrollmentItems] = useState<EnrollmentPreview[]>(() => (
+    DEV_ENROLLMENT_PREVIEW_ENABLED ? [createDevEnrollmentPreview()] : []
+  ));
+  const [selectedEnrollment, setSelectedEnrollment] = useState<EnrollmentPreview | null>(null);
+  const [editingEnrollmentHost, setEditingEnrollmentHost] = useState<EnrollmentHostEditState | null>(null);
+  const [editingEnrollment, setEditingEnrollment] = useState<EnrollmentPreview | null>(null);
+  const [enrollmentCommand, setEnrollmentCommand] = useState<EnrollmentPreview | null>(null);
+  const [editEnrollmentDescription, setEditEnrollmentDescription] = useState("");
+  const [editEnrollmentLimit, setEditEnrollmentLimit] = useState("20");
+  const [editEnrollmentExpiryDays, setEditEnrollmentExpiryDays] = useState("30");
   const [editingToken, setEditingToken] = useState<any>(null);
   const [editDescription, setEditDescription] = useState("");
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
@@ -429,9 +670,13 @@ export default function AgentTokenManager({
   const [installAddressMode, setInstallAddressMode] = useState<InstallAddressMode>("public");
   const lastCreateSignalRef = useRef(0);
   const viewMode = controlledViewMode ?? internalViewMode;
+  const confirm = useConfirmDialog();
 
   const openCreateDialog = () => {
     setDescription("");
+    setRegistrationMode("single");
+    setBatchRegistrationLimit("20");
+    setBatchRegistrationExpiryDays("30");
     setShowCreate(true);
   };
 
@@ -461,9 +706,31 @@ export default function AgentTokenManager({
     }
   );
   const tokenItems = useMemo(() => (tokens as any[] | undefined) || [], [tokens]);
+  const realEnrollmentItems = useMemo(
+    () => tokenItems.filter((tokenItem: any) => tokenItem.registrationMode === "batch").map(enrollmentFromToken),
+    [tokenItems],
+  );
+  const enrollmentItems = useMemo(
+    () => [...(DEV_ENROLLMENT_PREVIEW_ENABLED ? devEnrollmentItems : []), ...realEnrollmentItems],
+    [devEnrollmentItems, realEnrollmentItems],
+  );
+  const regularTokenItems = useMemo(
+    () => tokenItems.filter((tokenItem: any) => tokenItem.registrationMode !== "batch"),
+    [tokenItems],
+  );
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const isTextFiltered = normalizedSearchQuery.length > 0;
   const filteredTokenItems = useMemo(
+    () => isTextFiltered
+      ? regularTokenItems.filter((tokenItem: any) => tokenMatchesSearchQuery(tokenItem, normalizedSearchQuery))
+      : regularTokenItems,
+    [isTextFiltered, normalizedSearchQuery, regularTokenItems],
+  );
+  // Card mode intentionally uses the complete token list. Batch registrations
+  // and single-host tokens share one backend sort order, so filtering or
+  // rebuilding them as two separate arrays would make the grid split again
+  // after each polling refresh.
+  const filteredCardTokenItems = useMemo(
     () => isTextFiltered
       ? tokenItems.filter((tokenItem: any) => tokenMatchesSearchQuery(tokenItem, normalizedSearchQuery))
       : tokenItems,
@@ -474,9 +741,20 @@ export default function AgentTokenManager({
     getId: (tokenItem: any) => Number(tokenItem.id),
   });
   const displayedTokenItems = tokenOrder.items;
+  const cardBaseItems = useMemo<AgentCardItem[]>(
+    () => [
+      ...(DEV_ENROLLMENT_PREVIEW_ENABLED ? devEnrollmentItems.map((value) => ({ kind: "enrollment" as const, value })) : []),
+      ...filteredCardTokenItems.map((value) => value.registrationMode === "batch"
+        ? ({ kind: "enrollment" as const, value: enrollmentFromToken(value) })
+        : ({ kind: "token" as const, value })),
+    ],
+    [devEnrollmentItems, filteredCardTokenItems],
+  );
+  const cardOrder = useOptimisticSortableOrder({ items: cardBaseItems, getId: agentCardItemId });
+  const hasVisibleItems = viewMode === "card" ? cardOrder.items.length > 0 : displayedTokenItems.length > 0;
   useEffect(() => {
-    onFilterStatsChange?.({ filtered: filteredTokenItems.length, total: tokenItems.length });
-  }, [filteredTokenItems.length, onFilterStatsChange, tokenItems.length]);
+    onFilterStatsChange?.({ filtered: filteredCardTokenItems.length, total: tokenItems.length });
+  }, [filteredCardTokenItems.length, onFilterStatsChange, tokenItems.length]);
 
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const configuredPanelUrl = normalizeConfigUrl(systemSettings?.panelPublicUrl || "");
@@ -537,6 +815,30 @@ export default function AgentTokenManager({
     onError: (err) => toast.error(err.message || translateText("生成 Token 失败")),
   });
 
+  const createEnrollmentMutation = trpc.agentTokens.create.useMutation({
+    onSuccess: (data) => {
+      utils.hosts.managementCounts.invalidate();
+      utils.agentTokens.list.invalidate();
+      setShowCreate(false);
+      setEnrollmentCommand({
+        id: `token-${data.id}`,
+        tokenId: data.id,
+        kind: "enrollment",
+        description: description.trim() || translateText("批量注册"),
+        token: data.token,
+        createdAt: new Date().toISOString(),
+        expiresAt: batchRegistrationExpiryDays === "0"
+          ? ""
+          : new Date(Date.now() + nonNegativeInteger(batchRegistrationExpiryDays, 30) * 86400 * 1000).toISOString(),
+        maxRegistrations: nonNegativeInteger(batchRegistrationLimit, 20),
+        usedRegistrations: 0,
+        hosts: [],
+      });
+      toast.success(translateText("批量注册密钥已生成"));
+    },
+    onError: (err) => toast.error(err.message || translateText("生成批量注册密钥失败")),
+  });
+
   const deleteTokenMutation = trpc.agentTokens.delete.useMutation({
     onSuccess: (data) => {
       utils.hosts.managementCounts.invalidate();
@@ -566,6 +868,39 @@ export default function AgentTokenManager({
     },
     onError: (err) => toast.error(err.message || translateText("更新 Token 备注失败")),
   });
+  const updateEnrollmentMutation = trpc.agentTokens.update.useMutation({
+    onSuccess: () => {
+      utils.agentTokens.list.invalidate();
+      setEditingEnrollment(null);
+      toast.success(translateText("批量注册信息已更新"));
+    },
+    onError: (err) => toast.error(err.message || translateText("更新批量注册信息失败")),
+  });
+  const removeEnrollmentHostMutation = trpc.agentTokens.removeHost.useMutation({
+    onSuccess: () => {
+      utils.agentTokens.list.invalidate();
+      utils.hosts.managementCounts.invalidate();
+      utils.hosts.list.invalidate();
+      utils.hosts.listPage.invalidate();
+      setSelectedEnrollment((current) => current ? {
+        ...current,
+        usedRegistrations: Math.max(0, current.usedRegistrations - 1),
+        hosts: current.hosts.filter((host) => host.id !== removeEnrollmentHostMutation.variables?.hostId),
+      } : current);
+      toast.success(translateText("主机已从批量注册列表移出"));
+    },
+    onError: (err) => toast.error(err.message || translateText("移出批量注册主机失败")),
+  });
+  const updateEnrollmentHostMutation = trpc.hosts.update.useMutation({
+    onSuccess: () => {
+      utils.agentTokens.list.invalidate();
+      utils.hosts.list.invalidate();
+      utils.hosts.listPage.invalidate();
+      setEditingEnrollmentHost(null);
+      toast.success(translateText("主机名称已更新"));
+    },
+    onError: (err) => toast.error(err.message || translateText("更新主机名称失败")),
+  });
   const reorderTokenMutation = trpc.agentTokens.reorder.useMutation({
     onSuccess: () => toast.success(translateText("Token 顺序已更新")),
     onError: (err) => toast.error(err.message || translateText("更新 Token 顺序失败")),
@@ -586,6 +921,26 @@ export default function AgentTokenManager({
       );
     },
   });
+  const cardSortable = useSortableReorder({
+    items: cardOrder.items,
+    getId: agentCardItemId,
+    disabled: isTextFiltered || tokenReorderPending || cardOrder.items.length < 2,
+    onReorder: (nextItems) => {
+      const nextTokenIds = nextItems
+        .filter((item) => item.kind === "token" || !!item.value.tokenId)
+        .map((item) => item.kind === "token" ? Number(item.value.id) : Number(item.value.tokenId))
+        .filter((id) => Number.isInteger(id) && id > 0);
+      if (nextTokenIds.length === 0) return;
+      const requestId = cardOrder.begin(nextItems);
+      reorderTokenMutation.mutate(
+        { ids: nextTokenIds },
+        {
+          onError: () => cardOrder.release(requestId),
+          onSettled: () => cardOrder.resync(requestId, () => utils.agentTokens.list.invalidate()),
+        },
+      );
+    },
+  });
 
   const openScriptDialog = async (tokenId: number) => {
     try {
@@ -602,47 +957,21 @@ export default function AgentTokenManager({
     }
   };
 
-  const copyToClipboard = async (text: string) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success(translateText("已复制到剪贴板"));
-        return;
-      } catch (err) {
-        console.warn("[Clipboard] navigator.clipboard 失败，回退 execCommand:", err);
-      }
+  const openEnrollmentCommand = async (enrollment: EnrollmentPreview) => {
+    if (!enrollment.tokenId) {
+      setEnrollmentCommand(enrollment);
+      return;
     }
-
-    let success = false;
-    const host =
-      (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) ||
-      document.body;
-    const textarea = document.createElement("textarea");
     try {
-      textarea.value = text;
-      textarea.setAttribute("readonly", "");
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      textarea.style.pointerEvents = "none";
-      textarea.style.left = "0";
-      textarea.style.top = "0";
-      textarea.style.width = "1px";
-      textarea.style.height = "1px";
-      host.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, text.length);
-      success = document.execCommand("copy");
-    } catch (err) {
-      console.error("[Clipboard] execCommand fallback 异常:", err);
-      success = false;
-    } finally {
-      if (textarea.parentNode) {
-        textarea.parentNode.removeChild(textarea);
-      }
+      const data = await utils.agentTokens.getInstallToken.fetch({ id: enrollment.tokenId }, { staleTime: 0 });
+      setEnrollmentCommand({ ...enrollment, token: data.token });
+    } catch (error: any) {
+      toast.error(error?.message || translateText("获取批量注册命令失败"));
     }
+  };
 
-    if (success) {
+  const copyToClipboard = async (text: string) => {
+    if (await copyTextToClipboard(text)) {
       toast.success(translateText("已复制到剪贴板"));
       return;
     }
@@ -651,7 +980,7 @@ export default function AgentTokenManager({
       window.prompt(translateText("复制失败，请手动选中并复制 (Ctrl+C / Cmd+C)："), text);
       toast.warning(translateText("未能自动写入剪贴板，已弹出手动复制窗口"));
     } catch {
-      toast.error(translateText("复制失败，请手动复制"));
+      toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
     }
   };
 
@@ -699,6 +1028,114 @@ export default function AgentTokenManager({
     setEditDescription(tokenItem.description || "");
   };
 
+  const openEditEnrollment = (enrollment: EnrollmentPreview) => {
+    setEditingEnrollment(enrollment);
+    setEditEnrollmentDescription(enrollment.description);
+    setEditEnrollmentLimit(String(enrollment.maxRegistrations));
+    const remainingDays = enrollment.expiresAt
+      ? Math.max(1, Math.ceil((new Date(enrollment.expiresAt).getTime() - Date.now()) / 86400000))
+      : 0;
+    setEditEnrollmentExpiryDays(String(remainingDays));
+  };
+
+  const saveEditEnrollment = () => {
+    if (!editingEnrollment) return;
+    const limit = Math.max(editingEnrollment.usedRegistrations, Math.min(1000, nonNegativeInteger(editEnrollmentLimit, editingEnrollment.maxRegistrations)));
+    const expiryDays = Math.min(365, nonNegativeInteger(editEnrollmentExpiryDays, 30));
+    if (editingEnrollment.tokenId) {
+      updateEnrollmentMutation.mutate({
+        id: editingEnrollment.tokenId,
+        description: editEnrollmentDescription.trim() || null,
+        maxRegistrations: limit,
+        registrationExpiryDays: expiryDays,
+      });
+      return;
+    }
+    setDevEnrollmentItems((items) => items.map((item) => item.id === editingEnrollment.id
+      ? {
+        ...item,
+        description: editEnrollmentDescription.trim() || item.description,
+        maxRegistrations: limit,
+        expiresAt: expiryDays === 0 ? "" : new Date(Date.now() + expiryDays * 86400000).toISOString(),
+      }
+      : item));
+    setEditingEnrollment(null);
+    toast.success(translateText("批量注册信息已更新"));
+  };
+
+  const deleteEnrollmentPreview = (enrollment: EnrollmentPreview) => {
+    if (enrollment.tokenId) {
+      setTokenToDelete({ id: enrollment.tokenId, token: enrollment.token, description: enrollment.description });
+      return;
+    }
+    setDevEnrollmentItems((items) => items.filter((item) => item.id !== enrollment.id));
+    if (selectedEnrollment?.id === enrollment.id) setSelectedEnrollment(null);
+    toast.success(translateText("批量注册预览已删除"));
+  };
+
+  const openEditEnrollmentHost = (enrollment: EnrollmentPreview, host: EnrollmentHostPreview) => {
+    setEditingEnrollmentHost({ enrollmentId: enrollment.id, hostId: host.id, name: host.name });
+  };
+
+  const saveEditEnrollmentHost = () => {
+    if (!editingEnrollmentHost) return;
+    const name = editingEnrollmentHost.name.trim();
+    if (!name) {
+      toast.error(translateText("请填写主机名称"));
+      return;
+    }
+    const targetEnrollment = enrollmentItems.find((item) => item.id === editingEnrollmentHost.enrollmentId);
+    if (targetEnrollment?.tokenId) {
+      updateEnrollmentHostMutation.mutate({ id: editingEnrollmentHost.hostId, name });
+      return;
+    }
+    const update = (enrollment: EnrollmentPreview) => enrollment.id !== editingEnrollmentHost.enrollmentId
+      ? enrollment
+      : {
+        ...enrollment,
+        hosts: enrollment.hosts.map((host) => host.id === editingEnrollmentHost.hostId ? { ...host, name } : host),
+      };
+    setDevEnrollmentItems((items) => items.map(update));
+    setSelectedEnrollment((enrollment) => enrollment ? update(enrollment) : enrollment);
+    setEditingEnrollmentHost(null);
+    toast.success(translateText("主机信息已更新"));
+  };
+
+  const removeEnrollmentHost = async (enrollment: EnrollmentPreview, host: EnrollmentHostPreview) => {
+    const confirmed = await confirm({
+      title: translateText("移出批量注册"),
+      description: translateText("确定将“{0}”从这个批量注册列表中移出吗？不会删除主机本身。", [host.name]),
+      confirmText: translateText("移出"),
+      tone: "destructive",
+    });
+    if (!confirmed) return;
+    if (enrollment.tokenId) {
+      removeEnrollmentHostMutation.mutate({ id: enrollment.tokenId, hostId: host.id });
+      return;
+    }
+    const update = (item: EnrollmentPreview) => item.id !== enrollment.id
+      ? item
+      : {
+        ...item,
+        usedRegistrations: Math.max(0, item.usedRegistrations - 1),
+        hosts: item.hosts.filter((itemHost) => itemHost.id !== host.id),
+      };
+    setDevEnrollmentItems((items) => items.map(update));
+    setSelectedEnrollment((item) => item ? update(item) : item);
+    toast.success(translateText("主机已从批量注册列表移出"));
+  };
+
+  const createEnrollment = () => {
+    const limit = Math.min(1000, nonNegativeInteger(batchRegistrationLimit, 20));
+    const expiryDays = Math.min(365, nonNegativeInteger(batchRegistrationExpiryDays, 30));
+    createEnrollmentMutation.mutate({
+      description: description.trim() || undefined,
+      registrationMode: "batch",
+      maxRegistrations: limit,
+      registrationExpiryDays: expiryDays,
+    });
+  };
+
   if (user?.role !== "admin") return null;
 
   return (
@@ -741,24 +1178,36 @@ export default function AgentTokenManager({
             <div className="p-4">
               <DataSectionLoading label={translateText("正在加载 Agent Token")} />
             </div>
-          ) : displayedTokenItems.length > 0 ? (
+          ) : hasVisibleItems ? (
             <>
               {viewMode === "card" ? (
-                <SortableReorderContext sortable={tokenSortable} ids={displayedTokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="rect">
+                <SortableReorderContext sortable={cardSortable} ids={cardOrder.items.map(agentCardItemId)} strategy="rect">
                   <div key="agent-token-card-view" className="standard-card-grid card-mode-transition gap-4 p-3">
-                    {displayedTokenItems.map((tokenItem: any) => (
-                      <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled}>
+                    {cardOrder.items.map((item) => (
+                      <SortableItem key={agentCardItemId(item)} id={agentCardItemId(item)} disabled={cardSortable.disabled}>
                         {({ itemProps, handleProps, isDragging, isDropTarget }) => (
                           <div {...itemProps}>
-                            <AgentTokenCard
-                              tokenItem={tokenItem}
-                              loadingScriptTokenId={loadingScriptTokenId}
-                              onOpenScript={openScriptDialog}
-                              onEdit={openEditToken}
-                              onDelete={setTokenToDelete}
-                              dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={tokenReorderPending} />}
-                              sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
-                            />
+                            {item.kind === "token" ? (
+                              <AgentTokenCard
+                                tokenItem={item.value}
+                                loadingScriptTokenId={loadingScriptTokenId}
+                                onOpenScript={openScriptDialog}
+                                onEdit={openEditToken}
+                                onDelete={setTokenToDelete}
+                                dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={tokenReorderPending} />}
+                                sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
+                              />
+                            ) : (
+                              <EnrollmentCard
+                                enrollment={item.value}
+                                onOpenHosts={setSelectedEnrollment}
+                                onInstall={openEnrollmentCommand}
+                                onEdit={openEditEnrollment}
+                                onDelete={deleteEnrollmentPreview}
+                                dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} busy={tokenReorderPending} />}
+                                sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
+                              />
+                            )}
                           </div>
                         )}
                       </SortableItem>
@@ -886,24 +1335,193 @@ export default function AgentTokenManager({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{translateText("添加主机")}</DialogTitle>
-            <DialogDescription>{translateText("先生成 Agent 安装 Token，再复制命令到目标主机执行。")}</DialogDescription>
+            <DialogDescription>
+              {registrationMode === "batch"
+                ? translateText("生成一个可在有效期内注册多台 Agent 的批量注册密钥。")
+                : translateText("先生成 Agent 安装 Token，再复制命令到目标主机执行。")}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>{translateText("描述（可选）")}</Label>
               <Input
-                placeholder={translateText("例如: 香港节点 Agent")}
+                placeholder={registrationMode === "batch" ? translateText("例如：生产节点批量注册") : translateText("例如: 香港节点 Agent")}
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
               />
             </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 px-3 py-2.5">
+              <div className="min-w-0">
+                <Label className="text-sm font-medium">{translateText("批量注册")}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{translateText("允许使用同一注册密钥添加多台独立主机")}</p>
+              </div>
+              <Switch checked={registrationMode === "batch"} onCheckedChange={(checked) => setRegistrationMode(checked ? "batch" : "single")} />
+            </div>
+            {registrationMode === "batch" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>{translateText("最大注册数量（0 = 不限）")}</Label>
+                  <Input type="number" min={0} max={1000} value={batchRegistrationLimit} onChange={(event) => setBatchRegistrationLimit(event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>{translateText("有效期（天，0 = 不限）")}</Label>
+                  <Input type="number" min={0} max={365} value={batchRegistrationExpiryDays} onChange={(event) => setBatchRegistrationExpiryDays(event.target.value)} />
+                </div>
+              </div>
+            )}
+            {registrationMode === "batch" && DEV_ENROLLMENT_PREVIEW_ENABLED && (
+              <Alert className="border-primary/25 bg-primary/5">
+                <Users className="h-4 w-4" />
+                <AlertTitle>{translateText("开发环境预览")}</AlertTitle>
+                <AlertDescription>{translateText("页面保留演示卡片用于预览；新建批量注册会写入真实密钥，注册的主机会正常出现在主机管理。")}</AlertDescription>
+              </Alert>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreate(false)}>{translateText("取消")}</Button>
             <Button
-              onClick={() => createTokenMutation.mutate({ description: description || undefined })}
-              disabled={createTokenMutation.isPending}
-            >{translateText("生成安装命令")}</Button>
+              onClick={() => registrationMode === "batch" ? createEnrollment() : createTokenMutation.mutate({ description: description || undefined })}
+              disabled={registrationMode === "batch" ? createEnrollmentMutation.isPending : createTokenMutation.isPending}
+            >{registrationMode === "batch" ? translateText("生成批量注册密钥") : translateText("生成安装命令")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!selectedEnrollment} onOpenChange={(open) => !open && setSelectedEnrollment(null)}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl sm:w-[calc(100vw-2rem)]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-primary" />{translateText("批量注册主机")}
+            </DialogTitle>
+            <DialogDescription>
+              {selectedEnrollment
+                ? `${selectedEnrollment.description} · ${selectedEnrollment.usedRegistrations} / ${selectedEnrollment.maxRegistrations > 0 ? selectedEnrollment.maxRegistrations : translateText("不限")}`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+            {selectedEnrollment?.hosts.length ? selectedEnrollment.hosts.map((host) => (
+              <div key={host.id} className="flex min-w-0 items-center gap-3 rounded-lg border border-border/50 bg-muted/15 px-3 py-2.5">
+                <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", host.online ? "bg-chart-2" : "bg-muted-foreground/40")} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium" title={host.name}>{host.name}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground" title={host.address}>{host.address}</p>
+                </div>
+                <Badge variant={host.online ? "default" : "secondary"} className="shrink-0">{host.online ? translateText("在线") : translateText("离线")}</Badge>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    title={translateText("编辑主机信息")}
+                    aria-label={translateText("编辑主机信息")}
+                    onClick={() => selectedEnrollment && openEditEnrollmentHost(selectedEnrollment, host)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    title={translateText("移出批量注册")}
+                    aria-label={translateText("移出批量注册")}
+                    onClick={() => selectedEnrollment && void removeEnrollmentHost(selectedEnrollment, host)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )) : (
+              <div className="rounded-lg border border-dashed border-border/60 px-4 py-8 text-center text-sm text-muted-foreground">{translateText("还没有注册主机")}</div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedEnrollment(null)}>{translateText("关闭")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editingEnrollmentHost} onOpenChange={(open) => !open && setEditingEnrollmentHost(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{translateText("编辑批量注册主机")}</DialogTitle>
+            <DialogDescription>{translateText("这里只修改主机名称，主机地址由 Agent 上报且不可编辑。")}</DialogDescription>
+          </DialogHeader>
+          {editingEnrollmentHost && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="enrollment-host-name">{translateText("主机名称")}</Label>
+                <Input id="enrollment-host-name" value={editingEnrollmentHost.name} onChange={(event) => setEditingEnrollmentHost((current) => current ? { ...current, name: event.target.value } : current)} />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setEditingEnrollmentHost(null)}>{translateText("取消")}</Button>
+            <Button type="button" onClick={saveEditEnrollmentHost}>{translateText("保存")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editingEnrollment} onOpenChange={(open) => !open && setEditingEnrollment(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{translateText("编辑批量注册")}</DialogTitle>
+            <DialogDescription>{translateText("开发环境预览中的批量注册信息")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>{translateText("描述（可选）")}</Label>
+              <Input value={editEnrollmentDescription} onChange={(event) => setEditEnrollmentDescription(event.target.value)} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                  <Label>{translateText("最大注册数量（0 = 不限）")}</Label>
+                  <Input type="number" min={0} max={1000} value={editEnrollmentLimit} onChange={(event) => setEditEnrollmentLimit(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>{translateText("有效期（天，0 = 不限）")}</Label>
+                <Input type="number" min={0} max={365} value={editEnrollmentExpiryDays} onChange={(event) => setEditEnrollmentExpiryDays(event.target.value)} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingEnrollment(null)}>{translateText("取消")}</Button>
+            <Button onClick={saveEditEnrollment}>{translateText("保存")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!enrollmentCommand} onOpenChange={(open) => !open && setEnrollmentCommand(null)}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl sm:w-[calc(100vw-2rem)]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Terminal className="h-5 w-5" />{translateText("批量注册命令")}
+            </DialogTitle>
+            <DialogDescription>{translateText("在目标主机执行安装命令；升级和卸载命令可用于已注册的批量主机。")}</DialogDescription>
+          </DialogHeader>
+          {enrollmentCommand && (
+            <div className="space-y-4">
+              <CommandRow
+                label={translateText("安装命令")}
+                command={getAgentScriptCommand(`install ${enrollmentCommand.token}`)}
+                onCopy={() => copyToClipboard(getAgentScriptCommand(`install ${enrollmentCommand.token}`))}
+              />
+              <CommandRow
+                label={translateText("卸载命令")}
+                command={getUninstallCommand()}
+                onCopy={() => copyToClipboard(getUninstallCommand())}
+              />
+              <CommandRow
+                label={translateText("升级命令")}
+                command={getUpgradeCommand()}
+                onCopy={() => copyToClipboard(getUpgradeCommand())}
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setEnrollmentCommand(null)}>{translateText("关闭")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

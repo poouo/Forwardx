@@ -50,7 +50,11 @@ export async function getAgentHostFromRequest(
 ) {
   const token = getResolvedAgentToken(req);
   if (!token) return null;
-  const host = await db.getHostByAgentToken(token);
+  const installationId = typeof (req as any).agentInstallationId === "string"
+    && /^[a-f0-9]{64}$/.test((req as any).agentInstallationId)
+    ? (req as any).agentInstallationId
+    : undefined;
+  const host = await db.getHostByAgentToken(token, installationId);
   if (host && options.recordActivity !== false) recordAuthenticatedAgentActivity((host as any).id);
   return host;
 }
@@ -58,7 +62,11 @@ export async function getAgentHostFromRequest(
 export async function getAgentHostIdentityFromRequest(req: Request) {
   const token = getResolvedAgentToken(req);
   if (!token) return null;
-  const host = await db.getAgentAuthHostIdentity(token);
+  const installationId = typeof (req as any).agentInstallationId === "string"
+    && /^[a-f0-9]{64}$/.test((req as any).agentInstallationId)
+    ? (req as any).agentInstallationId
+    : undefined;
+  const host = await db.getAgentAuthHostIdentity(token, { installationId });
   if (host) recordAuthenticatedAgentActivity((host as any).id);
   return host;
 }
@@ -69,7 +77,11 @@ export async function getAgentPresenceHostFromRequest(req: Request) {
   // The presence route must inspect the pre-request liveness state before this
   // request records activity, otherwise it can miss an offline -> online
   // recovery transition and skip runtime reconciliation.
-  const identity = await db.getAgentAuthHostIdentity(token);
+  const installationId = typeof (req as any).agentInstallationId === "string"
+    && /^[a-f0-9]{64}$/.test((req as any).agentInstallationId)
+    ? (req as any).agentInstallationId
+    : undefined;
+  const identity = await db.getAgentAuthHostIdentity(token, { installationId });
   if (!identity) return null;
   return db.getHostAgentPresenceById(identity.id);
 }

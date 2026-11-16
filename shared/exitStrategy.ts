@@ -4,6 +4,7 @@ export const EXIT_GROUP_STRATEGIES = [
   "round_robin",
   "random",
   "ip_hash",
+  "latency",
 ] as const;
 
 export type ExitGroupStrategy = (typeof EXIT_GROUP_STRATEGIES)[number];
@@ -14,6 +15,7 @@ export const EXIT_GROUP_STRATEGY_LABELS: Record<ExitGroupStrategy, string> = {
   round_robin: "轮询模式 - 依次轮换",
   random: "随机模式 - 随机选择",
   ip_hash: "哈希模式 - 来源 IP 哈希",
+  latency: "低延迟优先 - 按近期隧道建连耗时",
 };
 
 export function normalizeExitGroupStrategy(value: unknown): ExitGroupStrategy {

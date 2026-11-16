@@ -270,3 +270,21 @@ test("group eligibility filter validates its bounded input", () => {
     assert.equal(personalRuleGroupChangeFilterSchema.safeParse(value).success, false);
   }
 });
+
+test("personal group counts follow the selected rule category", async () => {
+  const categoryGroup = (await groups.savePersonalRuleGroup(1, "category-probe")).id;
+  const tunnelRule = await runtime.insertAndGetId("forward_rules", {
+    ...payload(1, "category-tunnel"),
+    forwardType: "gost",
+    tunnelId: 987654,
+    sourcePort: 19987,
+  });
+  await groups.moveRulesToPersonalGroups(1, [tunnelRule], [categoryGroup], "add");
+
+  const tunnel = await groups.getPersonalRuleGroups(1, "tunnel");
+  const local = await groups.getPersonalRuleGroups(1, "local");
+  assert.equal(tunnel.total, 1);
+  assert.equal(tunnel.ungrouped, 0);
+  assert.equal(tunnel.groups.find(group => group.id === categoryGroup)?.count, 1);
+  assert.equal(local.groups.find(group => group.id === categoryGroup)?.count, 0);
+});

@@ -184,6 +184,11 @@ type exitEndpointSelector struct {
 	endpoints  []exitEndpoint
 	healthy    []bool
 	retryAfter []time.Time
+	latency    []time.Duration
+	latencyN   []uint32
+	latencyAt  []time.Time
+	selectN    uint64
+	setupLogs  uint64
 	strategy   string
 	next       int
 	mu         sync.Mutex
@@ -251,6 +256,9 @@ func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint, strate
 		endpoints:  endpoints,
 		healthy:    healthy,
 		retryAfter: retryAfter,
+		latency:    make([]time.Duration, len(endpoints)),
+		latencyN:   make([]uint32, len(endpoints)),
+		latencyAt:  make([]time.Time, len(endpoints)),
 		strategy:   normalizeExitStrategy(strategy),
 	}
 }
@@ -319,6 +327,37 @@ func (s *exitEndpointSelector) pick(excluded map[int]bool, selectionKeys ...stri
 			return s.endpoints[index], index, true
 		}
 	}
+	if s.strategy == "latency" {
+		// Warm up every endpoint, then periodically sample the stalest endpoint
+		// so route-quality changes can correct the EWMA without probing every flow.
+		s.selectN++
+		unmeasured := make([]int, 0, len(candidates))
+		best, bestLatency := -1, time.Duration(1<<63-1)
+		stalest, stalestAt := -1, now
+		for _, index := range candidates {
+			if s.latencyN[index] == 0 {
+				unmeasured = append(unmeasured, index)
+				continue
+			}
+			if stalest < 0 || s.latencyAt[index].Before(stalestAt) {
+				stalest, stalestAt = index, s.latencyAt[index]
+			}
+			if s.latency[index] < bestLatency {
+				best, bestLatency = index, s.latency[index]
+			}
+		}
+		if len(unmeasured) > 0 {
+			index := unmeasured[s.next%len(unmeasured)]
+			s.next = (s.next + 1) % 1000000
+			return s.endpoints[index], index, true
+		}
+		if stalest >= 0 && s.selectN%32 == 0 {
+			return s.endpoints[stalest], stalest, true
+		}
+		if best >= 0 {
+			return s.endpoints[best], best, true
+		}
+	}
 	if s.strategy == "ip_hash" {
 		selectionKey := ""
 		if len(selectionKeys) > 0 {
@@ -355,7 +394,7 @@ func (s *exitEndpointSelector) markFailure(index int, err error) {
 	}
 }
 
-func (s *exitEndpointSelector) markHealthy(index int) {
+func (s *exitEndpointSelector) markHealthy(index int, setupLatency ...time.Duration) {
 	if s == nil || index < 0 {
 		return
 	}
@@ -368,6 +407,17 @@ func (s *exitEndpointSelector) markHealthy(index int) {
 	wasHealthy := s.healthy[index]
 	s.healthy[index] = true
 	s.retryAfter[index] = time.Time{}
+	if len(setupLatency) > 0 && setupLatency[0] > 0 {
+		if s.latencyN[index] == 0 {
+			s.latency[index] = setupLatency[0]
+		} else {
+			s.latency[index] = (s.latency[index]*4 + setupLatency[0]) / 5
+		}
+		if s.latencyN[index] < 64 {
+			s.latencyN[index]++
+		}
+		s.latencyAt[index] = time.Now()
+	}
 	s.mu.Unlock()
 	if !wasHealthy {
 		log.Printf("exit endpoint recovered index=%d endpoint=%s:%d", index, endpoint.Host, endpoint.Port)
@@ -413,6 +463,7 @@ func dialSelectedSetup(selector *exitEndpointSelector, cfg config, selectionKey 
 		}
 		// nil selector: this loop owns the endpoint choice, so the pool must not
 		// run a second selection pass on top of it.
+		started := time.Now()
 		conn, sec, err := dial(endpoint.Host, endpoint.Port, dialCfg, nil, "")
 		if err == nil && setup != nil {
 			err = setup(sec)
@@ -421,7 +472,15 @@ func dialSelectedSetup(selector *exitEndpointSelector, cfg config, selectionKey 
 			}
 		}
 		if err == nil {
-			selector.markHealthy(index)
+			setupLatency := time.Since(started)
+			selector.markHealthy(index, setupLatency)
+			selector.mu.Lock()
+			selector.setupLogs++
+			shouldLog := selector.setupLogs <= 3 || selector.setupLogs%64 == 0
+			selector.mu.Unlock()
+			if shouldLog {
+				log.Printf("exit endpoint setup index=%d endpoint=%s:%d setupMs=%d", index, endpoint.Host, endpoint.Port, setupLatency.Milliseconds())
+			}
 			return conn, sec, endpoint, nil
 		}
 		lastErr = err

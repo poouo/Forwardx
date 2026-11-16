@@ -37,6 +37,7 @@ import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { compressImageFile, imageDataUrlSize } from "@/lib/imageUpload";
+import { copyTextToClipboard as copyTextToClipboardSafe } from "@/lib/clipboard";
 import { downloadTextFile, type TextDownloadFile } from "@/lib/fileDownload";
 import ThemeManagementCard from "@/components/ThemeManagementCard";
 import { cn } from "@/lib/utils";
@@ -704,50 +705,7 @@ function SettingsContent() {
     || (typeof window !== "undefined" ? window.location.origin : "");
 
   const copyToClipboard = async (text: string) => {
-    // 优先使用 Clipboard API（仅在 https 或 localhost 下可用）
-    if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success(translateText("已复制到剪贴板"));
-        return;
-      } catch (err) {
-        console.warn("[Clipboard] navigator.clipboard 失败，回退 execCommand:", err);
-      }
-    }
-
-    // Fallback：HTTP / 非安全上下文 / 不支持 Clipboard API
-    // 关键修复：Radix Dialog 会抢焦点，必须将 textarea 挂到当前活跃 dialog 内部才能 select 成功。
-    let success = false;
-    const host =
-      (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) ||
-      document.body;
-    const textarea = document.createElement("textarea");
-    try {
-      textarea.value = text;
-      textarea.setAttribute("readonly", "");
-      // 不能 display:none / left:-9999px，iOS 与部分浏览器会跳过选中
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      textarea.style.pointerEvents = "none";
-      textarea.style.left = "0";
-      textarea.style.top = "0";
-      textarea.style.width = "1px";
-      textarea.style.height = "1px";
-      host.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, text.length);
-      success = document.execCommand("copy");
-    } catch (err) {
-      console.error("[Clipboard] execCommand fallback 异常:", err);
-      success = false;
-    } finally {
-      if (textarea.parentNode) {
-        textarea.parentNode.removeChild(textarea);
-      }
-    }
-
-    if (success) {
+    if (await copyTextToClipboardSafe(text)) {
       toast.success(translateText("已复制到剪贴板"));
       return;
     }
@@ -757,7 +715,7 @@ function SettingsContent() {
       window.prompt(translateText("复制失败，请手动选中并复制 (Ctrl+C / Cmd+C)："), text);
       toast.warning(translateText("未能自动写入剪贴板，已弹出手动复制窗口"));
     } catch {
-      toast.error(translateText("复制失败，请手动复制"));
+      toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
     }
   };
 
@@ -1428,22 +1386,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   });
 
   const copyMigrationCode = async (code: string) => {
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(code);
-      copied = true;
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = code;
-      textarea.setAttribute("readonly", "true");
-      textarea.style.position = "fixed";
-      textarea.style.left = "-9999px";
-      document.body.appendChild(textarea);
-      textarea.select();
-      copied = document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
-
+    const copied = await copyTextToClipboardSafe(code);
     if (copied) toast.success(translateText("迁移码已复制"));
     else toast.error(translateText("复制失败，请手动选中迁移码复制"));
   };
@@ -4486,23 +4429,9 @@ function SystemInfoSection() {
   };
 
   const copyTextToClipboard = async (text: string) => {
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.setAttribute("readonly", "true");
-      textarea.style.position = "fixed";
-      textarea.style.left = "-9999px";
-      document.body.appendChild(textarea);
-      textarea.select();
-      copied = document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
+    const copied = await copyTextToClipboardSafe(text);
     if (copied) toast.success(translateText("已复制到剪贴板"));
-    else toast.error(translateText("复制失败，请手动复制"));
+    else toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
   };
 
   const startUpgradeMutation = trpc.system.startUpgrade.useMutation({

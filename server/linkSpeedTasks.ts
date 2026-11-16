@@ -9,6 +9,7 @@ import {
   type LinkSpeedSample,
 } from "../shared/linkSpeed";
 import type { SpeedPlan, SpeedComponent } from "./linkSpeedPlan";
+import { APP_VERSION } from "../shared/versions";
 
 export type LinkSpeedTask = {
   taskId: string;
@@ -144,6 +145,18 @@ export function createLinkSpeedJob(
       route: plan.route,
       samples: [],
       createdAt: new Date().toISOString(),
+      benchmark: {
+        formatVersion: 1,
+        panelVersion: APP_VERSION,
+        generatedAt: new Date().toISOString(),
+        durationSeconds: status.duration,
+        offeredRateMbps: status.rateMbps,
+        routeHostIds: plan.route.map((node) => node.hostId),
+        agentVersions: Object.fromEntries(
+          plan.route.map((node) => [String(node.hostId), String(node.agentVersion || "unknown")]),
+        ),
+        methodology: "按所列节点路径建立临时测速链路，分别进行上传和下载实测；不包含用户到入口及出口到业务目标的链路。",
+      },
     },
   };
   jobs.set(job.status.id, job);

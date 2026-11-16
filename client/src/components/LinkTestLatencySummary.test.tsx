@@ -31,6 +31,33 @@ test("both multi-exit branches retain flags on their inbound and target segments
   assert.equal(html.match(/alt="SG"/g)?.length, 2);
 });
 
+test("forward-group probe metadata is not rendered as a user-facing error", () => {
+  const raw = JSON.stringify({
+    kind: "forward-group",
+    groupId: 1,
+    memberId: 1,
+    runtimeRuleId: 4,
+    forwardType: "nftables",
+    sourcePort: "JP",
+    targetLabel: "HK1",
+  });
+  const parsed = parseLinkTestMessage(raw);
+  const html = renderToStaticMarkup(
+    <LinkTestProbeView
+      parsed={parsed}
+      isSuccess={false}
+      isTesting={false}
+      sourceLabel="HK1"
+      targetLabel="AWS JP"
+      plannedSegments={[{ from: "HK1", to: "AWS JP" }]}
+    />,
+  );
+
+  assert.equal(parsed.message, "");
+  assert.doesNotMatch(html, /runtimeRuleId|forwardType|targetLabel|\{&quot;kind&quot;|\{\\"kind\\"/);
+  assert.match(html, /等待探测/);
+});
+
 test("alternative paths render independent edges and honor the path-aware server total", () => {
   const parsed = parseLinkTestMessage(JSON.stringify({ kind: "tunnel-hop-summary", totalLatencyMs: 30, details: [
     { routeLabel: "A -> relay1", success: true, latencyMs: 10 },

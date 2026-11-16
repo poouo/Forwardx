@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { AGENT_ASSET_NAME_SET, getOrFetchAgentAssetPath } from "./agentAssets";
+import { registerMimicBuildCacheRoutes } from "./mimicBuildCache";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
 import { isNginxForwardProtocolEnabled } from "../shared/forwardTypes";
@@ -186,7 +187,7 @@ async function openOwnedAgentEventStream(input: {
     res.end();
     return;
   }
-  const host = await db.getHostByAgentToken(token);
+  const host = await db.getHostByAgentToken(token, normalizeAgentInstallationId(input.installationId) || undefined);
   if (!host) {
     const migratedTo = await db.getSetting("migratedToPanelUrl");
     if (migratedTo) {
@@ -295,7 +296,7 @@ agentApiRouter.use(async (req, res, next) => {
   res.once("close", release);
   try {
     if (!registering) {
-      const host = await db.getAgentAuthHostIdentity(token);
+      const host = await db.getAgentAuthHostIdentity(token, { installationId: normalizeAgentInstallationId((req as any).agentInstallationId) || undefined });
       if (host?.agentInstallationId && host.agentInstallationId !== normalizeAgentInstallationId((req as any).agentInstallationId)) {
         res.json(agentSupersededResponse);
         return;
@@ -440,7 +441,21 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
 
-    const existingHost = await db.getHostByAgentToken(token);
+    const isBatchRegistration = agentToken.registrationMode === "batch";
+    if (isBatchRegistration && !installationId) {
+      res.status(400).json({ error: "Batch registration requires an Agent installation identity" });
+      return;
+    }
+    const existingHost = isBatchRegistration
+      ? await db.getHostByAgentInstallation(token, installationId)
+      : await db.getHostByAgentToken(token);
+    if (isBatchRegistration && !existingHost) {
+      const claimed = await db.claimBatchAgentRegistration(token);
+      if (!claimed) {
+        res.status(409).json({ error: "Batch registration limit reached or token expired" });
+        return;
+      }
+    }
     if (existingHost) {
       const claim = await claimAgentInstallation(existingHost.id, installationId);
       if (!claim.accepted) { res.json(agentSupersededResponse); return; }
@@ -600,5 +615,7 @@ agentRouter.get("/api/agent/assets/:version/:asset", async (req: Request, res: R
   res.setHeader("Content-Disposition", `attachment; filename="${asset}"`);
   res.sendFile(filePath);
 });
+
+registerMimicBuildCacheRoutes(agentRouter);
 
 export { agentRouter };

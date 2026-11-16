@@ -138,8 +138,18 @@ export const billingRouter = router({
       discountCode: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
+      const target = input.subscriptionId ? await db.getUserSubscriptionById(input.subscriptionId) : null;
+      const adminSelfRenewal = !!target
+        && Number(target.userId) === Number(ctx.user.id)
+        && Number(target.planId) === Number(input.planId)
+        && target.status !== "cancelled"
+        && target.source === "admin"
+        && (target.allowSelfRenew === true || target.allowSelfRenew === 1);
+      if ((await db.getSetting("storeEnabled")) !== "true" && !adminSelfRenewal) {
+        throw new Error("商店功能未开启");
+      }
       const plan = await db.getSubscriptionPlanById(input.planId);
-      if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
+      if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
       let discountCodeId: number | null = null;
       if (input.discountCode) {
         if ((await db.getSetting("discountEnabled")) === "false") throw new Error("折扣码功能已关闭");

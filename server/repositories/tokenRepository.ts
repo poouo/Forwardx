@@ -1,7 +1,7 @@
 ﻿import { asc, desc, eq } from "drizzle-orm";
 import { and } from "drizzle-orm";
 import { agentTokens, hosts, users, InsertAgentToken } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { inList, quoteIdentifier } from "../dbCompat";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 
@@ -105,9 +105,32 @@ export async function isKnownAgentAuthToken(token: string, options: { force?: bo
   return (await getAgentAuthTokenSnapshot(options)).tokenSet.has(token);
 }
 
-export async function getAgentAuthHostIdentity(tokenValue: unknown, options: { force?: boolean } = {}) {
+export async function getAgentAuthHostIdentity(tokenValue: unknown, options: { force?: boolean; installationId?: string } = {}) {
   const token = String(tokenValue || "").trim();
   if (!token) return undefined;
+  if (options.installationId) {
+    const db = await getDb();
+    if (!db) return undefined;
+    const row = await db.select({ id: hosts.id, name: hosts.name, agentInstallationId: hosts.agentInstallationId })
+      .from(hosts)
+      .where(and(eq(hosts.agentToken, token), eq(hosts.agentInstallationId, options.installationId)))
+      .orderBy(desc(hosts.id))
+      .limit(1);
+    let host = row[0];
+    // Ordinary single-host tokens retain the legacy stale-installation
+    // fencing path: resolve the active host so the middleware can return the
+    // superseded response. Batch tokens must stay exact to their installation.
+    if (!host) {
+      const tokenRow = await db.select({ registrationMode: agentTokens.registrationMode })
+        .from(agentTokens).where(eq(agentTokens.token, token)).limit(1);
+      if (tokenRow[0]?.registrationMode !== "batch") {
+        const fallback = await db.select({ id: hosts.id, name: hosts.name, agentInstallationId: hosts.agentInstallationId })
+          .from(hosts).where(eq(hosts.agentToken, token)).orderBy(desc(hosts.id)).limit(1);
+        host = fallback[0];
+      }
+    }
+    return host?.id ? { id: Number(host.id), name: String(host.name || ""), agentInstallationId: String(host.agentInstallationId || "") } : undefined;
+  }
   return (await getAgentAuthTokenSnapshot(options)).hostIdentityByToken.get(token);
 }
 
@@ -140,10 +163,34 @@ export async function getAgentTokens(userId?: number) {
   const rows = userId
     ? await query.where(eq(agentTokens.userId, userId)).orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id))
     : await query.orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id));
-  return rows.map((row: any) => ({
-    ...row.token,
-    host: row.host?.id ? withComputedOnline(row.host) : null,
-  }));
+  // The left join above preserves the existing response shape. Batch tokens
+  // need all hosts, which are loaded with one raw query below because hosts are
+  // associated by token value rather than a foreign key.
+  const batchHostsByToken = new Map<string, any[]>();
+  const tokenValues = rows.map((row: any) => String(row.token.token || "").trim()).filter(Boolean);
+  if (tokenValues.length) {
+    const placeholders = tokenValues.map(() => "?").join(",");
+    const q = quoteIdentifier;
+    const allHosts = await queryRaw<any>(
+      `SELECT ${q("id")}, ${q("name")}, ${q("ip")}, ${q("ipv4")}, ${q("ipv6")}, ${q("entryIp")}, ${q("isOnline")}, ${q("lastHeartbeat")}, ${q("agentToken")} FROM ${q("hosts")} WHERE ${q("agentToken")} IN (${placeholders}) ORDER BY ${q("id")} ASC`,
+      tokenValues,
+    );
+    for (const host of allHosts) {
+      const key = String(host.agentToken || "");
+      const list = batchHostsByToken.get(key) || [];
+      list.push(withComputedOnline(host));
+      batchHostsByToken.set(key, list);
+    }
+  }
+  return rows.map((row: any) => {
+    const tokenValue = String(row.token.token || "");
+    const hostsForToken = batchHostsByToken.get(tokenValue) || (row.host?.id ? [withComputedOnline(row.host)] : []);
+    return {
+      ...row.token,
+      host: hostsForToken[0] || null,
+      hosts: hostsForToken,
+    };
+  });
 }
 
 export async function reorderAgentTokens(ids: number[], userId?: number) {
@@ -174,13 +221,60 @@ export async function reorderAgentTokens(ids: number[], userId?: number) {
 export async function markAgentTokenUsed(token: string, hostId: number) {
   const db = await getDb();
   if (!db) return;
-  await db.update(agentTokens).set({ isUsed: true, hostId }).where(eq(agentTokens.token, token));
+  const row = await getAgentTokenByToken(token);
+  const keepFirstHost = row?.registrationMode === "batch" && row.hostId;
+  await db.update(agentTokens).set({ isUsed: true, ...(keepFirstHost ? {} : { hostId }) }).where(eq(agentTokens.token, token));
+}
+
+export async function claimBatchAgentRegistration(token: string, now = Math.floor(Date.now() / 1000)) {
+  const tokenRow = await getAgentTokenByToken(token);
+  if (!tokenRow || tokenRow.registrationMode !== "batch") return false;
+  if (tokenRow.registrationExpiresAt) {
+    const expiresAt = tokenRow.registrationExpiresAt instanceof Date
+      ? Math.floor(tokenRow.registrationExpiresAt.getTime() / 1000)
+      : Number(tokenRow.registrationExpiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt <= now) return false;
+  }
+  const limit = Math.max(0, Number(tokenRow.maxRegistrations) || 0);
+  return withDatabaseTransaction(async () => {
+    const q = quoteIdentifier;
+    const whereLimit = limit > 0 ? ` AND ${q("usedRegistrations")} < ?` : "";
+    const result = await executeRaw(
+      `UPDATE ${q("agent_tokens")} SET ${q("usedRegistrations")} = ${q("usedRegistrations")} + 1, ${q("isUsed")} = ? WHERE ${q("token")} = ? AND ${q("registrationMode")} = ? AND (${q("registrationExpiresAt")} IS NULL OR ${q("registrationExpiresAt")} > ?)${whereLimit}`,
+      [true, token, "batch", now, ...(limit > 0 ? [limit] : [])],
+    );
+    return rawAffectedRows(result) > 0;
+  });
 }
 
 export async function updateAgentTokenDescription(id: number, description: string | null) {
   const db = await getDb();
   if (!db) return;
   await db.update(agentTokens).set({ description }).where(eq(agentTokens.id, id));
+}
+
+export async function updateBatchAgentToken(
+  id: number,
+  data: { description: string | null; maxRegistrations: number; registrationExpiresAt: Date | null },
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(agentTokens).set(data).where(and(eq(agentTokens.id, id), eq(agentTokens.registrationMode, "batch")));
+}
+
+export async function detachHostFromAgentToken(token: string, hostId: number) {
+  const db = await getDb();
+  if (!db) return;
+  const host = await db.select({ id: hosts.id }).from(hosts)
+    .where(and(eq(hosts.id, hostId), eq(hosts.agentToken, token))).limit(1);
+  if (!host.length) return;
+  await db.update(hosts).set({ agentToken: null, isOnline: false, updatedAt: nowDate() })
+    .where(and(eq(hosts.id, hostId), eq(hosts.agentToken, token)));
+  await executeRaw(
+    `UPDATE ${quoteIdentifier("agent_tokens")} SET ${quoteIdentifier("usedRegistrations")} = CASE WHEN ${quoteIdentifier("usedRegistrations")} > 0 THEN ${quoteIdentifier("usedRegistrations")} - 1 ELSE 0 END WHERE ${quoteIdentifier("token")} = ? AND ${quoteIdentifier("registrationMode")} = ?`,
+    [token, "batch"],
+  );
+  invalidateAgentAuthTokenCandidates();
 }
 
 export async function deleteAgentToken(id: number) {

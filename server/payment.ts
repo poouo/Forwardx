@@ -1188,9 +1188,7 @@ export const paymentRouter = router({
         throw new Error("renewal order requires a plan");
       }
       if (input.planId) {
-        const shopEnabled = (await db.getSetting("storeEnabled")) === "true";
-        if (!shopEnabled) throw new Error("商店功能未开启");
-        const plan = await db.getSubscriptionPlanById(input.planId);
+        let adminSelfRenewal = false;
         if (input.subscriptionId) {
           const target = await db.getUserSubscriptionById(input.subscriptionId);
           if (!target || Number(target.userId) !== Number(ctx.user.id)) {
@@ -1202,11 +1200,16 @@ export const paymentRouter = router({
           if (target.status === "cancelled") {
             throw new Error("cancelled subscriptions cannot be renewed");
           }
-          if (!db.isUserRenewableSubscriptionSource(target.source)) {
+          adminSelfRenewal = target.source === "admin"
+            && (target.allowSelfRenew === true || target.allowSelfRenew === 1);
+          if (!db.isUserRenewableSubscriptionSource(target.source, adminSelfRenewal)) {
             throw new Error("administrator-assigned subscriptions must be renewed by an administrator");
           }
         }
-        if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
+        const shopEnabled = (await db.getSetting("storeEnabled")) === "true";
+        if (!shopEnabled && !adminSelfRenewal) throw new Error("商店功能未开启");
+        const plan = await db.getSubscriptionPlanById(input.planId);
+        if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
         let amountCentsForPlan = Number(plan.priceCents || 0);
         if (input.discountCode) {
           if ((await db.getSetting("discountEnabled")) === "false") throw new Error("折扣码功能已关闭");

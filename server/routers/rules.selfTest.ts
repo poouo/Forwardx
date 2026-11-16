@@ -56,6 +56,7 @@ export const selfTestRulesRouter = router({
       let hostId = rule.hostId;
       let runtimeRule: any = rule;
       let message: string | null = null;
+      let requestMessage: string | null = null;
       if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
         const group = await db.getForwardGroupById(Number((rule as any).forwardGroupId)) as any;
         if (group?.groupMode === "port") {
@@ -87,7 +88,7 @@ export const selfTestRulesRouter = router({
                 targetIp: snapshot.targetIp, targetPort: snapshot.targetPort, method: linkProbeMethodForRule(snapshot),
                 sourceLabel: sourceHost?.name || `主机 #${entryHostId}`, targetLabel: rule.name });
               const id = await db.createForwardTest({ruleId: rule.id, hostId: entryHostId, userId: rule.userId,
-                batchId, requestMessage, message: error || requestMessage, status: error ? "failed" : "pending",
+                batchId, requestMessage, message: error, status: error ? "failed" : "pending",
                 listenOk:false, targetReachable:false, forwardOk:false});
               if (!firstTestId) firstTestId = Number(id);
               if (!error) testHostIds.add(entryHostId);
@@ -136,7 +137,7 @@ export const selfTestRulesRouter = router({
                 listenOk: false,
                 targetReachable: false,
                 forwardOk: false,
-                message: probeMessage,
+                requestMessage: probeMessage,
                 batchId,
               });
               if (!firstTestId) firstTestId = Number(testId);
@@ -157,7 +158,7 @@ export const selfTestRulesRouter = router({
         const sourceHost = await db.getHostById(hostId);
         // Persist the selected listener/target at click time. Both Agent pull
         // paths must execute the same test even if failover occurs afterward.
-        message = JSON.stringify({
+        requestMessage = JSON.stringify({
           kind: "forward-group",
           groupId: selected.groupId,
           memberId: selected.memberId,
@@ -203,6 +204,7 @@ export const selfTestRulesRouter = router({
         listenOk: false,
         targetReachable: false,
         forwardOk: false,
+        requestMessage,
         message,
       });
       pushAgentRefresh(hostId, "forward-selftest", { urgent: true });

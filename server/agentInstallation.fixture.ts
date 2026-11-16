@@ -10,6 +10,7 @@ import { claimAgentInstallation } from "./agentInstallation";
 import { getAgentAuthHostIdentity, invalidateAgentAuthTokenCandidates } from "./repositories/tokenRepository";
 
 const token = "installation-route-test-token";
+const batchToken = "batch-installation-route-test-token";
 const first = "a".repeat(64), second = "b".repeat(64), third = "c".repeat(64);
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -17,11 +18,11 @@ app.use(agentRouter);
 const server = http.createServer(app);
 let base = "";
 
-async function post(route: string, installationId: string, body: Record<string, unknown>) {
-  const env = encryptPayload({ path: route, installationId, payload: body }, token);
+async function post(route: string, installationId: string, body: Record<string, unknown>, authToken = token, expectedStatus = 200) {
+  const env = encryptPayload({ path: route, installationId, payload: body }, authToken);
   const response = await fetch(base + "/api/sync", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(env) });
-  const decoded = decryptPayload(await response.json(), token, { validateTimestamp: false });
-  assert.equal(response.status, 200, JSON.stringify(decoded));
+  const decoded = decryptPayload(await response.json(), authToken, { validateTimestamp: false });
+  assert.equal(response.status, expectedStatus, JSON.stringify(decoded));
   return decoded as any;
 }
 
@@ -29,16 +30,27 @@ async function register(id: string, ip = "203.0.113.10") {
   return post("/api/agent/register", id, { token, ip, ipv4: ip, agentVersion: "2.2.201" });
 }
 
+async function registerBatch(id: string, ip: string) {
+  return post("/api/agent/register", id, { token: batchToken, ip, ipv4: ip, agentVersion: "2.2.201" }, batchToken);
+}
+
 try {
   await connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB! } });
   await ensureDatabaseSchema();
   await executeRaw('INSERT INTO "users" ("id", "username", "password", "role") VALUES (?, ?, ?, ?)', [1, "owner", "test-hash", "admin"]);
   await executeRaw('INSERT INTO "agent_tokens" ("id", "token", "userId") VALUES (?, ?, ?)', [1, token, 1]);
+  await executeRaw('INSERT INTO "agent_tokens" ("id", "token", "userId", "registrationMode", "maxRegistrations") VALUES (?, ?, ?, ?, ?)', [2, batchToken, 1, "batch", 2]);
+  invalidateAgentAuthTokenCandidates();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   base = "http://127.0.0.1:" + (server.address() as any).port;
   assert.equal((await register(first)).hostId, 1);
   assert.equal((await getAgentAuthHostIdentity(token))?.agentInstallationId, first);
+  assert.equal((await registerBatch("d".repeat(64), "203.0.113.20")).hostId, 2);
+  assert.equal((await registerBatch("e".repeat(64), "203.0.113.21")).hostId, 3);
+  assert.equal((await post("/api/agent/register", "f".repeat(64), { token: batchToken, ip: "203.0.113.22", ipv4: "203.0.113.22", agentVersion: "2.2.201" }, batchToken, 409)).error, "Batch registration limit reached or token expired");
+  assert.equal((await queryRaw('SELECT COUNT(*) AS total FROM "hosts" WHERE "agentToken" = ?', [batchToken]))[0].total, 2);
+  assert.equal((await getAgentAuthHostIdentity(batchToken, { installationId: "e".repeat(64) }))?.id, 3);
   await executeRaw('INSERT INTO "forward_rules" ("id", "hostId", "name", "forwardType", "protocol", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [1, 1, "realm-restored", "realm", "tcp", 21000, "198.51.100.30", 443, 1, 1, 1]);
   // Warm recovery cooldown and restore the stale DB flag. A replacement even
   // with the same IP, still-online host and custom ingress MUST reset it again.

@@ -90,11 +90,16 @@ test("port self-test fans out after adding members, publishes partial results an
   }
   const first=await caller.startSelfTest({ruleId:100});
   assert.equal(first.queued,2);
+  const firstRow=await db.getForwardTestById(first.id);
+  assert.equal(firstRow.message,null,"probe metadata must not be shown as a result error");
+  assert.equal(JSON.parse(firstRow.requestMessage).kind,"forward-group");
   await insert("forward_group_members",{id:103,groupId:10,memberType:"host",hostId:3,priority:3,isEnabled:1});
   await insert("forward_rules",{...rule,id:113,hostId:3,forwardGroupRuleId:100,forwardGroupMemberId:103});
   const next=await caller.startSelfTest({ruleId:100});
   assert.equal(next.queued,3);
   const second=await db.getForwardTestById(next.id);
+  assert.equal(second.message,null,"normal port-group probes have no error message before reporting");
+  assert.equal(JSON.parse(second.requestMessage).kind,"forward-group");
   const rows=await runtime.queryRaw('SELECT * FROM forward_tests WHERE batchId=? ORDER BY hostId',[second.batchId]);
   assert.deepEqual(rows.map(row=>row.hostId),[1,2,3]);
   const {Router}=await import("express");

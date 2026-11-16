@@ -625,6 +625,8 @@ export function LinkSpeedTestButton({
                           {node.name}
                         </span>{" "}
                         {node.transport}
+                        {node.agentVersion && <span className="ml-1 text-muted-foreground">Agent {node.agentVersion}</span>}
+                        {node.osInfo && <span className="ml-1 text-muted-foreground">{node.osInfo}</span>}
                       </span>
                     </li>
                   ))}
@@ -647,6 +649,11 @@ export function LinkSpeedTestButton({
                     </span>
                   )}
                 </div>
+                {status.benchmark && (
+                  <p className="text-[11px] text-muted-foreground/80">
+                    {t("报告口径")} v{status.benchmark.formatVersion} · Panel {status.benchmark.panelVersion} · {t("按所列节点路径实测")}
+                  </p>
+                )}
               </div>
             </>
           )}

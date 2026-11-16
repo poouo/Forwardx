@@ -30,14 +30,8 @@ function money(cents?: number | null, currency = "CNY") {
 function bytes(size?: number | null) {
   const value = Number(size || 0);
   if (!value) return translateText("不限");
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let n = value;
-  let idx = 0;
-  while (n >= 1024 && idx < units.length - 1) {
-    n /= 1024;
-    idx++;
-  }
-  return `${n >= 10 || idx === 0 ? n.toFixed(0) : n.toFixed(2)} ${units[idx]}`;
+  const gigabytes = value / (1024 ** 3);
+  return `${parseFloat(gigabytes.toFixed(2))} GB`;
 }
 
 function speed(value?: number | null) {
@@ -92,10 +86,15 @@ export default function Subscriptions() {
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
-  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
-    enabled: !!storeStatus?.enabled,
-  });
   const { data: subscriptions = [], isLoading } = trpc.plans.mySubscriptions.useQuery();
+  const hasRenewableSubscription = subscriptions.some((sub: any) =>
+    sub.status !== "cancelled"
+    && sub.source === "admin"
+    && (sub.allowSelfRenew === true || Number(sub.allowSelfRenew) === 1),
+  );
+  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
+    enabled: !!storeStatus?.enabled || hasRenewableSubscription,
+  });
   const { data: userTraffic = [] } = trpc.dashboard.userTraffic.useQuery(undefined, {
     refetchInterval: pollingInterval("slow"),
     placeholderData: (previousData) => previousData,
@@ -288,10 +287,12 @@ export default function Subscriptions() {
             const purchasedAddonBytes = Number(sub.purchasedTrafficAddonBytes || 0);
             const grantedAddonBytes = Number(sub.grantedTrafficAddonBytes || 0);
             const validUntil = cycleEnd(sub);
-            const canRenew = !!storeStatus?.enabled && !!sub.planId && sub.status !== "cancelled"
-              && (sub.source === "payment" || sub.source === "balance");
+            const allowSelfRenew = sub.allowSelfRenew === true || Number(sub.allowSelfRenew) === 1;
+            const canRenew = !!sub.planId && sub.status !== "cancelled"
+              && ((!!storeStatus?.enabled && (sub.source === "payment" || sub.source === "balance"))
+                || (sub.source === "admin" && allowSelfRenew));
             const requiresAdminRenewal = sub.status !== "cancelled"
-              && (sub.source === "admin" || sub.source === "redeem");
+              && (sub.source === "redeem" || (sub.source === "admin" && !allowSelfRenew));
 
             return (
               <Card key={sub.id} hoverable className="flex flex-col">

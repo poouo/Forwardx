@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import type {
   PluginResourceCondition,
@@ -801,8 +802,8 @@ export function AgentResourceManager({
   };
 
   const copyValue = async (value: unknown) => {
-    await navigator.clipboard.writeText(displayValue(value));
-    toast.success(translateText("已复制"));
+    if (await copyTextToClipboard(displayValue(value))) toast.success(translateText("已复制"));
+    else toast.error(translateText("复制未成功。请检查浏览器权限；HTTP 访问建议使用 HTTPS，也可手动复制。"));
   };
 
   const renderField = (field: PluginResourceFieldDefinition) => {

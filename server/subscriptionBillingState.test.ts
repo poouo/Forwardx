@@ -97,6 +97,29 @@ test("subscription quota, cancellation, reassignment, and cancelled-record dismi
       assert.notEqual(Number(reassigned.subscriptionId), 11);
       [user] = await runtime.queryRaw('SELECT "trafficLimit" FROM "users" WHERE "id" = ?', [1]);
       assert.equal(Number(user.trafficLimit), 1000, "cancel and reassign must not double the quota");
+      const [defaultRenewalGrant] = await billing.listUserSubscriptions(1);
+      assert.equal(defaultRenewalGrant.allowSelfRenew, false, "manual grants default to no self-renewal");
+      await assert.rejects(
+        () => billing.applySubscriptionToUser(1, 1, "balance", null, undefined, null, Number(reassigned.subscriptionId)),
+        /管理员分配的套餐不能自行续费/,
+      );
+      await billing.setUserSubscriptionSelfRenewal(Number(reassigned.subscriptionId), true);
+      const [renewableGrant] = await billing.listUserSubscriptions(1);
+      assert.equal(renewableGrant.allowSelfRenew, true, "admin can enable self-renewal on an existing grant");
+      await runtime.executeRaw('UPDATE "subscription_plans" SET "priceCents" = ?, "isStoreVisible" = ? WHERE "id" = ?', [100, 0, 1]);
+      await runtime.executeRaw('UPDATE "users" SET "balanceCents" = ? WHERE "id" = ?', [1000, 1]);
+      await runtime.executeRaw('UPDATE "system_settings" SET "value" = ? WHERE "key" = ?', ["false", "storeEnabled"]);
+      const adminGrantRenewal = await billing.purchasePlanWithBalance(1, 1, null, Number(reassigned.subscriptionId));
+      assert.equal(Number(adminGrantRenewal.subscriptionId), Number(reassigned.subscriptionId), "renewal extends the same admin subscription");
+      const [renewalBalance] = await runtime.queryRaw('SELECT "balanceCents" FROM "users" WHERE "id" = ?', [1]);
+      assert.equal(Number(renewalBalance.balanceCents), 900, "renewal charges the current plan price even when hidden from the store");
+      await billing.setUserSubscriptionSelfRenewal(Number(reassigned.subscriptionId), false);
+      await assert.rejects(
+        () => billing.purchasePlanWithBalance(1, 1, null, Number(reassigned.subscriptionId)),
+        /套餐不能自行续费|不可购买/,
+      );
+      const [balanceAfterDisabledRenewal] = await runtime.queryRaw('SELECT "balanceCents" FROM "users" WHERE "id" = ?', [1]);
+      assert.equal(Number(balanceAfterDisabledRenewal.balanceCents), 900, "disabled renewal does not charge the user");
 
       const storeSubscription = await billing.applySubscriptionToUser(1, 1, "balance");
       const [storeBeforeRenewal] = await runtime.queryRaw(

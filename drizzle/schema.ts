@@ -897,6 +897,10 @@ export const agentTokens = table("agent_tokens", {
   token: text("token").notNull().unique(),
   hostId: int("hostId"),
   description: text("description"),
+  registrationMode: varchar("registrationMode", { length: 16 }).notNull().default("single"),
+  maxRegistrations: int("maxRegistrations").notNull().default(1),
+  registrationExpiresAt: epoch("registrationExpiresAt"),
+  usedRegistrations: int("usedRegistrations").notNull().default(0),
   isUsed: boolean("isUsed").notNull().default(false),
   sortOrder: int("sortOrder").notNull().default(0),
   userId: int("userId").notNull(),
@@ -1058,6 +1062,8 @@ export const userSubscriptions = table("user_subscriptions", {
   planId: int("planId").notNull(),
   status: varchar("status", { length: 32 }).notNull().default("active"), // active | expired | cancelled
   source: varchar("source", { length: 32 }).notNull().default("admin"), // admin | payment | balance | redeem
+  // Administrative grants may explicitly allow the owner to renew at the plan price.
+  allowSelfRenew: boolean("allowSelfRenew").notNull().default(false),
   paymentOrderNo: text("paymentOrderNo"),
   planSnapshot: text("planSnapshot"),
   portRangeStart: int("portRangeStart"),

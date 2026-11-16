@@ -24,6 +24,16 @@ export type LinkSpeedMeasurement = {
   lossPercent?: number;
   jitterMs?: number;
 };
+export type LinkSpeedBenchmark = {
+  formatVersion: 1;
+  panelVersion: string;
+  generatedAt: string;
+  durationSeconds: number;
+  offeredRateMbps: number;
+  routeHostIds: number[];
+  agentVersions: Record<string, string>;
+  methodology: string;
+};
 export type LinkSpeedStatus = {
   id: string;
   resourceType: "tunnel" | "chain";
@@ -33,10 +43,11 @@ export type LinkSpeedStatus = {
   duration: number;
   rateMbps: number;
   state: LinkSpeedState;
-  route: { hostId: number; name: string; transport: string }[];
+  route: { hostId: number; name: string; transport: string; agentVersion?: string; osInfo?: string }[];
   samples: LinkSpeedSample[];
   upload?: LinkSpeedMeasurement;
   download?: LinkSpeedMeasurement;
+  benchmark?: LinkSpeedBenchmark;
   error?: string;
   createdAt: string;
   finishedAt?: string;

@@ -1025,21 +1025,54 @@ export async function extendDueHostBillingPeriods(now = new Date()) {
   return extended;
 }
 
-export async function getHostByAgentToken(token: string) {
+export async function getHostByAgentToken(token: string, installationId?: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const r = await db.select().from(hosts).where(eq(hosts.agentToken, token)).limit(1);
-  return r[0];
+  const condition = installationId
+    ? and(eq(hosts.agentToken, token), eq(hosts.agentInstallationId, installationId))
+    : eq(hosts.agentToken, token);
+  const r = await db.select().from(hosts).where(condition).orderBy(desc(hosts.id)).limit(1);
+  if (r[0] || !installationId) return r[0];
+  // A stale installation must resolve to the current owner so callers can
+  // return the explicit superseded response instead of a misleading 401.
+  const current = await db.select().from(hosts).where(eq(hosts.agentToken, token)).orderBy(desc(hosts.id)).limit(1);
+  return current[0];
 }
 
-export async function getHostAgentIdentityByToken(token: string) {
+export async function getHostByAgentInstallation(token: string, installationId: string) {
   const db = await getDb();
-  if (!db) return undefined;
-  const rows = await db.select({ id: hosts.id, name: hosts.name })
-    .from(hosts)
-    .where(eq(hosts.agentToken, token))
+  if (!db || !installationId) return undefined;
+  const rows = await db.select().from(hosts)
+    .where(and(eq(hosts.agentToken, token), eq(hosts.agentInstallationId, installationId)))
+    .orderBy(desc(hosts.id))
     .limit(1);
   return rows[0];
+}
+
+export async function getHostsByAgentToken(token: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(hosts).where(eq(hosts.agentToken, token)).orderBy(asc(hosts.id));
+}
+
+export async function getHostAgentIdentityByToken(token: string, installationId?: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const condition = installationId
+    ? and(eq(hosts.agentToken, token), eq(hosts.agentInstallationId, installationId))
+    : eq(hosts.agentToken, token);
+  const rows = await db.select({ id: hosts.id, name: hosts.name })
+    .from(hosts)
+    .where(condition)
+    .orderBy(desc(hosts.id))
+    .limit(1);
+  if (rows[0] || !installationId) return rows[0];
+  const current = await db.select({ id: hosts.id, name: hosts.name })
+    .from(hosts)
+    .where(eq(hosts.agentToken, token))
+    .orderBy(desc(hosts.id))
+    .limit(1);
+  return current[0];
 }
 
 export async function getHostAgentPresenceById(id: number) {
