@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleSlash,
-  Download,
   Gauge,
   Loader2,
   TriangleAlert,
@@ -300,17 +299,6 @@ export function LinkSpeedTestButton({
   ]
     .filter(Boolean)
     .join("，");
-  const exportResult = () => {
-    if (!status) return;
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(status, null, 2)], { type: "application/json" }),
-    );
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `link-speed-${status.id}.json`;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
   const locked = active || start.isPending;
   const readout = () => {
     if (liveDirection) {
@@ -390,7 +378,7 @@ export function LinkSpeedTestButton({
         <Gauge className="h-3.5 w-3.5" />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="grid-rows-[auto_minmax(0,1fr)] !overflow-hidden sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Gauge className="h-5 w-5" />
@@ -398,6 +386,7 @@ export function LinkSpeedTestButton({
             </DialogTitle>
             <DialogDescription>{name}</DialogDescription>
           </DialogHeader>
+          <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-1">
           <div className="space-y-3">
             <LinkSpeedGauge
               stops={stops}
@@ -454,11 +443,11 @@ export function LinkSpeedTestButton({
           )}
           <div className="flex flex-wrap items-end gap-3 rounded-xl bg-muted/30 p-3">
             <div className="space-y-2">
-              <Label>{t("协议")}</Label>
+              <Label className="flex h-8 items-start">{t("协议")}</Label>
               <div
                 role="radiogroup"
                 aria-label={t("协议")}
-                className={cn(segmentedControlClassName, "grid grid-cols-2 gap-1")}
+                className={cn(segmentedControlClassName, "grid h-10 grid-cols-2 gap-1")}
               >
                 {(["tcp", "udp"] as const).map((value) => (
                   <button
@@ -480,33 +469,41 @@ export function LinkSpeedTestButton({
               </div>
             </div>
             <div className="min-w-32 flex-1 space-y-2">
-              <Label htmlFor={`speed-duration-${resourceType}-${resourceId}`}>
-                {t("每方向时长（秒）")}
+              <Label className="flex h-8 items-start" htmlFor={`speed-duration-${resourceType}-${resourceId}`}>
+                {t("每方向时长")}
               </Label>
-              <Input
-                id={`speed-duration-${resourceType}-${resourceId}`}
-                type="number"
-                min={3}
-                max={30}
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-                disabled={locked}
-              />
+              <div className="relative">
+                <Input
+                  id={`speed-duration-${resourceType}-${resourceId}`}
+                  className="pr-10"
+                  type="number"
+                  min={3}
+                  max={30}
+                  value={duration}
+                  onChange={(e) => setDuration(e.target.value)}
+                  disabled={locked}
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground" aria-hidden="true">{t("秒")}</span>
+              </div>
             </div>
             {protocol === "udp" && (
               <div className="min-w-32 flex-1 space-y-2">
-                <Label htmlFor={`speed-rate-${resourceType}-${resourceId}`}>
-                  {t("UDP 发送速率（Mbps）")}
+                <Label className="flex h-8 items-start" htmlFor={`speed-rate-${resourceType}-${resourceId}`}>
+                  {t("UDP 发送速率")}
                 </Label>
-                <Input
-                  id={`speed-rate-${resourceType}-${resourceId}`}
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={offeredRate}
-                  onChange={(e) => setOfferedRate(e.target.value)}
-                  disabled={locked}
-                />
+                <div className="relative">
+                  <Input
+                    id={`speed-rate-${resourceType}-${resourceId}`}
+                    className="pr-14"
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={offeredRate}
+                    onChange={(e) => setOfferedRate(e.target.value)}
+                    disabled={locked}
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground" aria-hidden="true">Mbps</span>
+                </div>
               </div>
             )}
             {active ? (
@@ -659,12 +656,7 @@ export function LinkSpeedTestButton({
                 "测速使用临时端口并产生实际流量；测量所列节点路径，不包含用户到入口及出口到业务目标。",
               )}
             </p>
-            {status && !active && (
-              <Button variant="ghost" size="sm" onClick={exportResult}>
-                <Download className="mr-2 h-4 w-4" />
-                {t("导出结果")}
-              </Button>
-            )}
+          </div>
           </div>
         </DialogContent>
       </Dialog>
