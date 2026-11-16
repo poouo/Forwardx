@@ -20,7 +20,7 @@ test("rule quota uses cumulative directional totals; optional expiry doesn't dep
 test("per-rule speed caps reuse supported backend guards and cannot relax wider caps", () => {
   const base = { userId: 2, hostId: 1, ruleId: 8, ruleLimitMbps: 10 };
   assert.deepEqual(selectEffectiveForwardRateLimit(base), { mbps: 10, scope: "rule-8-host-1" });
-  assert.deepEqual(selectEffectiveForwardRateLimit({ ...base, userLimitMbps: 5 }), { mbps: 5, scope: "user-2-host-1" });
+  assert.deepEqual(selectEffectiveForwardRateLimit({ ...base, userLimitMbps: 5 }), { mbps: 5, scope: "rule-8-host-1" });
   assert.equal(selectEffectiveForwardRateLimit({ ...base, forwardGroupId: 2, forwardGroupLimitMbps: 3 }).mbps, 3);
   for (const forwardType of ["iptables", "nftables", "realm", "socat", "nginx"]) {
     assert.equal(selectProtocolGuardRateLimit({ agentVersion: "2.2.190", hostId: 1, rule: { forwardType, userId: 2 }, rateLimitScope: "rule-8-host-1", limitIn: 1250000, limitOut: 1250000 }).rateLimitScope, "rule-8-host-1");

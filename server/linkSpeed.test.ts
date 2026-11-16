@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { APP_VERSION } from "../shared/versions";
 
 test("speed paths preserve multi-hop transports and the job coordinates/cleans every Agent", async () => {
   process.env.DATABASE_TYPE = "sqlite";
@@ -124,7 +125,7 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
     assert.equal(created.state, "preparing");
     assert.deepEqual(created.benchmark?.routeHostIds, [1, 2, 3]);
     assert.equal(created.benchmark?.agentVersions["1"], "2.2.212");
-    assert.equal(created.benchmark?.panelVersion, "2.3.300");
+    assert.equal(created.benchmark?.panelVersion, APP_VERSION);
     assert.throws(
       () => getLinkSpeedJob(created.id, { id: 2, role: "user" }),
       /无权/,
