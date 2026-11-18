@@ -27,6 +27,8 @@ export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/iperf3-result",
   "/api/agent/link-speed-claim",
   "/api/agent/link-speed-result",
+  "/api/agent/stream-unlock-progress",
+  "/api/agent/stream-unlock-result",
   "/api/agent/ip-switch-claim",
   "/api/agent/ip-switch-result",
   "/api/agent/plugin-action-result",

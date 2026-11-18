@@ -200,7 +200,6 @@ export default function HostStreamUnlockDialog({ host, onOpenChange }: HostStrea
   }), [familyDnsResults, familyProviderResults]);
 
   const hasPreviousResult = providerResults.length > 0 || dnsResults.length > 0 || Boolean(payload?.checkedAt || payload?.finishedAt || payload?.error);
-  const hasProviderResults = providerDisplays.some((item) => item.resultCount > 0);
   const taskError = startMutation.error?.message || statusQuery.error?.message || payload?.error;
 
   const startDetection = () => {
@@ -227,7 +226,7 @@ export default function HostStreamUnlockDialog({ host, onOpenChange }: HostStrea
               <p className="truncate text-sm font-medium">{String(host?.name || t("未命名主机"))}</p>
               {(!hasPreviousResult || running) && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {running ? t("Agent 正在检测，结果会陆续返回") : t("尚未进行检测")}
+                  {running ? t("正在检测中") : t("尚未进行检测")}
                 </p>
               )}
             </div>
@@ -257,11 +256,6 @@ export default function HostStreamUnlockDialog({ host, onOpenChange }: HostStrea
               ))}
             </div>
           </div>
-          {!hasProviderResults && (
-            <p className="text-center text-sm text-muted-foreground">
-              {statusQuery.isLoading || running ? t("加载检测结果") : t("暂无检测结果")}
-            </p>
-          )}
           <div className="space-y-4">
             {CATEGORIES.map((category) => {
               const items = groupedProviders(category.id);

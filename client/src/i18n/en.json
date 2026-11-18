@@ -34,7 +34,7 @@
   "检测流媒体解锁": "Check streaming access",
   "流媒体解锁检测": "Streaming access check",
   "从 Agent 的实际出口检测公开平台地区和解锁情况；关闭窗口不会停止检测。": "Check public platform regions and access from the Agent's actual exit; closing this window will not stop the task.",
-  "Agent 正在检测，结果会陆续返回": "The Agent is checking; results will arrive progressively",
+  "正在检测中": "Checking…",
   "显示最近一次检测结果": "Showing the latest check results",
   "尚未进行检测": "No check has been run yet",
   "主机当前离线，Agent 上线后才能开始检测": "This host is offline. The Agent must come online before checking can start.",
