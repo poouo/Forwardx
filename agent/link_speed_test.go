@@ -53,7 +53,7 @@ func TestLinkSpeedTCPTraversesEveryHopAndReportsReceiverBytes(t *testing.T) {
 			t.Fatalf("unexpected measured rate: %+v", result)
 		}
 	}
-	if len(samples) < 4 {
+	if len(samples) < 12 {
 		t.Fatalf("missing live updates: %d", len(samples))
 	}
 	session.close()
@@ -88,8 +88,45 @@ func TestLinkSpeedUDPTraversesEveryHopInBothDirections(t *testing.T) {
 			t.Fatalf("invalid packet accounting: %+v", result)
 		}
 	}
-	if counts["upload"] == 0 || counts["download"] == 0 {
+	if counts["upload"] < 6 || counts["download"] < 6 {
 		t.Fatalf("missing live updates: %+v", counts)
+	}
+}
+
+func TestLinkSpeedSampleBatchesFlushInOrderAndAtEnd(t *testing.T) {
+	updates := make(chan speedSample, 70)
+	for i := 0; i < 70; i++ {
+		updates <- speedSample{ElapsedMs: int64(i * 100)}
+	}
+	close(updates)
+	var received []speedSample
+	var sizes []int
+	reportSpeedSamples(updates, time.Hour, func(batch []speedSample) {
+		sizes = append(sizes, len(batch))
+		received = append(received, batch...)
+	})
+	if len(sizes) != 2 || sizes[0] != 64 || sizes[1] != 6 || len(received) != 70 {
+		t.Fatalf("missing final batch: %v", sizes)
+	}
+	for i, sample := range received {
+		if sample.ElapsedMs != int64(i*100) {
+			t.Fatalf("out of order point: %+v", sample)
+		}
+	}
+}
+
+func TestLinkSpeedSampleBatchesFlushWhileRunning(t *testing.T) {
+	updates := make(chan speedSample, 5)
+	for i := 0; i < 5; i++ {
+		updates <- speedSample{ElapsedMs: int64(i * 100)}
+	}
+	count := 0
+	reportSpeedSamples(updates, 10*time.Millisecond, func(batch []speedSample) {
+		count += len(batch)
+		close(updates) // A timer flush must occur before producer completion.
+	})
+	if count != 5 {
+		t.Fatalf("expected one batch with all five measured points, got %d", count)
 	}
 }
 func TestLinkSpeedUDPCountsDuplicatesReorderingAndLoss(t *testing.T) {
@@ -125,6 +162,43 @@ func TestLinkSpeedRejectsInvalidLeaseAndLimits(t *testing.T) {
 		if validateLinkSpeedTask(bad) == nil {
 			t.Fatalf("accepted invalid task: %+v", bad)
 		}
+	}
+}
+
+func TestLinkSpeedV2NormalizesUDPPortsBeforePreparingWireGuard(t *testing.T) {
+	previous := resolveFXPRuntimeExecutable
+	resolveFXPRuntimeExecutable = func() (string, error) { return filepath.Join(t.TempDir(), "missing-fxp"), nil }
+	t.Cleanup(func() { resolveFXPRuntimeExecutable = previous })
+	for _, protocol := range []string{"tcp", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			const tunnelID = 98712
+			runtime := newTestIsolatedWireGuardRuntime(t, tunnelID, "100.119.0.1")
+			defer runtime.close()
+			setTestWireGuardRuntime(t, tunnelID, runtime)
+			session := speedTestSession(t)
+			port := speedTestPort(t)
+			spec, err := json.Marshal(fxpSpec{Role: "exit", TransportVersion: "v2", TunnelID: tunnelID, ListenPort: port, Protocol: protocol})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = prepareLinkSpeedComponent(Config{}, session, linkSpeedTask{JobID: "normalization-test", Protocol: protocol}, linkSpeedComponent{Kind: "fxp", Port: port, Config: spec})
+			if err == nil || !strings.Contains(err.Error(), "启动测速转发组件失败") {
+				t.Fatalf("expected to reach native process start after preparing WireGuard, got %v", err)
+			}
+			runtime.mu.RLock()
+			inbound := len(runtime.inbound)
+			runtime.mu.RUnlock()
+			if inbound != 1 {
+				t.Fatalf("missing normalized inbound proxy: %d", inbound)
+			}
+			session.close()
+			runtime.mu.RLock()
+			remaining := len(runtime.inbound)
+			runtime.mu.RUnlock()
+			if remaining != 0 {
+				t.Fatalf("failed speed session leaked inbound proxies: %d", remaining)
+			}
+		})
 	}
 }
 

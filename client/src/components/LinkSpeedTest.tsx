@@ -30,6 +30,7 @@ import {
   LinkSpeedGauge,
 } from "@/components/LinkSpeedGauge";
 import { gaugeStops, peakOfSamples } from "@/lib/linkSpeedGauge";
+import { useLinkSpeedPlayback } from "@/hooks/useLinkSpeedPlayback";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -170,7 +171,7 @@ function PhaseBar({
         <div
           className={cn(
             "h-full rounded-full",
-            animated && "transition-[width] duration-500 ease-linear",
+            animated && "transition-[width] duration-100 ease-linear",
           )}
           style={{
             width: `${percent}%`,
@@ -241,19 +242,25 @@ export function LinkSpeedTestButton({
     },
     onError: (error) => toast.error(error.message),
   });
-  const samples = status?.samples || [];
+  const playback = useLinkSpeedPlayback(status, open && motionEnabled && !jobLost);
+  const samples = playback.samples;
   const latest = samples.at(-1);
+  const displayState = playback.pending
+    ? latest?.direction ?? status?.samples[0]?.direction ?? status?.state
+    : status?.state;
   const liveDirection =
-    active && (status?.state === "upload" || status?.state === "download")
-      ? status.state
+    !jobLost && (active || playback.pending) &&
+    (displayState === "upload" || displayState === "download")
+      ? displayState
       : undefined;
   const liveMbps =
     liveDirection && latest?.direction === liveDirection ? latest.mbps : 0;
   const phaseSeconds = status?.duration || Number(duration) || 10;
   const phasePercent = (direction: LinkSpeedDirection) => {
     if (!status) return 0;
-    if (status[direction] || status.state === "completed") return 100;
-    if (status.state !== direction) return 0;
+    if (displayState === "completed" ||
+      (direction === "upload" && displayState === "download")) return 100;
+    if (displayState !== direction) return status[direction] ? 100 : 0;
     const elapsed = latest?.direction === direction ? latest.elapsedMs : 0;
     return Math.min(100, (elapsed / (status.duration * 1000)) * 100);
   };
@@ -289,7 +296,7 @@ export function LinkSpeedTestButton({
         completed: t("测速完成"),
         cancelled: t("已取消"),
         error: t("测速失败"),
-      }[status.state]
+      }[displayState || status.state]
     : t("等待测速数据");
   const gaugeLabel = [
     stateLabel,
@@ -391,12 +398,10 @@ export function LinkSpeedTestButton({
             <LinkSpeedGauge
               stops={stops}
               upload={
-                status?.upload?.mbps ??
-                (liveDirection === "upload" ? liveMbps : undefined)
+                liveDirection === "upload" ? liveMbps : status?.upload?.mbps
               }
               download={
-                status?.download?.mbps ??
-                (liveDirection === "download" ? liveMbps : undefined)
+                liveDirection === "download" ? liveMbps : status?.download?.mbps
               }
               uploadPeak={
                 status?.upload || liveDirection === "upload" ? uploadPeak : 0

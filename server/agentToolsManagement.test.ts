@@ -164,3 +164,25 @@ FORWARDX_AGENT_PROXY=''
     }
   }
 });
+
+test("default Nginx setup reuses healthy stream runtime and installs packages only when needed", () => {
+  const setup = `${selective.slice(0, selective.indexOf("do_install_tool() {"))}
+RUNTIME_ATTEMPTS=0
+install_nginx_runtime() {
+  RUNTIME_ATTEMPTS=$((RUNTIME_ATTEMPTS + 1))
+  echo CHECK_RUNTIME
+  [ "$RUNTIME_ATTEMPTS" -gt "$TEST_MISSING_CHECKS" ]
+}
+install_forward_tool_package() { echo PACKAGE_"$1"; return "$TEST_PACKAGE_FAILURE"; }
+`;
+  for (const [missingChecks, packageFailure, expected, succeeds] of [
+    [0, 0, ["CHECK_RUNTIME"], true],
+    [1, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "CHECK_RUNTIME"], true],
+    [1, 1, ["CHECK_RUNTIME", "PACKAGE_nginx"], false],
+    [2, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "CHECK_RUNTIME"], false],
+  ] as const) {
+    const result = run(`${setup}\nTEST_MISSING_CHECKS=${missingChecks}\nTEST_PACKAGE_FAILURE=${packageFailure}\nensure_nginx_runtime`);
+    assert.equal(result.status === 0, succeeds, result.stderr);
+    assert.deepEqual(result.stdout.split(/\r?\n/).filter(line => /^(CHECK_RUNTIME|PACKAGE_)/.test(line)), expected);
+  }
+});

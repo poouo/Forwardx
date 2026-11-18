@@ -2,31 +2,43 @@
 
 Agent 安装在被管理的 Linux 主机上，执行转发配置、上报状态和流量、完成网络测试。实际转发由 Agent 与对应运行时完成，不是由面板服务器中转。
 
-## 1. 创建独立 Token
+## 1. 获取通用安装指令
 
-进入「主机管理 → Token 管理」，创建 Token，再复制对应的安装命令。
+进入「主机管理」，点击 **添加主机**，直接打开安装命令弹窗。弹窗提供通用安装、卸载和升级命令，使用 root 执行；无需预先填写主机信息或创建 Token。
 
-**每个 Token 只绑定一台主机**。多台主机分别创建，不影响加入同一转发组、入口组或出口组。Token 泄露后应吊销并重新创建，不能公开截图或发送完整配置。
+同一条安装指令可在多台新机器执行。每台机器会获得独立的 Agent Token，首次成功注册后自动出现在主机列表与 **Agent 管理**。新机器的默认名称为主机名，可在面板修改；独立 Token 不影响加入同一转发组、入口组或出口组。
+
+「自动发现设置」可关闭新机器接入或更换接入密钥。旧的通用指令在密钥更换后失效，已接入 Agent 继续正常通信。安装指令包含接入密钥，请勿公开；单机 Token 泄露时应删除对应 Agent 并重新接入。
+
+### 恢复已有主机
+
+在「Agent 管理」找到原 Agent，点击终端图标，使用其专属安装命令。该弹窗仍提供安装、卸载和升级三项操作；专属安装命令保留原 Token，用于覆盖安装或换机恢复，不能用于新增另一台独立主机。
 
 换机可使用原 Token 重新安装，沿用主机和规则。复制已关联 Token 的安装命令时需确认接管；无论旧机是否在线，新安装实例注册成功后接管管理并重新同步规则。支持接管的旧 Agent 收到通知后停止面板通讯，保留已有转发；旧版本请先升级或手动停止 Agent 服务。普通升级和服务重启保留安装身份，不会重新夺回已被接管的 Token；需要再次接管时重新执行安装命令。
 
 接管不会自动迁移服务商的 NAT 映射、防火墙或用户填写的入口地址、内网地址和网卡配置，换机后请确认这些配置仍适用于新机器。
-
-![创建 Token 并获取 Agent 安装命令](./images/agent-token-management.png)
 
 ## 2. 安装并确认在线
 
 在被管理主机以 root 执行面板生成的命令，例如：
 
 ```bash
-curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY
 ```
 
-替换实际面板地址和 Token。安装命令默认采用配置的公开地址；需要其他可达入口时，在安装命令弹窗核对地址来源。安装后在主机列表确认在线及环境检测结果。
+替换实际面板地址和接入密钥，以弹窗生成的完整命令为准。安装命令默认采用配置的公开地址；需要其他可达入口时，在安装命令弹窗核对地址来源。安装后在主机列表确认在线及环境检测结果。
 
 前置要求：Linux、root、可访问面板，以及到下载源/系统软件源的网络。Agent 不支持将 Windows 作为被控运行环境。安装器会检测架构并安装相应资产；不要把不支持的系统或 libc 强行套用其他二进制。
 
 安装器默认选择兼容的 Realm `2.9.4`，其他版本可通过 `FORWARDX_REALM_VERSION` 显式选择。iperf3 仅用于网络测试，安装失败会警告，不应阻断 Agent 主流程。
+
+Agent 安装与升级默认准备 Nginx 及 stream 模块，与「系统设置 → 转发协议总开关」无关。优先复用已有且通过 stream 自检的 Nginx；缺少时通过系统包管理器安装，再校验并准备 ForwardX 独立的 Nginx 程序。协议开关只控制转发功能是否可用，不再决定安装流程是否安装或移除 Nginx。依赖安装失败会提示警告并继续 Agent 主流程，可执行 `fwxm agent tools install nginx` 重试；旧主机也可用此命令单独补装，或在后续升级时自动补齐。
+
+### 自动发现与重复安装
+
+安装脚本在 `/etc/forwardx/agent/discovery.json` 保存随机注册标识与独立 Token，文件仅 root 可读。网络中断或响应丢失后可重试同一指令，不重复创建机器；同面板已有 `config.json` 时优先沿用原凭据。不要将装好 Agent 的配置目录复制到另一台新机器作为模板，否则会沿用同一身份。已删除的 Agent 如需重新接入，先卸载清理旧凭据，再执行通用安装。
+
+Agent 管理中的 **上线时间** 是服务器首次成功注册时间，重连、升级和专属命令恢复安装不会重置。旧记录根据关联主机的首次注册时间显示，未注册的旧 Token 显示「尚未上线」。
 
 ## 2.1. 按主机使用不同的面板入口
 
@@ -41,6 +53,17 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install Y
 ## 3. SOCKS / HTTP 代理（可选）
 
 需要使用代理时，下载入口脚本与安装执行均需设置：
+
+新机器通过通用指令接入时，可先下载发现脚本，再将代理传入安装过程：
+
+```bash
+curl --proxy 'socks5h://127.0.0.1:1080' -fsSL \
+  https://panel.example.com/api/agent/discovery.sh -o /tmp/forwardx-discovery.sh
+PANEL_URL='https://panel.example.com' bash /tmp/forwardx-discovery.sh \
+  YOUR_DISCOVERY_KEY --proxy 'socks5h://127.0.0.1:1080'
+```
+
+原 Agent 的专属 Token 恢复方式仍然可用：
 
 ```bash
 curl --proxy 'socks5h://127.0.0.1:1080' -fsSL \
@@ -152,5 +175,19 @@ fwxm agent uninstall
 ## mimic UDP 混淆（可选）
 
 仅显式启用 ForwardX 隧道混淆时需要；普通转发不依赖 mimic。安装器默认询问，回车跳过，输入 Y 才安装。当前目标 `mimic v0.7.1`，需要 Linux 6.1+ 与相应 XDP/TC 内核能力。
+
+安装命令支持 `--mimic y`（自动安装）、`--mimic n`（跳过）和 `--mimic ask`（交互询问），也支持 `--mimic=y` 写法。通用自动注册安装、单机恢复安装和 GitHub 安装入口均支持这些参数：
+
+```bash
+# 通用安装：自动安装 Mimic，不再询问
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY --mimic y
+
+# 单机恢复安装：跳过 Mimic
+curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN --mimic n
+```
+
+请替换示例面板地址和密钥。面板「添加主机」和已有 Agent 的安装命令弹窗均有参数提示：复制完整安装命令后，直接在最后追加 ` --mimic y` 或 ` --mimic n`，不用修改引号内的内容；命令已有的结尾 `--` 也要保留。参数会传到实际安装流程，包括备用下载入口。
+
+未传参数时保持交互询问，没有交互终端则跳过；已有自动化兼容 `FORWARDX_INSTALL_MIMIC=y|n|ask` 环境变量及 `yes`/`no` 值，命令行参数优先。选择安装后会传递到后续源码编译流程，避免再次确认。跳过安装不会卸载已有 Mimic，普通升级不会新增交互询问。
 
 缺少依赖时面板会阻止启用并提供安装提示；Agent 不会因运行中的混淆开关自动安装内核组件。详见 [部署准备](./preparation.md) 和 [隧道](./tunnels.md)。

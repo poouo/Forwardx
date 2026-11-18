@@ -18,6 +18,10 @@ type speedSample struct {
 	Bytes     uint64  `json:"bytes"`
 	Mbps      float64 `json:"mbps"`
 }
+
+const speedSampleInterval = 100 * time.Millisecond
+const speedReportInterval = 500 * time.Millisecond
+
 type speedMeasurement struct {
 	Bytes       uint64  `json:"bytes"`
 	DurationMs  int64   `json:"durationMs"`
@@ -45,7 +49,7 @@ func newSpeedMeter(direction string, emit func(speedSample)) *speedMeter {
 }
 func (m *speedMeter) add(n int) {
 	m.bytes += uint64(n)
-	if time.Since(m.last) >= 500*time.Millisecond {
+	if time.Since(m.last) >= speedSampleInterval {
 		m.sample()
 	}
 }
@@ -132,7 +136,7 @@ func sendSpeedFrames(ctx context.Context, conn net.Conn, duration time.Duration,
 }
 
 // Low rate limits use smaller frames (about 50 ms of payload) so pacing stays
-// smooth and half-second samples do not read as bursts above the limit.
+// smooth and short samples do not read as bursts above the limit.
 func speedFrameSize(rateMbps float64) int {
 	const largest = 64 * 1024
 	if rateMbps <= 0 {

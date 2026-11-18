@@ -51,7 +51,7 @@ test("ordinary users cannot mint infrastructure or recover tokens, even when the
     () => userHosts.create({ name: "unauthorized", ip: "192.0.2.20" }),
     () => userHosts.update({ id: 10, name: "forged" }),
     () => userHosts.prepareDelete({ id: 10 }), () => userHosts.deleteImpact({ id: 10 }), () => userHosts.delete({ id: 10 }),
-    () => userTokens.list(), () => userTokens.create({ description: "forged" }),
+    () => userTokens.list(), () => userTokens.configureDiscovery({ enabled: true }),
     () => userTokens.getInstallToken({ id: 10 }), () => userTokens.getInstallToken({ token: "legacy-user-secret" }),
     () => userTokens.update({ id: 10, description: "forged" }), () => userTokens.reorder({ ids: [10] }), () => userTokens.delete({ id: 10 }),
     () => userTunnels.create({ name: "forged", entryHostId: 10, exitHostId: 10, listenPort: 22000 }),
@@ -70,11 +70,13 @@ test("administrators retain management access; anonymous and disabled sessions c
   const created = await hosts.createCaller(context("admin")).create({ name: "admin-host", ip: "192.0.2.11" });
   assert.ok(created.id > 0 && created.agentToken.length === 32);
   await hosts.createCaller(context("admin")).update({ id: created.id, name: "admin-renamed" });
-  const token = await tokens.createCaller(context("admin")).create({ description: "admin-token" });
-  assert.equal((await tokens.createCaller(context("admin")).getInstallToken({ id: token.id })).token, token.token);
+  const discovery = await tokens.createCaller(context("admin")).configureDiscovery({});
+  assert.match(discovery.key, /^[a-f0-9]{64}$/);
+  const credential = await (await import("./agentDiscovery")).enrollDiscoveredAgent(discovery.key, "a".repeat(64), "admin-agent");
+  assert.equal((await tokens.createCaller(context("admin")).getInstallToken({ token: credential.token })).token, credential.token);
   for (const ctx of [context(null), { ...context("admin"), user: { id: 3, role: "admin", accountEnabled: false }, res: { clearCookie() {} } }]) {
     await assert.rejects(() => hosts.createCaller(ctx).create({ name: "forged", ip: "192.0.2.12" }), { code: "UNAUTHORIZED" });
-    await assert.rejects(() => tokens.createCaller(ctx).create({}), { code: "UNAUTHORIZED" });
+    await assert.rejects(() => tokens.createCaller(ctx).configureDiscovery({}), { code: "UNAUTHORIZED" });
   }
 });
 

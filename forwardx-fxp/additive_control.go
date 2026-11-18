@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// This root-only local endpoint deliberately supports additions only. Listener
-// edits/removals continue through the Agent's existing replacement workflow.
+// This root-only local endpoint supports additions and per-listener edits.
+// Removing a listener still uses the Agent's existing replacement workflow.
 type liveUDPTargets struct {
 	mu      sync.RWMutex
 	targets map[int]udpTarget
@@ -39,33 +39,36 @@ func (targets *liveUDPTargets) set(values []udpTarget) {
 	targets.mu.Unlock()
 }
 
-func planFXPConfigAddition(old, next config) ([]config, error) {
+func planFXPConfigUpdate(old, next config) (additions []config, replacements []config, err error) {
 	old, next = normalizeConfig(old), normalizeConfig(next)
 	old.udpTargetsLive, next.udpTargetsLive = nil, nil
 	if err := validateConfig(next); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if old.Role != next.Role || old.TunnelID != next.TunnelID {
-		return nil, errors.New("runtime identity changed")
+		return nil, nil, errors.New("runtime identity changed")
 	}
 	switch old.Role {
 	case "entry-group":
 		previous, desired := old.Entries, next.Entries
 		old.Entries, next.Entries = nil, nil
 		if !reflect.DeepEqual(old, next) {
-			return nil, errors.New("group settings changed")
+			return nil, nil, errors.New("group settings changed")
 		}
 		byID := make(map[int]config, len(desired))
 		for _, entry := range desired {
 			if _, exists := byID[entry.RuleID]; exists {
-				return nil, errors.New("duplicate rule")
+				return nil, nil, errors.New("duplicate rule")
 			}
 			byID[entry.RuleID] = entry
 		}
 		for _, entry := range previous {
 			value, ok := byID[entry.RuleID]
-			if !ok || !reflect.DeepEqual(entry, value) {
-				return nil, errors.New("existing entry changed or removed")
+			if !ok {
+				return nil, nil, errors.New("existing entry removed")
+			}
+			if !reflect.DeepEqual(entry, value) {
+				replacements = append(replacements, value)
 			}
 			delete(byID, entry.RuleID)
 		}
@@ -75,26 +78,40 @@ func planFXPConfigAddition(old, next config) ([]config, error) {
 				additions = append(additions, entry)
 			}
 		}
-		return additions, nil
+		return additions, replacements, nil
 	case "exit":
 		previous, desired := old.UDPTargets, next.UDPTargets
 		old.UDPTargets, next.UDPTargets = nil, nil
 		if !reflect.DeepEqual(old, next) {
-			return nil, errors.New("exit settings changed")
+			return nil, nil, errors.New("exit settings changed")
 		}
 		byID := make(map[int]udpTarget, len(desired))
 		for _, target := range desired {
+			if _, exists := byID[target.RuleID]; exists {
+				return nil, nil, errors.New("duplicate UDP target")
+			}
 			byID[target.RuleID] = target
 		}
 		for _, target := range previous {
-			if byID[target.RuleID] != target {
-				return nil, errors.New("existing UDP target changed or removed")
+			if _, exists := byID[target.RuleID]; !exists {
+				return nil, nil, errors.New("existing UDP target removed")
 			}
 		}
-		return nil, nil
+		return nil, nil, nil
 	default:
-		return nil, errors.New("runtime does not support additions")
+		return nil, nil, errors.New("runtime does not support incremental updates")
 	}
+}
+
+func planFXPConfigAddition(old, next config) ([]config, error) {
+	additions, replacements, err := planFXPConfigUpdate(old, next)
+	if err != nil {
+		return nil, err
+	}
+	if len(replacements) > 0 {
+		return nil, errors.New("existing entry changed or removed")
+	}
+	return additions, nil
 }
 
 type additiveFXPRuntime struct {
@@ -154,7 +171,7 @@ func (runtime *additiveFXPRuntime) apply(next config) error {
 		return errors.New("runtime is stopping")
 	}
 	next = normalizeConfig(next)
-	entries, err := planFXPConfigAddition(runtime.cfg, next)
+	entries, replacements, err := planFXPConfigUpdate(runtime.cfg, next)
 	if err != nil {
 		return err
 	}
@@ -164,7 +181,11 @@ func (runtime *additiveFXPRuntime) apply(next config) error {
 		}
 	}
 	var prepared []*entryRuntime
-	for _, entry := range entries {
+	for _, entry := range append(append([]config{}, entries...), replacements...) {
+		if previous := runtime.current[entry.RuleID]; previous != nil && !previous.closed.Load() {
+			// Replace only this listener. Sibling listeners and their sessions stay alive.
+			previous.close()
+		}
 		listener, err := prepareEntryRuntime(entry)
 		if err != nil {
 			for _, added := range prepared {
@@ -187,8 +208,8 @@ func (runtime *additiveFXPRuntime) apply(next config) error {
 		runtime.runtimes = append(runtime.runtimes, entry)
 	}
 	runtime.cfg = next
-	if len(entries) > 0 {
-		log.Printf("additive entry sync tunnel=%d added=%d; existing connections preserved", next.TunnelID, len(entries))
+	if len(entries) > 0 || len(replacements) > 0 {
+		log.Printf("incremental entry sync tunnel=%d added=%d replaced=%d; sibling connections preserved", next.TunnelID, len(entries), len(replacements))
 	}
 	return nil
 }

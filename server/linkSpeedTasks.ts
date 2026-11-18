@@ -287,18 +287,23 @@ export function reportLinkSpeedTask(hostId: number, report: any) {
     }
     return true;
   }
-  if (
-    report.sample &&
-    (report.sample.direction === "upload" ||
-      report.sample.direction === "download")
-  ) {
-    const sample = report.sample as LinkSpeedSample;
+  // Keep legacy single-point reports compatible with older Agents.
+  const samples = Array.isArray(report.samples)
+    ? report.samples.slice(0, 64)
+    : report.sample ? [report.sample] : [];
+  for (const sample of samples as LinkSpeedSample[]) {
+    if (!sample || (sample.direction !== "upload" && sample.direction !== "download"))
+      continue;
+    const last = job.status.samples.at(-1);
     if (
       [sample.elapsedMs, sample.bytes, sample.mbps].every(
         (n) => Number.isFinite(n) && n >= 0,
       ) &&
       sample.elapsedMs <= (job.status.duration + 5) * 1000 &&
-      job.status.samples.length < 300
+      job.status.samples.length < 800 &&
+      !(last?.direction === "download" && sample.direction === "upload") &&
+      (last?.direction !== sample.direction ||
+        (sample.elapsedMs > last.elapsedMs && sample.bytes >= last.bytes))
     ) {
       job.status.state = sample.direction;
       job.status.samples.push({

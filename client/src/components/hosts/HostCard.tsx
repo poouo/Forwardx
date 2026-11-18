@@ -31,6 +31,7 @@ import {
   Pencil,
   Server,
   Trash2,
+  TvMinimalPlay,
 } from "lucide-react";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
@@ -102,6 +103,7 @@ type HostCardProps = {
   onResetTraffic?: (host: any) => void;
   onCorrectTraffic?: (host: any) => void;
   onViewProbeLatency?: (host: any) => void;
+  onStreamUnlock?: (host: any) => void;
   resetTrafficPending?: boolean;
   traffic?: { bytesIn?: number | null; bytesOut?: number | null } | null;
   metrics?: any[] | null;
@@ -117,7 +119,7 @@ type HostCardProps = {
 
 type HostActionButtonsProps = Pick<
   HostCardProps,
-  "host" | "onEdit" | "onDelete" | "onUpgrade" | "onResetTraffic" | "onCorrectTraffic" | "onViewProbeLatency" | "resetTrafficPending" | "canUpgrade"
+  "host" | "onEdit" | "onDelete" | "onUpgrade" | "onResetTraffic" | "onCorrectTraffic" | "onViewProbeLatency" | "onStreamUnlock" | "resetTrafficPending" | "canUpgrade"
 > & {
   className?: string;
   buttonClassName?: string;
@@ -131,6 +133,7 @@ export function HostActionButtons({
   onResetTraffic,
   onCorrectTraffic,
   onViewProbeLatency,
+  onStreamUnlock,
   resetTrafficPending = false,
   canUpgrade,
   className = "flex shrink-0 items-center justify-end gap-1",
@@ -160,6 +163,18 @@ export function HostActionButtons({
           onClick={() => onViewProbeLatency(host)}
         >
           <Activity className="h-3.5 w-3.5" />
+        </Button>
+      )}
+      {onStreamUnlock && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={buttonClassName}
+          title={translateText("检测流媒体解锁")}
+          aria-label={translateText("检测流媒体解锁")}
+          onClick={() => onStreamUnlock(host)}
+        >
+          <TvMinimalPlay className="h-3.5 w-3.5" />
         </Button>
       )}
       <Button
@@ -230,6 +245,7 @@ export default function HostCard({
   onResetTraffic,
   onCorrectTraffic,
   onViewProbeLatency,
+  onStreamUnlock,
   resetTrafficPending = false,
   traffic = null,
   metrics: externalMetrics,
@@ -454,7 +470,7 @@ export default function HostCard({
   if (theme?.card) {
     const actions = <div data-theme-part="host-actions">
       <div className="flex min-w-0 items-center gap-2"><span className="sr-only">{hostName}</span>{dragHandle}</div>
-      <HostActionButtons host={host} onEdit={onEdit} onDelete={onDelete} onUpgrade={onUpgrade} onResetTraffic={onResetTraffic} onCorrectTraffic={onCorrectTraffic} onViewProbeLatency={onViewProbeLatency} resetTrafficPending={resetTrafficPending} canUpgrade={canUpgrade} />
+      <HostActionButtons host={host} onEdit={onEdit} onDelete={onDelete} onUpgrade={onUpgrade} onResetTraffic={onResetTraffic} onCorrectTraffic={onCorrectTraffic} onViewProbeLatency={onViewProbeLatency} onStreamUnlock={onStreamUnlock} resetTrafficPending={resetTrafficPending} canUpgrade={canUpgrade} />
     </div>;
     return <Card data-theme-host-card="true" data-theme-host-status={isOnline ? "online" : "offline"} data-theme-card-mode={compact ? "compact" : "standard"} aria-label={hostName} className={cn("host-card-shell min-w-0 overflow-hidden border-border/40 bg-card/60", dragHandle && "group/sortable", sortableClassName)}>
       {theme.actionsPlacement !== "footer" && <CardHeader className="pb-2">{actions}</CardHeader>}
@@ -486,6 +502,7 @@ export default function HostCard({
               onResetTraffic={onResetTraffic}
               onCorrectTraffic={onCorrectTraffic}
               onViewProbeLatency={onViewProbeLatency}
+              onStreamUnlock={onStreamUnlock}
               resetTrafficPending={resetTrafficPending}
               canUpgrade={canUpgrade}
             />
@@ -504,6 +521,7 @@ export default function HostCard({
               onResetTraffic={onResetTraffic}
               onCorrectTraffic={onCorrectTraffic}
               onViewProbeLatency={onViewProbeLatency}
+              onStreamUnlock={onStreamUnlock}
               resetTrafficPending={resetTrafficPending}
               canUpgrade={canUpgrade}
             />

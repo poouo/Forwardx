@@ -219,7 +219,10 @@ test("Dashboard traffic shares one card with responsive internal sections", asyn
   assert.match(single, /lg:grid-cols-1/);
   assert.match(single, /隧道流量/);
   assert.match(single, /转发组流量/);
-  assert.match(single, /lg:max-w-4xl/);
+  assert.doesNotMatch(single, /mx-auto|max-w-4xl|lg:grid-cols-1 2xl:grid-cols/);
+  assert.match(single, /sm:grid-cols-\[220px_minmax\(0,1fr\)\]/);
+  assert.match(single, /sm:h-56/);
+  assert.match(single, /sm:max-h-56/);
   const html = renderToStaticMarkup(<DashboardTrafficOverview tunnelData={[{ id: 1, name: "Tunnel example", value: 2048 }]} portData={[{ id: 2, name: "Port example", value: 4096 }]} groupData={[{ id: 3, name: "Group example", value: 1024 }]} loading={false} />);
   for (const label of ["Tunnel example", "Port example", "Group example", "2 KB", "4 KB", "1 KB"]) assert.ok(html.includes(label));
   assert.doesNotMatch(html, /暂无流量数据/);

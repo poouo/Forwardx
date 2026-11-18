@@ -640,6 +640,91 @@ install_base_deps() {
   fi
 }
 
+time_sync_unit_available() {
+  local unit=""
+  if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+    return 1
+  fi
+  for unit in chrony.service chronyd.service systemd-timesyncd.service; do
+    if systemctl list-unit-files "$unit" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+start_time_sync_service() {
+  local unit=""
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    for unit in chrony.service chronyd.service systemd-timesyncd.service; do
+      if systemctl list-unit-files "$unit" 2>/dev/null | grep -q "^${unit}"; then
+        if systemctl enable --now "$unit" >/dev/null 2>&1; then
+          echo "[INFO] Host time synchronization enabled: $unit"
+          return 0
+        fi
+        echo "[WARN] Unable to start host time synchronization service: $unit" >&2
+      fi
+    done
+  elif command -v rc-service >/dev/null 2>&1; then
+    for unit in chronyd chrony; do
+      if rc-service "$unit" status >/dev/null 2>&1 || [ -x "/etc/init.d/$unit" ]; then
+        rc-update add "$unit" default >/dev/null 2>&1 || true
+        if rc-service "$unit" start >/dev/null 2>&1; then
+          echo "[INFO] Host time synchronization enabled: $unit"
+          return 0
+        fi
+      fi
+    done
+  elif command -v service >/dev/null 2>&1; then
+    for unit in chronyd chrony; do
+      if service "$unit" status >/dev/null 2>&1 || [ -x "/etc/init.d/$unit" ]; then
+        if service "$unit" start >/dev/null 2>&1; then
+          echo "[INFO] Host time synchronization enabled: $unit"
+          return 0
+        fi
+      fi
+    done
+  fi
+  return 1
+}
+
+install_time_sync() {
+  local installed="false"
+  if command -v chronyd >/dev/null 2>&1 || command -v chronyc >/dev/null 2>&1 || time_sync_unit_available; then
+    installed="true"
+  else
+    echo "[INFO] Installing host time synchronization (chrony)"
+    if command -v apt-get >/dev/null 2>&1; then
+      if apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chrony >/dev/null; then installed="true"; fi
+    elif command -v dnf >/dev/null 2>&1; then
+      if dnf install -y -q chrony >/dev/null; then installed="true"; fi
+    elif command -v yum >/dev/null 2>&1; then
+      if yum install -y -q chrony >/dev/null; then installed="true"; fi
+    elif command -v zypper >/dev/null 2>&1; then
+      if zypper -n install chrony >/dev/null; then installed="true"; fi
+    elif command -v apk >/dev/null 2>&1; then
+      if apk add --no-cache chrony >/dev/null; then installed="true"; fi
+    elif command -v pacman >/dev/null 2>&1; then
+      if pacman -Sy --noconfirm --needed chrony >/dev/null; then installed="true"; fi
+    fi
+  fi
+
+  if [ "$installed" != "true" ]; then
+    echo "[WARN] Host time synchronization could not be installed automatically. Configure NTP/chrony on the host manually." >&2
+    return 0
+  fi
+
+  if ! start_time_sync_service; then
+    echo "[WARN] Host time synchronization is installed but could not be started automatically. Check the host service after installation." >&2
+  fi
+  if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    timedatectl set-ntp true >/dev/null 2>&1 || true
+  fi
+  if command -v chronyc >/dev/null 2>&1; then
+    chronyc makestep >/dev/null 2>&1 || true
+  fi
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
     echo "[INFO] Docker is already installed, skip package manager update."
@@ -960,6 +1045,7 @@ install_panel() {
   local image
   require_root
   install_docker
+  install_time_sync
   load_existing_env
   resolve_github_accelerator
   read_database_config_json
@@ -980,6 +1066,7 @@ upgrade_panel() {
   load_existing_env
   resolve_github_accelerator
   install_docker
+  install_time_sync
   resolve_image_selection
   image="$RESOLVED_IMAGE"
   write_compose_file

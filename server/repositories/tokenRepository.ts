@@ -1,9 +1,10 @@
 ﻿import { asc, desc, eq } from "drizzle-orm";
-import { and } from "drizzle-orm";
+import { and, inArray, sql } from "drizzle-orm";
 import { agentTokens, hosts, users, InsertAgentToken } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows, withDatabaseTransaction } from "../dbRuntime";
 import { inList, quoteIdentifier } from "../dbCompat";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
+import { isPresenceCapableHostConfirmedOffline } from "../agentFastLiveness";
 
 // ==================== Agent Token Queries ====================
 
@@ -25,8 +26,12 @@ function isFreshHeartbeat(lastHeartbeat: unknown) {
   return Number.isFinite(time) && Date.now() - time <= HOST_ONLINE_TTL_MS;
 }
 
-function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
-  return { ...host, isOnline: !!host.isOnline && isFreshHeartbeat(host.lastHeartbeat) };
+function withComputedOnline<T extends { id?: unknown; isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
+  return {
+    ...host,
+    isOnline: !!host.isOnline && isFreshHeartbeat(host.lastHeartbeat)
+      && !isPresenceCapableHostConfirmedOffline(host.id),
+  };
 }
 
 export async function createAgentToken(data: InsertAgentToken) {
@@ -156,6 +161,7 @@ export async function getAgentTokens(userId?: number) {
         entryIp: hosts.entryIp,
         isOnline: hosts.isOnline,
         lastHeartbeat: hosts.lastHeartbeat,
+        createdAt: hosts.createdAt,
       },
     })
     .from(agentTokens)
@@ -164,17 +170,25 @@ export async function getAgentTokens(userId?: number) {
     ? await query.where(eq(agentTokens.userId, userId)).orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id))
     : await query.orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id));
   // The left join above preserves the existing response shape. Batch tokens
-  // need all hosts, which are loaded with one raw query below because hosts are
+  // need all hosts, which are loaded with one query below because hosts are
   // associated by token value rather than a foreign key.
   const batchHostsByToken = new Map<string, any[]>();
   const tokenValues = rows.map((row: any) => String(row.token.token || "").trim()).filter(Boolean);
   if (tokenValues.length) {
-    const placeholders = tokenValues.map(() => "?").join(",");
-    const q = quoteIdentifier;
-    const allHosts = await queryRaw<any>(
-      `SELECT ${q("id")}, ${q("name")}, ${q("ip")}, ${q("ipv4")}, ${q("ipv6")}, ${q("entryIp")}, ${q("isOnline")}, ${q("lastHeartbeat")}, ${q("agentToken")} FROM ${q("hosts")} WHERE ${q("agentToken")} IN (${placeholders}) ORDER BY ${q("id")} ASC`,
-      tokenValues,
-    );
+    // Use schema decoders: raw SQLite timestamps are seconds, not JS
+    // milliseconds, and raw database booleans are not always true/false.
+    const allHosts = await db.select({
+      id: hosts.id,
+      name: hosts.name,
+      ip: hosts.ip,
+      ipv4: hosts.ipv4,
+      ipv6: hosts.ipv6,
+      entryIp: hosts.entryIp,
+      isOnline: hosts.isOnline,
+      lastHeartbeat: hosts.lastHeartbeat,
+      createdAt: hosts.createdAt,
+      agentToken: hosts.agentToken,
+    }).from(hosts).where(inArray(hosts.agentToken, tokenValues)).orderBy(asc(hosts.id));
     for (const host of allHosts) {
       const key = String(host.agentToken || "");
       const list = batchHostsByToken.get(key) || [];
@@ -187,6 +201,9 @@ export async function getAgentTokens(userId?: number) {
     const hostsForToken = batchHostsByToken.get(tokenValue) || (row.host?.id ? [withComputedOnline(row.host)] : []);
     return {
       ...row.token,
+      // Legacy hosts were created on first registration; Tokens could be
+      // prepared much earlier, so their creation time is not an online time.
+      firstOnlineAt: row.token.firstOnlineAt || (row.token.isUsed || hostsForToken[0]?.lastHeartbeat ? hostsForToken[0]?.createdAt : null) || null,
       host: hostsForToken[0] || null,
       hosts: hostsForToken,
     };
@@ -218,12 +235,16 @@ export async function reorderAgentTokens(ids: number[], userId?: number) {
   }
 }
 
-export async function markAgentTokenUsed(token: string, hostId: number) {
+export async function markAgentTokenUsed(token: string, hostId: number, firstOnlineAt = nowDate()) {
   const db = await getDb();
   if (!db) return;
   const row = await getAgentTokenByToken(token);
   const keepFirstHost = row?.registrationMode === "batch" && row.hostId;
-  await db.update(agentTokens).set({ isUsed: true, ...(keepFirstHost ? {} : { hostId }) }).where(eq(agentTokens.token, token));
+  await db.update(agentTokens).set({
+    isUsed: true,
+    firstOnlineAt: sql`COALESCE(${agentTokens.firstOnlineAt}, ${Math.floor(firstOnlineAt.getTime() / 1000)})`,
+    ...(keepFirstHost ? {} : { hostId }),
+  }).where(eq(agentTokens.token, token));
 }
 
 export async function claimBatchAgentRegistration(token: string, now = Math.floor(Date.now() / 1000)) {

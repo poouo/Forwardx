@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { generateInstallScript } from "./agentInstallScripts";
 import { managementAsset } from "./managementAssets";
+import { wrapAgentInstallPipelines } from "../client/src/lib/agentInstallCommand";
 
 const bash = process.platform === "win32"
   ? ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files/Git/usr/bin/bash.exe"].find(existsSync)
@@ -64,6 +65,64 @@ configure_proxy --help
 `);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(script, /curl[^\n]*--proxy/);
+});
+
+test("both installer parsers validate Mimic choices, honor CLI precedence and export to children", () => {
+  const bootstrap = source("install-agent.sh");
+  for (const [setup, parser] of [
+    [managementAsset("agent-proxy.sh"), "fwx_agent_proxy_args"],
+    [bootstrap.slice(0, bootstrap.indexOf("show_help() {")), "configure_proxy"],
+  ]) {
+    const result = run(`${setup}
+set -eu
+CONFIG_DIR=/not-existing-forwardx-test LEGACY_CONFIG_DIR=/not-existing-forwardx-test
+FORWARDX_AGENT_PROXY=''
+unset FORWARDX_INSTALL_MIMIC
+${parser} install token
+[ "$FORWARDX_INSTALL_MIMIC" = ask ]
+FORWARDX_INSTALL_MIMIC=no
+${parser} install token --mimic yes
+[ "$FORWARDX_INSTALL_MIMIC" = yes ]
+[ "$(bash -c 'printf %s "$FORWARDX_INSTALL_MIMIC"')" = yes ]
+${parser} --mimic=no install token
+[ "$FORWARDX_INSTALL_MIMIC" = no ]
+${parser} install token --mimic ask
+[ "$FORWARDX_INSTALL_MIMIC" = ask ]
+${parser} install token --mimic y
+[ "$FORWARDX_INSTALL_MIMIC" = yes ]
+${parser} install token --mimic=n
+[ "$FORWARDX_INSTALL_MIMIC" = no ]
+FORWARDX_INSTALL_MIMIC=TRUE
+${parser} install token
+[ "$FORWARDX_INSTALL_MIMIC" = yes ]
+FORWARDX_INSTALL_MIMIC=0
+${parser} install token
+[ "$FORWARDX_INSTALL_MIMIC" = no ]
+for bad in '' maybe --no-proxy; do
+  if ${parser} install token --mimic "$bad" 2>/dev/null; then exit 10; fi
+done
+if ${parser} install token --mimic 2>/dev/null; then exit 11; fi
+if ${parser} install token --mimic= 2>/dev/null; then exit 12; fi
+FORWARDX_INSTALL_MIMIC=invalid
+if ${parser} install token 2>/dev/null; then exit 13; fi
+`);
+    assert.equal(result.status, 0, `${parser}: ${result.stderr}`);
+  }
+});
+
+test("copied command forwards appended options unchanged through primary and fallback pipelines", () => {
+  const pipeline = (name: string, failure = false) => `printf '%s\\n' 'printf "%s\\n" "$@"; ${failure ? "exit 1" : ":"}' | bash -s -- install ${quote(name)}`;
+  for (const [pipelines, expected] of [
+    [[pipeline("discovery key")], ["install", "discovery key", "--mimic", "y"]],
+    [[pipeline("primary", true), pipeline("fallback")], ["install", "primary", "--mimic", "y", "install", "fallback", "--mimic", "y"]],
+    [[pipeline("primary"), pipeline("fallback")], ["install", "primary", "--mimic", "y"]],
+  ] as const) {
+    const result = run(`${wrapAgentInstallPipelines([...pipelines])} --mimic y`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split(/\r?\n/), expected);
+  }
+  const failedDownload = run(wrapAgentInstallPipelines(["false | bash -s -- install token"]));
+  assert.notEqual(failedDownload.status, 0, "download failures must not be hidden by a successful empty Bash process");
 });
 
 test("generated installer persists proxy before starting and bundles offline management", () => {

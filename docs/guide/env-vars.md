@@ -58,7 +58,7 @@ FORWARDX_IMAGE 等镜像变量主要由 Compose/安装器读取，不是容器�
 :::
 
 ::: tip Docker 与时间校准
-Docker 容器与宿主机共享系统时钟，不能独立运行一套时间。ForwardX 会使用多个 HTTPS 来源校准旧版 Agent/FXP 加密协议的时间基准；新版 Agent 与 ForwardX FXP 面板上报使用一次性挑战认证，不再依赖双方系统时间。宿主机仍建议开启 NTP。外网受限时，可通过 `FORWARDX_PANEL_TIME_SOURCES` 指向部署方可信且会返回标准 `Date` 响应头的 HTTPS 服务。
+Docker 容器与宿主机共享系统时钟，不能独立运行一套时间。官方 Docker 一键安装脚本会在宿主机自动安装并启用时间同步；手动 Compose 或其他自部署方式不会处理宿主机时间，需自行维护 NTP/chrony。ForwardX 会使用多个 HTTPS 来源校准旧版 Agent/FXP 加密协议的时间基准；新版 Agent 与 ForwardX FXP 面板上报使用一次性挑战认证，不再依赖双方系统时间。外网受限时，可通过 `FORWARDX_PANEL_TIME_SOURCES` 指向部署方可信且会返回标准 `Date` 响应头的 HTTPS 服务。
 
 官方部署按单面板实例运行。认证挑战、登录流程和其他运行状态涉及进程内存，不能只靠共享数据库或粘性路由就认定支持多副本。正式部署保持单副本，代理设置见 [HTTPS 与反向代理](./reverse-proxy.md)。
 :::

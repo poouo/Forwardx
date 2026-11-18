@@ -168,7 +168,8 @@ export function RuleGroupBar({ value, onChange, category = "all" }: { value: num
   const query = trpc.rules.personalGroups.useQuery({ category }, { staleTime: 10_000, refetchInterval: pollingInterval("normal") });
   const [manager, setManager] = useState(false);
   useEffect(() => {
-    if (!query.data || value === null) return;
+    // "Ungrouped" is a built-in filter, not a row in the custom group list.
+    if (!query.data || value === null || value === 0) return;
     const selected = query.data.groups.find(group => group.id === value);
     if (!selected || Number(selected.count || 0) <= 0) onChange(null);
   }, [query.data, value, onChange]);

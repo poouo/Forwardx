@@ -30,6 +30,13 @@ import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, typ
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { claimLinkSpeedTask, reportLinkSpeedTask } from "./linkSpeedTasks";
 import { completePluginAgentTask } from "./pluginAgentTasks";
+import { completeStreamUnlockAgentTask, updateStreamUnlockAgentTaskProgress } from "./streamUnlockAgentTasks";
+import type { StreamUnlockFamily } from "../shared/streamUnlock";
+
+function normalizeStreamUnlockFamily(value: unknown): StreamUnlockFamily {
+  const family = String(value || "").trim().toLowerCase();
+  return family === "ipv4" || family === "ipv6" ? family : "both";
+}
 import { getAgentHostIdentityFromRequest } from "./agentAuth";
 import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
 import { planTrafficBytes } from "../shared/planTraffic";
@@ -609,6 +616,48 @@ agentRouter.post("/api/agent/link-speed-result", async (req: Request, res: Respo
     if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
     res.json({ success: reportLinkSpeedTask(host.id, req.body?.result) });
   } catch { res.status(500).json({ error: "Speed test report failed" }); }
+});
+agentRouter.post("/api/agent/stream-unlock-progress", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    const result = req.body?.result;
+    if (!result?.taskId) { res.status(400).json({ error: "result.taskId is required" }); return; }
+    const accepted = updateStreamUnlockAgentTaskProgress(Number(host.id), {
+      taskId: String(result.taskId), probeVersion: String(result.probeVersion || "1"), family: normalizeStreamUnlockFamily(result.family),
+      exitIPv4: result.exitIPv4 ? String(result.exitIPv4) : undefined,
+      exitIPv6: result.exitIPv6 ? String(result.exitIPv6) : undefined,
+      providers: Array.isArray(result.providers) ? result.providers.slice(0, 32) : [],
+      dns: Array.isArray(result.dns) ? result.dns.slice(0, 32).map((item: any) => ({ ...item, family: String(item?.family || "") })) : [],
+      startedAt: String(result.startedAt || new Date().toISOString()), finishedAt: String(result.finishedAt || ""),
+      error: result.error ? String(result.error).slice(0, 500) : undefined,
+    });
+    res.json({ success: accepted });
+  } catch (error) {
+    console.error("[Agent StreamUnlockProgress] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+agentRouter.post("/api/agent/stream-unlock-result", async (req: Request, res: Response) => {
+  try {
+    const host = await getAgentHostIdentityFromRequest(req);
+    if (!host) { res.status(401).json({ error: "Invalid token" }); return; }
+    const result = req.body?.result;
+    if (!result?.taskId) { res.status(400).json({ error: "result.taskId is required" }); return; }
+    const accepted = completeStreamUnlockAgentTask(Number(host.id), {
+      taskId: String(result.taskId), probeVersion: String(result.probeVersion || "1"), family: normalizeStreamUnlockFamily(result.family),
+      exitIPv4: result.exitIPv4 ? String(result.exitIPv4) : undefined,
+      exitIPv6: result.exitIPv6 ? String(result.exitIPv6) : undefined,
+      providers: Array.isArray(result.providers) ? result.providers.slice(0, 32) : [],
+      dns: Array.isArray(result.dns) ? result.dns.slice(0, 32).map((item: any) => ({ ...item, family: String(item?.family || "") })) : [],
+      startedAt: String(result.startedAt || new Date().toISOString()), finishedAt: String(result.finishedAt || new Date().toISOString()),
+      error: result.error ? String(result.error).slice(0, 500) : undefined,
+    });
+    res.json({ success: accepted });
+  } catch (error) {
+    console.error("[Agent StreamUnlock] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
   try {

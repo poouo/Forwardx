@@ -40,11 +40,25 @@ fwx_agent_proxy_args() {
         FORWARDX_AGENT_PROXY="$2"; FWX_PROXY_EXPLICIT=true; shift 2 ;;
       --proxy=*) FORWARDX_AGENT_PROXY="${1#*=}"; FWX_PROXY_EXPLICIT=true; shift ;;
       --no-proxy) FORWARDX_AGENT_PROXY=''; FWX_PROXY_EXPLICIT=true; shift ;;
+      --mimic)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }
+        FORWARDX_INSTALL_MIMIC="$2"; shift 2 ;;
+      --mimic=*)
+        FORWARDX_INSTALL_MIMIC="${1#*=}"
+        [ -n "$FORWARDX_INSTALL_MIMIC" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }
+        shift ;;
       -h|--help) ACTION=help; shift ;;
       --*) echo "[ERROR] Unknown option: ${1%%=*}" >&2; return 1 ;;
       *) [ -z "$TOKEN" ] || { echo '[ERROR] Unexpected argument.' >&2; return 1; }; TOKEN="$1"; shift ;;
     esac
   done
+  case "${FORWARDX_INSTALL_MIMIC:-ask}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) FORWARDX_INSTALL_MIMIC=yes ;;
+    0|false|FALSE|no|NO|n|N|off|OFF) FORWARDX_INSTALL_MIMIC=no ;;
+    ask) FORWARDX_INSTALL_MIMIC=ask ;;
+    *) echo '[ERROR] --mimic / FORWARDX_INSTALL_MIMIC must be y, n or ask.' >&2; return 1 ;;
+  esac
+  export FORWARDX_INSTALL_MIMIC
   # Offline removal/help must also work with a broken config or missing jq.
   case "$ACTION" in uninstall|remove|delete|help|'') return 0 ;; esac
   if [ "$FWX_PROXY_EXPLICIT" != true ]; then

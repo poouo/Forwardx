@@ -895,6 +895,8 @@ export type InsertIpGeoCache = typeof ipGeoCache.$inferInsert;
 export const agentTokens = table("agent_tokens", {
   id: serial("id"),
   token: text("token").notNull().unique(),
+  discoveryRegistrationId: varchar("discoveryRegistrationId", { length: 64 }).unique(),
+  firstOnlineAt: epoch("firstOnlineAt"),
   hostId: int("hostId"),
   description: text("description"),
   registrationMode: varchar("registrationMode", { length: 16 }).notNull().default("single"),

@@ -16,6 +16,55 @@ function scriptSection(script: string, start: string, end: string) {
   return script.slice(startIndex, endIndex);
 }
 
+test("Mimic install choice prompts only when needed and reaches the child installer", t => {
+  const bash = ["bash", "C:/Program Files/Git/bin/bash.exe"].find(candidate =>
+    spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 5000 }).status === 0);
+  if (!bash) { t.skip("Bash unavailable for shell execution tests"); return; }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-mimic-choice-"));
+  const generated = generateInstallScript("https://panel.example.com");
+  const helpers = scriptSection(generated, "install_mimic_optional() {", "panel_asset_url() {")
+    .replaceAll("-r /dev/tty", '-r "$MOCK_TTY"')
+    .replaceAll("exec 3<>/dev/tty", 'exec 3< "$MOCK_TTY"')
+    .replaceAll(">&3", ">/dev/null");
+  const terminal = path.join(directory, "tty"), resultFile = path.join(directory, "result");
+  const run = (choice: string, answer: string | null) => {
+    fs.rmSync(resultFile, { force: true });
+    if (answer === null) fs.rmSync(terminal, { force: true });
+    else fs.writeFileSync(terminal, `${answer}\n`);
+    return spawnSync(bash!, ["-s"], {
+      input: `set -eu
+${helpers}
+mimic_target_ready() { return 1; }
+mimic_loaded() { return 1; }
+github_url() { printf '%s' "$1"; }
+curl() {
+  local output=''
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then output="$2"; shift 2; else shift; fi
+  done
+  printf '%s\\n' 'printf "%s\\n" "$FORWARDX_INSTALL_MIMIC" > "$TEST_RESULT"' > "$output"
+}
+prompt_install_mimic
+`, encoding: "utf8", timeout: 15000,
+      env: { ...process.env, MSYS_NO_PATHCONV: "1", FORWARDX_INSTALL_MIMIC: choice,
+        MOCK_TTY: terminal.replace(/\\/g, "/"), TEST_RESULT: resultFile.replace(/\\/g, "/"),
+        FORWARDX_MIMIC_VERSION: "0.7.1", GITHUB_ACCELERATOR_ENABLED: "false", GITHUB_ACCELERATOR_URL: "",
+        FORWARDX_CURL_CONNECT_TIMEOUT: "15", FORWARDX_CURL_LOW_SPEED_LIMIT: "1024", FORWARDX_CURL_ASSET_LOW_SPEED_TIME: "60" },
+    });
+  };
+  try {
+    for (const [choice, answer, shouldInstall] of [
+      ["yes", null, true], ["no", "Y", false], ["ask", "Y", true], ["ask", "", false], ["ask", null, false],
+    ] as const) {
+      const result = run(choice, answer);
+      assert.equal(result.status, 0, `${choice}/${answer}: ${result.stderr}`);
+      assert.equal(fs.existsSync(resultFile), shouldInstall, `${choice}/${answer}`);
+      if (shouldInstall) assert.equal(fs.readFileSync(resultFile, "utf8").trim(), "yes", "source-build child must inherit approval even after interactive confirmation");
+      if (choice !== "ask") assert.doesNotMatch(result.stdout, /默认不安装/);
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("only explicit installation rotates identity; normal upgrades preserve retirement", () => {
   const script = generateInstallScript("https://panel.example.com");
   const install = scriptSection(script, "do_install() {", "do_upgrade() {");
@@ -341,6 +390,20 @@ test("nginx installer validates a staged candidate and preserves the existing ru
   assert.doesNotMatch(nginx, /rm -f "\$NGINX_BIN"/);
   assert.match(commit, /nginx_self_check "\$CANDIDATE"/);
   assert.match(commit, /mv -f "\$CANDIDATE" "\$NGINX_BIN"/);
+});
+
+test("Agent install and upgrade always prepare Nginx independently of protocol switches", () => {
+  const script = generateInstallScript("https://panel.example.com");
+  assert.doesNotMatch(script, /FORWARDX_INSTALL_NGINX/);
+  for (const section of [
+    scriptSection(script, "do_install() {", "do_upgrade() {"),
+    scriptSection(script, "do_upgrade() {", "# ============ 入口 ============"),
+  ]) {
+    assert.match(section, /ensure_nginx_runtime \|\| echo/);
+    assert.doesNotMatch(section, /remove_service_by_name "\$NGINX_SERVICE_NAME"|rm -f "\$NGINX_BIN"|rm -rf \/etc\/forwardx\/nginx/);
+  }
+  const route = fs.readFileSync(new URL("./agentRoutes.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(route, /installNginx|isNginxForwardProtocolEnabled/);
 });
 
 test("Managed systemd units receive bounded logging defaults idempotently", () => {

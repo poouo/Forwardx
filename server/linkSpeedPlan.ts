@@ -250,6 +250,11 @@ export async function buildLinkSpeedPlan(
             );
           const v3 = version === "v3" ? forwardXV3SpecOptions(tunnel) : {};
           if (!v3) throw new Error("ForwardX V3 传输参数不完整");
+          // Direct FXP UDP sends remote traffic from its listening socket.
+          // A loopback-bound socket cannot reach another host. Keep the
+          // public test entry local through a separate UDP proxy instead.
+          const udpEntryProxy = protocol === "udp" && version !== "v2" && localOnly;
+          const runtimeEntryPort = udpEntryProxy ? await allocate(entryId, tunnel) : entryPort;
           const ruleId = crypto.randomInt(1_000_000_000, 2_000_000_000);
           for (let i = 0; i < hops.length; i++) {
             const isLast = i === hops.length - 1;
@@ -259,7 +264,8 @@ export async function buildLinkSpeedPlan(
               ...v3,
               tunnelId: Number(tunnel.id),
               ruleId,
-              listenPort: ports[i],
+              listenPort: i === 0 ? runtimeEntryPort : ports[i],
+              udpListenPort: i === 0 ? runtimeEntryPort : ports[i],
               protocol,
               key: token,
               targetIp:
@@ -280,23 +286,33 @@ export async function buildLinkSpeedPlan(
             };
             if (i === 0)
               Object.assign(spec, {
-                listenHost: localOnly ? "127.0.0.1" : "",
+                listenHost: localOnly && !udpEntryProxy ? "127.0.0.1" : "",
                 exitHost: addresses[1],
                 exitPort: ports[1],
+                udpExitPort: ports[1],
                 exitPeerId: String(hops[1].hostId),
               });
             else if (!isLast)
               Object.assign(spec, {
                 relayExitHost: addresses[i + 1],
                 relayExitPort: ports[i + 1],
+                udpRelayExitPort: ports[i + 1],
                 relayPeerId: String(hops[i + 1].hostId),
                 relayKey: token,
               });
             add(Number(hops[i].hostId), {
               kind: "fxp",
-              port: ports[i],
-              listenHost: i === 0 && localOnly ? "127.0.0.1" : "",
+              port: i === 0 ? runtimeEntryPort : ports[i],
+              listenHost: i === 0 && localOnly && !udpEntryProxy ? "127.0.0.1" : "",
               config: spec,
+            });
+          }
+          if (udpEntryProxy) {
+            add(entryId, {
+              kind: "proxy",
+              port: entryPort,
+              listenHost: "127.0.0.1",
+              target: speedEndpoint("127.0.0.1", runtimeEntryPort),
             });
           }
         } else if (transport === "nginx_stream") {

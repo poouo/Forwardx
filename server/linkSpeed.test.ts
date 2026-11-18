@@ -116,7 +116,7 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
         resourceId: 10,
         name: "three-hop",
         protocol: "tcp",
-        duration: 10,
+        duration: 30,
         rateMbps: 0,
       },
       plan,
@@ -175,6 +175,29 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
       sample: { direction: "upload", elapsedMs: NaN, bytes: 1000, mbps: 1 },
     });
     assert.equal(created.samples.length, 1);
+    const sendSamples = (samples: unknown[]) => reportLinkSpeedTask(1, {
+      jobId: created.id, taskId: run.taskId, samples,
+    });
+    const batch = Array.from({ length: 5 }, (_, i) => ({
+      direction: "upload", elapsedMs: 600 + i * 100, bytes: 2000 + i * 1000, mbps: 1,
+    }));
+    sendSamples(batch);
+    sendSamples(batch); // HTTP retries must not replay or duplicate points.
+    sendSamples([null, { direction: "upload", elapsedMs: 1100, bytes: 1, mbps: 1 }]);
+    assert.equal(created.samples.length, 6);
+    for (const direction of ["upload", "download"]) {
+      for (let offset = direction === "upload" ? 10 : 0; offset < 300; offset += 50) {
+        sendSamples(Array.from({ length: Math.min(50, 300 - offset) }, (_, i) => ({
+          direction, elapsedMs: (offset + i + 1) * 100,
+          bytes: (offset + i + 1) * 1000, mbps: 1,
+        })));
+      }
+    }
+    assert.ok(created.samples.length > 590, "retain 100ms points for both 30s phases");
+    const count = created.samples.length;
+    sendSamples([{ direction: "upload", elapsedMs: 30100, bytes: 301000, mbps: 1 }]);
+    assert.equal(created.samples.length, count);
+    assert.equal(created.state, "download", "late upload must not reverse the phase");
     const result = {
       bytes: 125_000_000,
       durationMs: 10000,
@@ -244,6 +267,17 @@ test("speed paths preserve multi-hop transports and the job coordinates/cleans e
         assert.equal(middle.relayPeerId, "3");
         assert.equal(exit.udpTargets[0].ruleId, entry.ruleId);
         assert.equal(exit.udpTargets[0].targetIp, "127.0.0.1");
+        assert.equal(exit.udpListenPort, exit.listenPort);
+        assert.equal(entry.udpExitPort, entry.exitPort);
+        assert.equal(middle.udpRelayExitPort, middle.relayExitPort);
+        const localProxy = fxp.hosts.get(1)!.find((c) => c.kind === "proxy");
+        if (version !== "v2") {
+          assert.equal(entry.listenHost, "", "FXP UDP must send remote packets from a routable socket");
+          assert.equal(localProxy?.listenHost, "127.0.0.1");
+          assert.equal(localProxy?.target, speedEndpoint("127.0.0.1", entry.listenPort));
+          assert.equal(fxp.target, speedEndpoint("127.0.0.1", localProxy!.port));
+          assert.notEqual(localProxy!.port, entry.listenPort);
+        } else assert.equal(localProxy, undefined, "WireGuard already provides a loopback outbound proxy");
         if (version === "v3") assert.equal(entry.v3Path, "/speed");
       } finally {
         releaseHostPortReservations(fxp.reservations);

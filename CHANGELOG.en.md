@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [2.3.302] - 2026-11-18
+
+- Added media-unlock checks from host cards for Netflix, Disney+, YouTube, Spotify, Bilibili TV, Bahamut and AbemaTV, plus availability checks for TikTok, Gemini, Grok, ChatGPT and Claude. Regions and DNS-unlock hints are shown when detected.
+- Results arrive progressively and checks continue after closing the dialog. Reopening restores the latest results; IPv4 and IPv6 have separate views, missing address families are disabled, and the dialog now scrolls correctly on mobile.
+- Hosts now register automatically through a universal installation command without pre-creating a host. Existing Agents retain dedicated recovery commands; discovery can be disabled or its key rotated, and the first online time is displayed.
+- Agent installation and upgrades prepare Nginx and its stream module by default. Use `--mimic y` / `--mimic n` to select Mimic installation, or omit the option for an interactive prompt.
+- Improved incremental FXP configuration updates to preserve sibling rule connections where possible. Fixed state inconsistencies after rapid changes and stale listeners returning after forwarding-engine switches.
+- Fixed virtual exit ports on ForwardX tunnel rules being treated as occupied listeners; these rules no longer allocate unused exit ports when created or updated.
+- Link speed tests use finer samples and batched reporting, with sequential playback for smoother gauges and charts, alongside path-handling and layout improvements.
+- Fixed Agent online status, first online time, ungrouped filters and dashboard layouts. Probe views show cached values first and zero when no data exists.
+- The Docker installer now prepares host time synchronization. Updated documentation for manual Docker deployment, discovery, Mimic options and unlock-check APIs.
+- Version: panel `2.3.302`, Android / iOS `2.4.19`, Agent `2.2.214`, ForwardX FXP runtime `2.2.123`. Upgrade Agents and their FXP runtime for the new checks and configuration-update behavior.
+
 ## [2.3.301] - 2026-11-17
 
 - Added edit and remove actions to the batch-enrollment host dialog, with the registration count kept in sync.

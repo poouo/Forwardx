@@ -43,6 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 Installs to `/opt/forwardx-docker` with a container named `forwardx-panel`; the host port maps to container port `3000`. Database settings, the SQLite file and other data live in a Docker named volume mounted at `/data`, **not under the deployment directory**.
 
+The official Docker installer automatically installs and enables host time synchronization (it reuses `systemd-timesyncd`/`chrony` when available and otherwise installs `chrony` for the detected distribution). Manual Compose, `docker run`, and other self-managed Docker deployments do not do this; containers cannot independently correct the host clock, so maintain NTP/chrony on the host yourself.
+
 ### Linux local installation
 
 ```bash
@@ -57,17 +59,27 @@ Installs to `/opt/forwardx-panel` with data in its `data` directory and a servic
 
 1. Open `http://SERVER_IP:9810`, confirm the database settings and create the administrator. If you reuse an existing database, sign in with the existing account.
 2. Configure [HTTPS and a reverse proxy](docs/guide/reverse-proxy.md), then enter the panel address that Agents can reach under **Settings**.
-3. In **Hosts → Token Management**, create a **separate Token for each host** and copy its installation command.
+3. Click **Add host** under **Hosts** and copy the universal installation command. **Agent Management** also provides installation commands and enrollment settings.
 4. Run the command as root on the managed host, then check in the panel that the host is online.
 5. Create a port forward or tunnel under **Links**, add a rule under **Forwarding Rules**, and connect through it once to confirm it works.
 
 Example Agent installation:
 
 ```bash
-curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY
 ```
 
-Replace the URL and Token with your own. Common pitfalls: when the panel runs in Docker and uses a database on the host, `127.0.0.1` points at the container, not the host; NAT hosts need their actual mapped port range; forwarding ports must be open in both the cloud security group and the host firewall. See [Quick Start](docs/guide/quick-start.md), [Setup](docs/guide/first-setup.md) and [Agent installation](docs/guide/agent.md).
+Replace the URL and enrollment key with your own. New machines appear automatically when they come online. To recover an existing host while retaining its rules, use that Agent's dedicated installation command in **Agent Management**.
+
+Append `--mimic y` to the **complete install command** to install Mimic automatically, or `--mimic n` to skip it. Without the option, installation prompts you; Enter or no interactive terminal skips it. For example:
+
+```bash
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY --mimic y
+```
+
+Commands copied from the panel also accept these options at the end. Keep the trailing `--` and leave the quoted content unchanged. Universal installation, dedicated recovery installation and the GitHub installer all support the option. Skipping does not uninstall an existing Mimic installation. See [Mimic installation options](docs/guide/agent.md#mimic-udp-混淆可选).
+
+Common pitfalls: when the panel runs in Docker and uses a database on the host, `127.0.0.1` points at the container, not the host; NAT hosts need their actual mapped port range; forwarding ports must be open in both the cloud security group and the host firewall. See [Quick Start](docs/guide/quick-start.md), [Setup](docs/guide/first-setup.md) and [Agent installation](docs/guide/agent.md).
 
 ## 3. SSH management
 

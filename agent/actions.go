@@ -1679,6 +1679,17 @@ func actionJobNeedsPreRuntimeHandoffWithListenerProbe(job actionJob, needsCleanu
 	if strings.TrimSpace(a.Op) != "apply" || !actionNeedsSharedRuntimePhase(a) || !validActionPort(a.SourcePort) {
 		return false
 	}
+	// A shared FXP process already owns this member. Its port is expected to be
+	// busy, so treating that socket as an unknown listener creates a destructive
+	// handoff job which restarts the whole sibling group.
+	if runningFXPListenerCanPreserve(a) {
+		return false
+	}
+	if a.Fxp != nil && fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
+		// The FXP process already owns the requested listener and matches the
+		// complete desired config. A busy port here is healthy, not an orphan.
+		return false
+	}
 	// Missing/stale markers must not defer cleanup until after the shared
 	// runtime binds its ports. That phase cannot succeed while an orphaned
 	// managed Realm/Socat/FXP listener still owns the requested protocol lane.

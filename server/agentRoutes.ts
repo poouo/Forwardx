@@ -3,9 +3,9 @@ import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { AGENT_ASSET_NAME_SET, getOrFetchAgentAssetPath } from "./agentAssets";
 import { registerMimicBuildCacheRoutes } from "./mimicBuildCache";
+import { registerAgentDiscoveryRoutes } from "./agentDiscovery";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
-import { isNginxForwardProtocolEnabled } from "../shared/forwardTypes";
 import { registerAgentEventClient, unregisterAgentEventClient, supersedeAgentEventClient } from "./agentEvents";
 import { agentInstallationGate, agentSupersededResponse, claimAgentInstallation, normalizeAgentInstallationId } from "./agentInstallation";
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
@@ -48,14 +48,6 @@ const agentRouter = Router();
 const agentApiRouter = Router();
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 
-function parseForwardProtocolSettings(value: string | null | undefined) {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.178";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 
@@ -267,6 +259,9 @@ async function openOwnedAgentEventStream(input: {
   req.once("close", cleanup);
   eventStream.onClose(cleanup);
 }
+
+// Enrollment has its own discovery key, before an Agent credential exists.
+registerAgentDiscoveryRoutes(agentRouter);
 
 // 为所有 /api/agent/* POST 接口启用加密中间件（GET install.sh 等不需要）
 agentRouter.use("/api/agent", (req, res, next) => {
@@ -485,6 +480,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         isOnline: true,
         lastHeartbeat: new Date(),
       });
+      await db.markAgentTokenUsed(token, existingHost.id, existingHost.lastHeartbeat ? existingHost.createdAt : new Date());
       if (entryChanged) {
         const updatedHost = await db.getHostById(existingHost.id);
         if (!updatedHost || !await observeIpSwitchAddress(updatedHost)) {
@@ -579,7 +575,6 @@ agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => 
       githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
       githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
       preferPanelInstall: settings.agentPreferPanelInstall === "true",
-      installNginx: isNginxForwardProtocolEnabled(parseForwardProtocolSettings(settings.forwardProtocols)),
       migrationFallbackPanelUrl: migrationFallbackEnabled ? panelMigration?.fallbackPanelUrl : undefined,
       panelMigrationId: migrationFallbackEnabled ? panelMigration?.id : undefined,
       panelMigrationStartedAt: migrationFallbackEnabled ? panelMigration?.startedAt : undefined,

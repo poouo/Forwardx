@@ -26,13 +26,13 @@ SQLite 不需要另装数据库。面板在 Docker 里时，MySQL / PostgreSQL �
 
 ## 4. 接入主机
 
-进入「主机管理 → Token 管理」，为每台主机单独创建 Token，复制安装命令，在被管理的主机上用 root 执行。
+进入「主机管理」，点击「添加主机」，复制通用安装命令，在被管理的 Linux 主机上用 root 执行，无需预先创建 Token。
 
 ~~~bash
-curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY
 ~~~
 
-命令以面板生成的为准。执行后回到面板确认主机在线、环境检测正常。每台主机用自己的 Token，不影响它们加入同一个组。详见 [Agent 安装](./agent.md)。
+命令以面板生成的为准。同一命令可安装多台机器，每台自动分配独立 Token；成功注册后主机自动出现。执行后回到面板确认在线和环境检测正常。已有主机的恢复安装请使用「Agent 管理」中原 Agent 终端按钮内的专属命令，保留主机及规则。详见 [Agent 安装](./agent.md)。
 
 主机需要通过 SOCKS / HTTP 代理访问面板时，下载脚本和执行安装两步都要指定代理，只在管道后加参数不够。完整示例见 [Agent 代理](./agent-proxy-manager.md)。
 

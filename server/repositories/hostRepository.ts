@@ -54,7 +54,7 @@ export async function getHostManagementCounts() {
   const rows = await queryRaw<Record<string, unknown>>(`SELECT
     (SELECT COUNT(*) FROM ${q("hosts")}) AS ${q("hosts")},
     (SELECT COUNT(*) FROM ${q("host_groups")}) AS ${q("groups")},
-    (SELECT COUNT(*) FROM ${q("agent_tokens")}) AS ${q("tokens")},
+    (SELECT COUNT(*) FROM ${q("agent_tokens")} WHERE ${q("discoveryRegistrationId")} IS NULL OR ${q("hostId")} IS NOT NULL) AS ${q("tokens")},
     (SELECT COUNT(*) FROM ${q("host_probe_services")}) AS ${q("services")}`);
   const row = rows[0];
   return {

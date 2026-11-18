@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.213"
+var Version = "2.2.214"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -866,6 +866,7 @@ type heartbeatResp struct {
 	LookingGlassTests       []lookingGlassTask       `json:"lookingGlassTests"`
 	Iperf3Tasks             []iperf3Task             `json:"iperf3Tasks"`
 	LinkSpeedTasks          []linkSpeedTask          `json:"linkSpeedTasks"`
+	StreamUnlockTests       []streamUnlockTask       `json:"streamUnlockTests"`
 	IPSwitchTasks           []ipSwitchTask           `json:"ipSwitchTasks"`
 	PluginTasks             []pluginAgentTask        `json:"pluginTasks"`
 	AgentUpgrade            *agentUpgrade            `json:"agentUpgrade"`
@@ -3569,7 +3570,7 @@ func logHeartbeatResponse(mode string, resp *heartbeatResp, duration time.Durati
 	anomalous = anomalous || resp.ReconciliationCoalesced
 	anomalous = anomalous || resp.AgentUpgrade != nil || resp.PanelMigration != nil
 	anomalous = anomalous || len(resp.Actions) > 0 || len(resp.SelfTests) > 0
-	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.LinkSpeedTasks) > 0 || len(resp.PluginTasks) > 0 || len(resp.IPSwitchTasks) > 0
+	anomalous = anomalous || len(resp.LookingGlassTests) > 0 || len(resp.Iperf3Tasks) > 0 || len(resp.LinkSpeedTasks) > 0 || len(resp.StreamUnlockTests) > 0 || len(resp.PluginTasks) > 0 || len(resp.IPSwitchTasks) > 0
 	interval := agentHeartbeatSummaryLogInterval
 	if anomalous {
 		interval = agentReportLogInterval
@@ -3974,6 +3975,9 @@ func heartbeat(cfg Config, forceReconcile ...bool) (heartbeatResult, error) {
 	}
 	for _, task := range resp.LinkSpeedTasks {
 		go handleLinkSpeedTask(cfg, task)
+	}
+	for _, task := range resp.StreamUnlockTests {
+		go handleStreamUnlockTask(cfg, task)
 	}
 	for _, task := range resp.IPSwitchTasks {
 		go handleIPSwitchTask(cfg, task)
@@ -6503,6 +6507,12 @@ func stopPreviousSharedRuntimeForHandoff(a action, previousRuntime *localActionR
 func cleanupStaleRuntimeBeforeApply(cfg Config, a action, actionMessage *actionMessage, previousRuntime *localActionRuntimeSnapshot) staleRuntimeCleanupResult {
 	if a.Op != "apply" || !validActionPort(a.SourcePort) {
 		return staleRuntimeCleanupResult{ok: true}
+	}
+	if runningFXPListenerCanPreserve(a) {
+		return staleRuntimeCleanupResult{ok: true}
+	}
+	if a.Fxp != nil && fxpMatchesRunning(a.Fxp, a.FXPEntryGroup) {
+		return staleRuntimeCleanupResult{preserveRunningFXP: true, ok: true}
 	}
 	if a.HandoffOnly && !stopPreviousSharedRuntimeForHandoff(a, previousRuntime, actionMessage) {
 		return staleRuntimeCleanupResult{}
@@ -9316,7 +9326,7 @@ func attachDesiredSharedFXPEntryGroups(actions []action) {
 
 	staged := map[string]fxpSpec{}
 	for key, group := range groups {
-		staged[key] = group.snapshot()
+		staged[key] = filterFXPApplyGroupForDesiredRules(group.snapshot())
 	}
 	for _, mutation := range mutations {
 		group := staged[mutation.key]
@@ -10157,6 +10167,11 @@ func startFXPLocked(cfg Config, spec fxpSpec, desiredGroup *fxpSpec, actionMessa
 			group = mergeFXPApplyGroup(current.spec, group)
 		}
 		fxpMu.Unlock()
+		group = filterFXPApplyGroupForDesiredRules(group)
+		if !fxpEntryGroupContains(group, spec) {
+			actionMessage.set("fxp entry superseded by desired listener owner tunnel=%d rule=%d port=%d", spec.TunnelID, spec.RuleID, spec.ListenPort)
+			return false
+		}
 		return startFXPProcessLocked(cfg, group, actionMessage)
 	}
 	return startFXPProcessLocked(cfg, spec, actionMessage)
@@ -10226,7 +10241,7 @@ func startFXPProcessLockedWithPersistence(cfg Config, spec fxpSpec, actionMessag
 	}
 	additiveRecovery := existingActive && isFXPEntryGroup(spec) && existing.signature == signature &&
 		fxpProcessUsesCurrentExecutable(existing) && fxpProcessUsesPanelCredentialDigest(existing, expectedCredentialDigest)
-	if existingActive && (fxpIsAdditiveUpdate(existing.spec, originalSpec) || additiveRecovery) {
+	if existingActive && (fxpIsIncrementalUpdate(existing.spec, originalSpec) || additiveRecovery) {
 		// An unavailable/old control API must fail this addition, not restart
 		// the process carrying established sibling connections.
 		return syncFXPAdditive(cfg, existing, originalSpec, persistenceEnabled, actionMessage)

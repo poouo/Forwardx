@@ -36,6 +36,7 @@ import { normalizeHostDdnsIpVersion, type HostDdnsIpVersion } from "@shared/host
 import HostGroupManager, { compareHostGroupDisplayOrder, type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
+import HostStreamUnlockDialog from "@/components/hosts/HostStreamUnlockDialog";
 import {
   compareVersions,
   formatBytes,
@@ -1019,7 +1020,7 @@ const HOST_MANAGE_TABS_USER = ["hosts"] as const;
 const HOST_MANAGE_TAB_ITEMS_ADMIN = [
   { value: "hosts", label: translateText("主机管理"), icon: Server },
   { value: "groups", label: translateText("分组管理"), icon: FolderKanban },
-  { value: "tokens", label: translateText("Token 管理"), icon: Key },
+  { value: "tokens", label: translateText("Agent 管理"), icon: Key },
   { value: "services", label: translateText("服务管理"), icon: Rows3 },
 ] as const satisfies readonly SlidingTabItem<HostManageTab>[];
 const HOST_MANAGE_TAB_ITEMS_USER = [
@@ -1029,7 +1030,7 @@ const HOST_MANAGE_TAB_ITEMS_USER = [
 const HOST_MANAGE_FILTER_CONFIG: Record<HostManageTab, { placeholder: string; unit: string }> = {
   hosts: { placeholder: translateText("搜索主机 / IP / 系统 / Agent 版本"), unit: translateText("台") },
   groups: { placeholder: translateText("搜索分组 / 主机名称 / 状态"), unit: translateText("组") },
-  tokens: { placeholder: translateText("搜索 Token / 备注 / 状态 / 关联主机"), unit: translateText("个") },
+  tokens: { placeholder: translateText("搜索 Agent / Token / 备注 / 状态 / 关联主机"), unit: translateText("个") },
   services: { placeholder: translateText("搜索服务 / 目标地址 / 类型 / 主机范围"), unit: translateText("项") },
 };
 
@@ -1377,6 +1378,7 @@ function HostsContent() {
   const [hostDialogTab, setHostDialogTab] = useState<HostDialogTab>("basic");
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
   const [probeLatencyHost, setProbeLatencyHost] = useState<any>(null);
+  const [streamUnlockHost, setStreamUnlockHost] = useState<any>(null);
   const [resetTrafficHost, setResetTrafficHost] = useState<any>(null);
   const [resetTrafficHostId, setResetTrafficHostId] = useState<number | null>(null);
   const [trafficCorrectionHost, setTrafficCorrectionHost] = useState<any>(null);
@@ -2087,6 +2089,7 @@ function HostsContent() {
       onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
       onCorrectTraffic={user?.role === "admin" ? requestCorrectHostTraffic : undefined}
       onViewProbeLatency={setProbeLatencyHost}
+      onStreamUnlock={setStreamUnlockHost}
       resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
       traffic={hostTrafficById.get(host.id)}
       metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
@@ -2510,8 +2513,8 @@ function HostsContent() {
           />
           <HostTrafficSummaryCard
             title={translateText("当前瞬时流量")}
-            inValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
-            outValue={formatOptionalBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
+            inValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
+            outValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.currentTraffic"
@@ -2724,7 +2727,7 @@ function HostsContent() {
               </div>
               <p className="text-lg font-medium">{isHostTextFiltered ? translateText("未找到匹配主机") : isHostGroupFiltered ? translateText("当前分组暂无主机") : translateText("暂无主机")}</p>
               <p className="text-sm mt-1 text-muted-foreground/80">
-                {isHostTextFiltered ? translateText("调整筛选内容或清空搜索") : isHostGroupFiltered ? translateText("可以在分组管理中为该分组添加主机") : user?.role === "admin" ? translateText("点击添加主机生成 Agent 安装命令") : translateText("请联系管理员添加主机")}
+                {isHostTextFiltered ? translateText("调整筛选内容或清空搜索") : isHostGroupFiltered ? translateText("可以在分组管理中为该分组添加主机") : user?.role === "admin" ? translateText("点击添加主机，复制统一安装指令") : translateText("请联系管理员添加主机")}
               </p>
             </div>
           </CardContent>
@@ -2791,6 +2794,10 @@ function HostsContent() {
         onOpenChange={(open) => !open && setProbeLatencyHost(null)}
         host={probeLatencyHost}
         services={probeServices as any[]}
+      />
+      <HostStreamUnlockDialog
+        host={streamUnlockHost}
+        onOpenChange={(open) => !open && setStreamUnlockHost(null)}
       />
       {/* Reset Host Traffic Dialog */}
       {deletingHostId !== null && <HostDeleteDialog

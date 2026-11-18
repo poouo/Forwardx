@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { nanoid } from "nanoid";
 import { adminProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { maskToken } from "./helpers";
+import { configureAgentDiscovery } from "../agentDiscovery";
 import { isHostStatusOnline } from "../hostStatusNotifier";
 import { hostAgentPanelUrlOverride } from "../../shared/agentPanelUrl";
 
@@ -22,68 +22,21 @@ function ruleOwnerSummary(owners: Array<{ userId: number; username: string | nul
 export const agentTokensRouter = router({
   list: adminProcedure.query(async () => {
     const tokens = await db.getAgentTokens();
-    return tokens.map((token: any) => ({
+    return tokens.filter((token: any) => !token.discoveryRegistrationId || token.host).map((token: any) => ({
       ...token,
+      discoveryRegistrationId: undefined,
       token: maskToken(token.token),
     }));
   }),
-  create: adminProcedure
-    .input(z.object({
-      description: z.string().max(200).optional(),
-      registrationMode: z.enum(["single", "batch"]).optional().default("single"),
-      maxRegistrations: z.number().int().min(0).max(1000).optional().default(1),
-      registrationExpiryDays: z.number().int().min(0).max(365).optional().default(0),
-    }))
-    .mutation(async ({ ctx, input }) => {
-      const token = nanoid(32);
-      const registrationMode = input.registrationMode === "batch" ? "batch" : "single";
-      const maxRegistrations = registrationMode === "batch" ? Math.max(0, Number(input.maxRegistrations || 0)) : 1;
-      const expiryDays = registrationMode === "batch" ? Math.max(0, Number(input.registrationExpiryDays || 0)) : 0;
-      const id = await db.createAgentToken({
-        token,
-        description: input.description ?? null,
-        registrationMode,
-        maxRegistrations,
-        registrationExpiresAt: expiryDays > 0 ? new Date(Date.now() + expiryDays * 86400 * 1000) : null,
-        usedRegistrations: 0,
-        userId: ctx.user.id,
-      });
-      return { id, token };
-    }),
+  configureDiscovery: adminProcedure
+    .input(z.object({ enabled: z.boolean().optional(), rotate: z.boolean().optional() }))
+    .mutation(({ ctx, input }) => configureAgentDiscovery(ctx.user.id, input)),
   update: adminProcedure
-    .input(z.object({
-      id: z.number(),
-      description: z.string().max(200).nullable().optional(),
-      maxRegistrations: z.number().int().min(0).max(1000).optional(),
-      registrationExpiryDays: z.number().int().min(0).max(365).optional(),
-    }))
+    .input(z.object({ id: z.number().int().positive(), description: z.string().max(200).nullable().optional() }))
     .mutation(async ({ input }) => {
       const token = await db.getAgentTokenById(input.id);
       if (!token) throw new Error("Token 不存在");
-      const description = input.description?.trim() || null;
-      if (token.registrationMode === "batch" && (input.maxRegistrations !== undefined || input.registrationExpiryDays !== undefined)) {
-        const maxRegistrations = Math.max(Number(token.usedRegistrations || 0), Math.max(0, Number(input.maxRegistrations ?? token.maxRegistrations ?? 0)));
-        const expiryDays = input.registrationExpiryDays === undefined
-          ? null
-          : Math.max(0, Number(input.registrationExpiryDays));
-        await db.updateBatchAgentToken(input.id, {
-          description: input.description === undefined ? token.description : description,
-          maxRegistrations,
-          registrationExpiresAt: expiryDays === null
-            ? token.registrationExpiresAt
-            : expiryDays > 0 ? new Date(Date.now() + expiryDays * 86400 * 1000) : null,
-        });
-      } else {
-        await db.updateAgentTokenDescription(input.id, description);
-      }
-      return { success: true };
-    }),
-  removeHost: adminProcedure
-    .input(z.object({ id: z.number().int().positive(), hostId: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
-      const token = await db.getAgentTokenById(input.id);
-      if (!token) throw new Error("Token 不存在");
-      await db.detachHostFromAgentToken(token.token, input.hostId);
+      await db.updateAgentTokenDescription(input.id, input.description?.trim() || null);
       return { success: true };
     }),
   reorder: adminProcedure

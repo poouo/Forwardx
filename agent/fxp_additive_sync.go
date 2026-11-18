@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -67,6 +68,35 @@ func mergeFXPApplyGroup(current, desired fxpSpec) fxpSpec {
 	return group
 }
 
+// Queued sibling snapshots and recovery files can still contain a member
+// already reassigned to another engine. Never resurrect that listener while
+// applying an otherwise unchanged member of the shared process.
+func filterFXPApplyGroup(group fxpSpec, resolve func(fxpSpec) (runningRule, bool)) fxpSpec {
+	if !isFXPEntryGroup(group) || resolve == nil {
+		return group
+	}
+	entries := make([]fxpSpec, 0, len(group.Entries))
+	for _, entry := range group.Entries {
+		desired, known := resolve(entry)
+		if known && (desired.RuleID != entry.RuleID || desired.TunnelID != entry.TunnelID ||
+			(strings.TrimSpace(desired.ForwardType) != "forwardx" && strings.TrimSpace(desired.ForwardType) != "gost") ||
+			normalizeRuntimeProtocol(desired.Protocol) != normalizeRuntimeProtocol(entry.Protocol)) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	group.Entries = entries
+	return group
+}
+
+func filterFXPApplyGroupForDesiredRules(group fxpSpec) fxpSpec {
+	return filterFXPApplyGroup(group, func(entry fxpSpec) (runningRule, bool) {
+		return desiredRunningRuleForAction(action{
+			RuleID: entry.RuleID, SourcePort: entry.ListenPort, Protocol: entry.Protocol,
+		})
+	})
+}
+
 func fxpIsAdditiveUpdate(old, next fxpSpec) bool {
 	old, next = normalizeFXPSpec(old), normalizeFXPSpec(next)
 	if fxpServerID(old) != fxpServerID(next) {
@@ -108,6 +138,119 @@ func fxpIsAdditiveUpdate(old, next fxpSpec) bool {
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// fxpIsIncrementalUpdate also permits replacing an existing entry. The FXP
+// runtime closes and recreates only that listener, preserving sibling sessions.
+func fxpIsIncrementalUpdate(old, next fxpSpec) bool {
+	old, next = normalizeFXPSpec(old), normalizeFXPSpec(next)
+	if fxpServerID(old) != fxpServerID(next) {
+		return false
+	}
+	if old.Role == "exit" && next.Role == "exit" {
+		seen := make(map[int]struct{}, len(next.UDPTargets))
+		for _, target := range next.UDPTargets {
+			if _, exists := seen[target.RuleID]; exists {
+				return false
+			}
+			seen[target.RuleID] = struct{}{}
+		}
+		for _, target := range old.UDPTargets {
+			if _, exists := seen[target.RuleID]; !exists {
+				return false
+			}
+		}
+		old.UDPTargets, next.UDPTargets = nil, nil
+		return fxpServerSignature(old) == fxpServerSignature(next)
+	}
+	if !isFXPEntryGroup(old) || !isFXPEntryGroup(next) {
+		return false
+	}
+	oldBase, nextBase := old, next
+	oldBase.Entries, nextBase.Entries = nil, nil
+	if fxpServerSignature(oldBase) != fxpServerSignature(nextBase) {
+		return false
+	}
+	seen := make(map[int]struct{}, len(next.Entries))
+	for _, entry := range next.Entries {
+		if _, exists := seen[entry.RuleID]; exists {
+			return false
+		}
+		seen[entry.RuleID] = struct{}{}
+	}
+	for _, entry := range old.Entries {
+		if _, exists := seen[entry.RuleID]; !exists {
+			// Deletions still use the full handoff path so the runtime can
+			// retire the listener and its persisted state safely.
+			return false
+		}
+	}
+	return true
+}
+
+// Readiness of an entire group can differ while a sibling is being edited.
+// Marker files can also lag behind a successful apply. Neither makes this
+// tracked member an unknown listener that should be handed off and removed.
+func sharedFXPEntryCanApplyInPlace(a action, current fxpSpec) bool {
+	if a.Fxp == nil || !isSharedFXPEntry(*a.Fxp) || !isFXPEntryGroup(current) {
+		return false
+	}
+	desired := normalizeFXPSpec(*a.Fxp)
+	current = normalizeFXPSpec(current)
+	if desired.RuleID != a.RuleID || desired.ListenPort != a.SourcePort ||
+		current.TunnelID != desired.TunnelID || current.TransportVersion != desired.TransportVersion {
+		return false
+	}
+	for _, entry := range current.Entries {
+		if entry.RuleID == desired.RuleID && entry.ListenPort == desired.ListenPort {
+			return true
+		}
+	}
+	return false
+}
+
+func runningSharedFXPEntryCanApplyInPlace(a action) bool {
+	if a.Fxp == nil || !isSharedFXPEntry(*a.Fxp) {
+		return false
+	}
+	fxpMu.Lock()
+	process := fxpServers[fxpEntryGroupServerID(a.Fxp.TransportVersion, a.Fxp.TunnelID)]
+	canUpdate := process != nil && sharedFXPEntryCanApplyInPlace(a, process.spec)
+	fxpMu.Unlock()
+	return canUpdate && fxpProcessActive(process)
+}
+
+func runningFXPCanApplyIncrementally(a action) bool {
+	if a.Fxp == nil {
+		return false
+	}
+	if runningSharedFXPEntryCanApplyInPlace(a) {
+		return true
+	}
+	desired := normalizeFXPSpec(*a.Fxp)
+	id := fxpServerID(desired)
+	fxpMu.Lock()
+	process := fxpServers[id]
+	canUpdate := process != nil && fxpIsIncrementalUpdate(process.spec, desired)
+	fxpMu.Unlock()
+	return canUpdate && fxpProcessActive(process)
+}
+
+func runningFXPListenerCanPreserve(a action) bool {
+	if runningFXPCanApplyIncrementally(a) {
+		return true
+	}
+	if strings.TrimSpace(a.ForwardType) != "forwardx-tunnel" || a.TunnelID <= 0 || !validActionPort(a.SourcePort) {
+		return false
+	}
+	selector := fxpRuntimeSelector{tunnelID: a.TunnelID, listenPort: a.SourcePort, protocol: a.Protocol}
+	for _, spec := range runningFXPSpecsForSelectorLocked(selector) {
+		role := strings.ToLower(strings.TrimSpace(spec.Role))
+		if role == "exit" || role == "relay" {
+			return true
+		}
 	}
 	return false
 }

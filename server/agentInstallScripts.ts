@@ -15,7 +15,6 @@ type AgentInstallScriptOptions = {
   githubAcceleratorEnabled?: boolean;
   githubAcceleratorUrl?: string | null;
   preferPanelInstall?: boolean;
-  installNginx?: boolean;
   migrationFallbackPanelUrl?: string | null;
   panelMigrationId?: string | null;
   panelMigrationStartedAt?: number | null;
@@ -43,7 +42,6 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
   const defaultGithubAcceleratorUrl = String(options.githubAcceleratorUrl || "").trim().replace(/\/+$/, "");
   const defaultGithubAcceleratorEnabled = !!options.githubAcceleratorEnabled && !!defaultGithubAcceleratorUrl;
   const defaultPreferPanelInstall = !!options.preferPanelInstall;
-  const defaultInstallNginx = !!options.installNginx;
   const migrationFallbackPanelUrl = String(options.migrationFallbackPanelUrl || "").trim().replace(/\/+$/, "");
   const panelMigrationId = String(options.panelMigrationId || "").trim();
   const panelMigrationStartedAt = Math.max(0, Math.floor(Number(options.panelMigrationStartedAt) || 0));
@@ -69,8 +67,6 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     'GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-$GITHUB_ACCELERATOR_DEFAULT_ENABLED}"',
     'GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-$GITHUB_ACCELERATOR_DEFAULT_URL}"',
     'FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-$FORWARDX_AGENT_PANEL_FIRST_DEFAULT}"',
-    `FORWARDX_INSTALL_NGINX_DEFAULT="${defaultInstallNginx ? "true" : "false"}"`,
-    'FORWARDX_INSTALL_NGINX="${FORWARDX_INSTALL_NGINX:-$FORWARDX_INSTALL_NGINX_DEFAULT}"',
     `MIGRATION_FALLBACK_PANEL_URL=${shellQuote(migrationFallbackPanelUrl)}`,
     `PANEL_MIGRATION_ID=${shellQuote(panelMigrationId)}`,
     `PANEL_MIGRATION_STARTED_AT="${panelMigrationStartedAt}"`,
@@ -385,6 +381,8 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '  echo "  upgrade   [TOKEN]  升级 Agent，默认复用现有配置"',
     '  echo "  install-tool NAME  仅安装转发组件：realm/gost/iptables/nftables/socat/nginx"',
     '  echo "  uninstall          完全卸载 Agent 及相关组件"',
+    '  echo "  --mimic y|n|ask    安装时自动安装/跳过 Mimic，ask 表示交互询问（默认）"',
+    '  echo "  支持 --mimic=y；命令行参数优先于 FORWARDX_INSTALL_MIMIC 环境变量"',
     '  echo ""',
     '}',
     '',
@@ -607,7 +605,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '  fi',
     '  chmod +x "$TMP"',
     '  # 面板地址和 Token 供 mimic 安装脚本读取面板缓存：同内核的主机直接下载已编译好的模块。',
-    '  if GITHUB_ACCELERATOR_ENABLED="$GITHUB_ACCELERATOR_ENABLED" GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL" FORWARDX_MIMIC_VERSION="$FORWARDX_MIMIC_VERSION" FORWARDX_PANEL_URL="${PANEL_URL:-}" FORWARDX_AGENT_TOKEN="${AGENT_TOKEN:-${TOKEN:-}}" bash "$TMP"; then',
+    '  if FORWARDX_INSTALL_MIMIC=yes GITHUB_ACCELERATOR_ENABLED="$GITHUB_ACCELERATOR_ENABLED" GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL" FORWARDX_MIMIC_VERSION="$FORWARDX_MIMIC_VERSION" FORWARDX_PANEL_URL="${PANEL_URL:-}" FORWARDX_AGENT_TOKEN="${AGENT_TOKEN:-${TOKEN:-}}" bash "$TMP"; then',
     '    RC=0',
     '  else',
     '    RC=$?',
@@ -1408,6 +1406,13 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '  fi',
     '}',
     '',
+    'ensure_nginx_runtime() {',
+    '  if install_nginx_runtime; then return 0; fi',
+    '  echo "[信息] 安装系统 Nginx 和 stream 模块；包管理器可能启动系统 Nginx 服务"',
+    '  install_forward_tool_package nginx || return 1',
+    '  install_nginx_runtime',
+    '}',
+    '',
     'do_install_tool() {',
     '  local TOOL="$1" FOUND=""',
     '  [ "$(id -u)" = 0 ] || { echo "[错误] 请使用 root 权限"; return 1; }',
@@ -1424,11 +1429,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '        install_runtime || return 1',
     '      fi ;;',
     '    nginx)',
-    '      if ! install_nginx_runtime; then',
-    '        echo "[信息] 将安装系统 Nginx 和 stream 模块；包管理器可能启动系统 Nginx 服务"',
-    '        install_forward_tool_package nginx || return 1',
-    '        install_nginx_runtime || return 1',
-    '      fi ;;',
+    '      ensure_nginx_runtime || return 1 ;;',
     '    *)',
     '      case "$TOOL" in',
     '        socat) [ ! -x /usr/bin/socat ] || FOUND=/usr/bin/socat ;;',
@@ -1490,15 +1491,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '',
     '  # 安装可选转发工具',
     '  install_realm || true',
-    '  if is_enabled_value "${FORWARDX_INSTALL_NGINX:-}"; then',
-    '    install_nginx_runtime || true',
-    '  else',
-    '    remove_service_by_name "$NGINX_SERVICE_NAME"',
-    '    for pid in $(pgrep -f "[/]usr/local/bin/forwardx-nginx" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done',
-    '    rm -f "$NGINX_BIN" 2>/dev/null || true',
-    '    rm -rf /etc/forwardx/nginx 2>/dev/null || true',
-    '    rm -f /run/forwardx-nginx.pid 2>/dev/null || true',
-    '  fi',
+    '  ensure_nginx_runtime || echo "[警告] Nginx 或 stream 模块安装失败，Agent 将继续安装；可使用 fwxm agent tools install nginx 重试"',
     '  if ! install_runtime; then',
     '    echo "[错误] gost runtime 安装失败，安装中止"',
     '    exit 1',
@@ -1585,15 +1578,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
 
     '    install_deps',
     '    ensure_source_accounting',
-    '    if is_enabled_value "${FORWARDX_INSTALL_NGINX:-}"; then',
-    '      install_nginx_runtime || true',
-    '    else',
-    '      remove_service_by_name "$NGINX_SERVICE_NAME"',
-    '      for pid in $(pgrep -f "[/]usr/local/bin/forwardx-nginx" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done',
-    '      rm -f "$NGINX_BIN" 2>/dev/null || true',
-    '      rm -rf /etc/forwardx/nginx 2>/dev/null || true',
-    '      rm -f /run/forwardx-nginx.pid 2>/dev/null || true',
-    '    fi',
+    '    ensure_nginx_runtime || echo "[警告] Nginx 或 stream 模块安装失败，Agent 将继续升级；可使用 fwxm agent tools install nginx 重试"',
     '    if ! install_runtime; then',
     '      echo "[错误] gost runtime 安装失败，升级中止"',
     '      return 1',

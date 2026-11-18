@@ -48,7 +48,7 @@ function Dial({
   const start = point(radius, 0);
   const peakInner = point(radius - STROKE / 2 - 1, peakFraction);
   const peakOuter = point(radius + STROKE / 2 + 1, peakFraction);
-  const motion = animated ? "transition-all duration-500 ease-linear" : "";
+  const motion = animated ? "transition-all duration-100 ease-linear" : "";
   return (
     <g>
       <path d={path} fill="none" strokeWidth={STROKE} strokeLinecap="round" className="stroke-muted" />
@@ -79,7 +79,7 @@ function Dial({
           cy={start.y}
           r={STROKE / 2 + 2.5}
           strokeWidth={3}
-          className={cn("fill-background", animated && "transition-transform duration-500 ease-linear")}
+          className={cn("fill-background", animated && "transition-transform duration-100 ease-linear")}
           style={{
             stroke: color,
             transformOrigin: `${CENTER_X}px ${CENTER_Y}px`,

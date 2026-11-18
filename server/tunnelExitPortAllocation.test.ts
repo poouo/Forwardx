@@ -5,6 +5,59 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+test("ForwardX rules do not reserve or retain per-rule tunnel exit ports", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-forwardx-exit-port-"));
+  const databasePath = path.join(directory, "forwardx-exit-port.db");
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const moduleUrl = (file) => pathToFileURL(path.join(process.cwd(), file)).href;
+    const runtime = await import(moduleUrl("server/dbRuntime.ts"));
+    const schema = await import(moduleUrl("server/dbSchema.ts"));
+    const tunnelRepo = await import(moduleUrl("server/repositories/tunnelRepository.ts"));
+    const q = (name) => '"' + name + '"';
+    const insert = async (table, columns, values) => {
+      await runtime.executeRaw(
+        "INSERT INTO " + q(table) + " (" + columns.map(q).join(", ") + ") VALUES (" + values.map(() => "?").join(", ") + ")",
+        values,
+      );
+    };
+
+    try {
+      await runtime.connectDatabase({ type: "sqlite", sqlite: { path: process.env.FORWARDX_TEST_DB } });
+      await schema.ensureDatabaseSchema();
+      await insert("hosts", ["id", "name", "ip", "hostType", "userId", "portRangeStart", "portRangeEnd", "isOnline"],
+        [1, "forwardx-exit", "198.51.100.20", "slave", 1, 22000, 22999, 1]);
+      await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "mode", "listenPort", "userId", "isEnabled"],
+        [10, "forwardx", 1, 1, "forwardx", 22600, 1, 1]);
+      await insert("forward_rules", ["id", "hostId", "name", "forwardType", "protocol", "tunnelId", "tunnelExitPort", "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "pendingDelete", "isForwardGroupTemplate"],
+        [20, 1, "legacy-forwardx-rule", "gost", "tcp", 10, 22601, 25000, "203.0.113.20", 443, 1, 1, 0, 0]);
+
+      assert.equal(await tunnelRepo.isPortUsedOnHost(1, 22601, undefined, "both"), false,
+        "a ForwardX tunnelExitPort must not block a real exit listener");
+      assert.equal(await tunnelRepo.findAvailableTunnelExitPort(1, 22601, 22601), 22601,
+        "the exit allocator must ignore a legacy ForwardX tunnelExitPort");
+      const rule = (await runtime.queryRaw('SELECT * FROM "forward_rules" WHERE "id" = ?', [20]))[0];
+      const tunnel = (await runtime.queryRaw('SELECT * FROM "tunnels" WHERE "id" = ?', [10]))[0];
+      await tunnelRepo.reconcileForwardRuleTunnelExits(rule, tunnel);
+      const repaired = (await runtime.queryRaw('SELECT "tunnelExitPort" FROM "forward_rules" WHERE "id" = ?', [20]))[0];
+      assert.equal(repaired.tunnelExitPort, null, "ForwardX reconciliation must clear the legacy field");
+    } finally {
+      await runtime.closeDatabase();
+    }
+  `;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, DATABASE_TYPE: "sqlite", FORWARDX_TEST_DB: databasePath },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  fs.rmSync(directory, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 /**
  * A tunnel exit rule may outlive a host policy change (or a previous buggy
  * allocation).  Reconciliation must not blindly retain the old port: the

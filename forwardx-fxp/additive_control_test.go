@@ -165,6 +165,13 @@ func testControlledFXPAddsRules(t *testing.T, mode string) {
 		t.Fatalf("new TCP rule: %q %v", reply, err)
 	}
 	newTCP.Close()
+	// Editing one member replaces only that listener; the existing sibling
+	// session remains usable while the shared process stays alive.
+	editedMember := group
+	editedMember.Entries = append([]config(nil), group.Entries...)
+	editedMember.Entries[0].TargetPort++
+	post(editedMember, http.StatusNoContent)
+	check()
 
 	// A later port conflict must release earlier staged listeners, not old ones.
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
@@ -185,7 +192,7 @@ func testControlledFXPAddsRules(t *testing.T, mode string) {
 	edited := group
 	edited.Entries = append([]config(nil), group.Entries...)
 	edited.Entries[0].TargetPort++
-	post(edited, http.StatusConflict)
+	post(edited, http.StatusNoContent)
 	post(normalizeConfig(config{Role: "entry-group", TunnelID: group.TunnelID, ControlSocket: group.ControlSocket, Entries: group.Entries[:1]}), http.StatusConflict)
 	check()
 }

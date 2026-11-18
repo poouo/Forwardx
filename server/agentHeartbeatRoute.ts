@@ -40,6 +40,7 @@ import { hasQueuedIperf3AgentTasks, takeIperf3AgentTasks } from "./iperf3AgentTa
 import { hasQueuedLinkSpeedTasks, takeLinkSpeedTasks, recordLinkSpeedCapability } from "./linkSpeedTasks";
 import { recordIpSwitchAgentCapability, hasQueuedIpSwitchAgentTasks, takeIpSwitchAgentTasks } from "./agentIpSwitchTasks";
 import { hasQueuedPluginAgentTasks, takePluginAgentTasks } from "./pluginAgentTasks";
+import { hasQueuedStreamUnlockAgentTasks, takeStreamUnlockAgentTasks } from "./streamUnlockAgentTasks";
 import { getAgentPluginInventory, updateAgentPluginInventory } from "./agentPluginInventory";
 import { updateAgentToolInventory } from "./agentToolInventory";
 import { recordAgentConnectionStats } from "./agentConnectionStats";
@@ -139,6 +140,7 @@ import { groupRuleTrafficBlocked, planTunnelTrafficParticipation } from "./hostT
 import { runAgentRuntimeRecovery } from "./agentRuntimeRecovery";
 import { observePresenceCapableHostActivity, registerPresenceCapableHost } from "./agentFastLiveness";
 import { recordAuthenticatedAgentActivity } from "./agentActivity";
+import { agentActionEpochKey, reconcileAgentActionEpochs, type AgentActionEpoch } from "./agentActionEpochs";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -151,6 +153,7 @@ const nginxRuntimeLogCache = new Map<number, string>();
 const mimicRuntimeLogCache = new Map<number, { signature: string; loggedAt: number }>();
 const dnsRuntimeGenerations = new DnsRuntimeGenerationTracker();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
+const agentActionEpochCache = new Map<number, { epochs: Map<string, AgentActionEpoch>; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentDesiredDispatchAuditHash = new Map<number, string>();
 const agentRuntimeSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
@@ -211,6 +214,7 @@ export function pruneAgentHeartbeatCaches(now = Date.now()) {
   }
   pruneMapEntries(mimicRuntimeLogCache, (entry) => stale(entry.loggedAt));
   pruneMapEntries(agentActionBatchCache, (entry) => stale(entry.seenAt));
+  pruneMapEntries(agentActionEpochCache, (entry) => stale(entry.seenAt));
   pruneMapEntries(agentDesiredStateSendCache, (entry) => stale(entry.sentAt));
   pruneMapEntries(agentRuntimeSyncActionCache, (entry) => stale(entry.sentAt));
   pruneMapEntries(agentPluginSyncActionCache, (entry) => stale(entry.sentAt));
@@ -737,6 +741,7 @@ export function invalidateAgentDesiredStateCache(
   if (!Number.isFinite(id) || id <= 0) return;
   agentStableHeartbeatPlanCache.invalidate(id);
   agentActionBatchCache.delete(id);
+  agentActionEpochCache.delete(id);
   agentDesiredStateSendCache.delete(id);
   if (!options.preserveLocalRuntimeState) agentLocalRuntimeStateCache.delete(id);
   for (const key of Array.from(agentRuntimeSyncActionCache.keys())) {
@@ -891,6 +896,25 @@ function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssu
   }
   setBoundedMapValue(agentActionBatchCache, hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now }, AGENT_HOST_CACHE_MAX);
   return fallbackIssuedAt;
+}
+
+function resolveActionIssuedAts(hostId: number, actions: any[], issuedAt: number, revision: number) {
+  const groups = new Map<string, any[]>();
+  for (const action of actions) {
+    const key = agentActionEpochKey(action);
+    const group = groups.get(key) || [];
+    group.push(action);
+    groups.set(key, group);
+  }
+  const signatures = new Map([...groups].map(([key, group]) => [
+    key, `${revision}\n${stableActionSignature(group)}`,
+  ]));
+  const epochs = reconcileAgentActionEpochs(
+    agentActionEpochCache.get(hostId)?.epochs || new Map(), signatures, issuedAt,
+  );
+  // Finishing unrelated work must not supersede an unchanged listener handoff.
+  setBoundedMapValue(agentActionEpochCache, hostId, { epochs, seenAt: Date.now() }, AGENT_HOST_CACHE_MAX);
+  return actions.map((action) => epochs.get(agentActionEpochKey(action))!.issuedAt);
 }
 
 function compactMimicFiltersForLog(filters: string[]) {
@@ -1844,6 +1868,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         || hasQueuedIperf3AgentTasks(host.id)
         || hasQueuedLinkSpeedTasks(host.id)
         || hasQueuedIpSwitchAgentTasks(host.id)
+        || hasQueuedStreamUnlockAgentTasks(host.id)
         || hasQueuedPluginAgentTasks(host.id),
       recoveryTriggered,
       addressChanged,
@@ -1886,6 +1911,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         selfTests: [],
         lookingGlassTests: [],
         iperf3Tasks: [],
+        streamUnlockTests: [],
         pluginTasks: [],
         agentUpgrade: null,
         trafficShutdownCheck,
@@ -6498,6 +6524,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     const effectiveActions = dropStalePortRemoveActions(actions, protectedRuleRemoveActionKeys);
     const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);
+    const actionIssuedAts = resolveActionIssuedAts(Number(host.id), effectiveActions, responseIssuedAt, configRevision);
     const ruleByIdForDesired = new Map((rules as any[]).map((rule: any) => [Number(rule.id), rule]));
     const desiredKnownRunning = (action: any) => {
       if (action?.op === "remove") return true;
@@ -6522,11 +6549,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return false;
     };
-    const normalizedActions = effectiveActions.map((action: any) => {
+    const normalizedActions = effectiveActions.map((action: any, index: number) => {
       const statusType = action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined));
       const normalized = {
         ...action,
-        issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
+        issuedAt: Number(action.issuedAt) || actionIssuedAts[index] || actionBatchIssuedAt,
         configRevision,
         knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
         statusType,
@@ -6606,6 +6633,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
     const linkSpeedTasks = takeLinkSpeedTasks(host.id);
     const ipSwitchTasks = takeIpSwitchAgentTasks(host.id);
+    const streamUnlockTests = takeStreamUnlockAgentTasks(host.id);
     const pluginsAwaitingSync = new Set(pluginSyncTasks.map((task) => task.pluginId));
     const pluginTasks = supportsPluginTasks && reportedPluginInventory && !pluginSyncActionQueued
       ? takePluginAgentTasks(host.id, 4, (task) => (
@@ -6618,6 +6646,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || iperf3Tasks.length > 0
       || linkSpeedTasks.length > 0
       || ipSwitchTasks.length > 0
+      || streamUnlockTests.length > 0
       || pluginTasks.length > 0
       || hasPendingPluginTasks
       || pluginSyncActionQueued
@@ -6698,6 +6727,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       && lookingGlassTests.length === 0
       && iperf3Tasks.length === 0
       && ipSwitchTasks.length === 0
+      && streamUnlockTests.length === 0
       && pluginTasks.length === 0
       && !hasPendingPluginTasks
       && !pluginSyncActionQueued
@@ -6751,6 +6781,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         + iperf3Tasks.length
         + linkSpeedTasks.length
         + ipSwitchTasks.length
+        + streamUnlockTests.length
         + pluginTasks.length
         + (hasPendingPluginTasks ? 1 : 0)
         + (tcpingRequested ? 1 : 0)
@@ -6768,6 +6799,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       iperf3Tasks,
       linkSpeedTasks,
       ipSwitchTasks,
+      streamUnlockTests,
       pluginTasks,
       trafficShutdownCheck,
       agentUpgrade,

@@ -97,24 +97,14 @@ https://panel.example.com
 面板公开地址直接影响 Agent 安装脚本生成、Agent 自动升级和 Agent 与面板的通讯。仅修改此项不会让仍连接旧 URL 的离线 Agent 自动回连。后续变更地址需保留旧入口、按迁移流程转交，或在 Agent 主机更新连接地址；需要保持业务连接时先阅读 [迁移说明](./migration.md)。
 :::
 
-## 接入主机：创建 Agent Token
+## 接入主机：统一安装与自动发现
 
-Agent Token 用于让服务器注册到当前面板。进入：
+进入「主机管理」，点击「添加主机」，弹窗中可复制通用安装、卸载和升级命令。复制安装命令后，在需要管理的 Linux 服务器上用 root 执行。
 
-```text
-主机管理 -> Token 管理
-```
+~~~bash
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY
+~~~
 
-点击"添加 Token"，填写名称后保存。
+使用面板实际生成的完整命令，无需先创建主机或 Token。同一命令可在多台新服务器执行，每台会分配独立 Token，成功注册后自动显示在主机管理中。
 
-Token 创建完成后，点击对应 Token 的"安装命令"，面板会生成包含该 Token 和面板地址的一键安装命令。复制命令后在需要管理的 Linux 服务器上执行，Agent 即可自动注册上线。
-
-安装命令格式类似：
-
-```bash
-curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
-```
-
-::: tip
-一个 Token 只绑定一台服务器；需要接入多台服务器时，请分别创建 Token。独立 Token 不影响主机加入入口组、出口组或转发组。安装后在「主机管理」页面看到绿色在线状态，说明 Agent 已成功连接面板。
-:::
+已有主机覆盖安装或换机恢复时，进入「Agent 管理」，点击原 Agent 的终端图标，使用专属安装命令，沿用原主机和规则。详细说明见 [Agent 安装与维护](./agent.md)。

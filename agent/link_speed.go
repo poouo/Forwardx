@@ -205,15 +205,16 @@ func handleLinkSpeedTask(cfg Config, task linkSpeedTask) {
 	}
 	session.running = true
 	session.mu.Unlock()
-	updates := make(chan speedSample, 8)
+	// Enough room for both 30-second phases while HTTP reporting is delayed.
+	updates := make(chan speedSample, 640)
 	var updatesMu sync.Mutex
 	updatesClosed := false
 	reportsDone := make(chan struct{})
 	go func() {
 		defer close(reportsDone)
-		for sample := range updates {
-			_ = speedReport(cfg, task, map[string]any{"sample": sample})
-		}
+		reportSpeedSamples(updates, speedReportInterval, func(samples []speedSample) {
+			_ = speedReport(cfg, task, map[string]any{"samples": samples})
+		})
 	}()
 	emit := func(sample speedSample) {
 		updatesMu.Lock()
@@ -243,6 +244,35 @@ func handleLinkSpeedTask(cfg Config, task linkSpeedTask) {
 		return
 	}
 	speedReportFinal(cfg, task, map[string]any{"state": "completed", "upload": upload, "download": download})
+}
+
+// Batch measured points without putting HTTP latency on the payload path.
+// Closing the channel flushes the final partial batch before completion.
+func reportSpeedSamples(updates <-chan speedSample, interval time.Duration, report func([]speedSample)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	batch := make([]speedSample, 0, 64)
+	flush := func() {
+		if len(batch) > 0 {
+			report(batch)
+			batch = make([]speedSample, 0, 64)
+		}
+	}
+	for {
+		select {
+		case sample, ok := <-updates:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, sample)
+			if len(batch) == 64 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 func prepareLinkSpeedComponent(cfg Config, s *linkSpeedSession, task linkSpeedTask, c linkSpeedComponent) error {
@@ -283,6 +313,9 @@ func prepareLinkSpeedComponent(cfg Config, s *linkSpeedSession, task linkSpeedTa
 			if err := json.Unmarshal(config, &spec); err != nil {
 				return err
 			}
+			// The normal runtime path fills UDP ports before preparing WireGuard
+			// proxies. Temporary speed components need the same normalization.
+			spec = normalizeFXPSpec(spec)
 			if spec.TransportVersion == forwardXWireGuardVersion {
 				ref := "speed-" + task.JobID + "-" + strconv.Itoa(c.Port)
 				prepared, err := prepareFXPWireGuard(spec, ref)

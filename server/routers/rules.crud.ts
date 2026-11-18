@@ -907,44 +907,46 @@ export async function createDirectForwardRuleForActor(
       const tunnel = selectedTunnelForRule;
       if (!dbBool(tunnel.isEnabled)) throw new Error("所选隧道已停用");
       if (Number(tunnel.entryHostId) !== hostId) throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
-      const exit = await db.getHostById(tunnel.exitHostId);
-      // The primary managed GOST rule must point at the same listener that the
-      // tunnel service binds. Legacy rows may contain a high/unrestricted port
-      // after a NAT range was introduced; repair the tunnel first rather than
-      // merely assigning a new bookkeeping port to the rule.
-      const listenerRepair = usesSharedTunnelPrimaryListener(tunnel)
-        ? await ensureTunnelListenerPortPolicy(tunnel, {
-          hostId: Number(tunnel.exitHostId),
-          syncSharedPrimaryRule: true,
-        })
-        : null;
-      if (usesSharedTunnelPrimaryListener(tunnel) && !listenerRepair) {
-        throw new Error("出口 Agent 已无可用隧道监听端口");
+      if (String(tunnel.mode || "").toLowerCase() !== "forwardx") {
+        const exit = await db.getHostById(tunnel.exitHostId);
+        // The primary managed GOST rule must point at the same listener that the
+        // tunnel service binds. Legacy rows may contain a high/unrestricted port
+        // after a NAT range was introduced; repair the tunnel first rather than
+        // merely assigning a new bookkeeping port to the rule.
+        const listenerRepair = usesSharedTunnelPrimaryListener(tunnel)
+          ? await ensureTunnelListenerPortPolicy(tunnel, {
+            hostId: Number(tunnel.exitHostId),
+            syncSharedPrimaryRule: true,
+          })
+          : null;
+        if (usesSharedTunnelPrimaryListener(tunnel) && !listenerRepair) {
+          throw new Error("出口 Agent 已无可用隧道监听端口");
+        }
+        const sharedListenPort = await preferredSharedTunnelListenPort(tunnel, 0, input.isEnabled !== false);
+        // Reuse the reservation acquired while repairing the listener when this
+        // new rule is the shared primary. Secondary rules must release it and
+        // allocate an independent exit port.
+        if (listenerRepair?.reservation && Number(sharedListenPort || 0) === listenerRepair.port) {
+          tunnelExitPortReservation = listenerRepair.reservation;
+        } else {
+          listenerRepair?.reservation.release();
+        }
+        if (!tunnelExitPortReservation) {
+          tunnelExitPortReservation = await reserveTunnelExitPort({
+            hostId: Number(tunnel.exitHostId),
+            preferredStart: (exit as any)?.portRangeStart,
+            preferredEnd: (exit as any)?.portRangeEnd,
+            currentPort: sharedListenPort,
+            // The configured nginx listener belongs to this tunnel and may be
+            // reused by its primary rule; other resources remain conflicts.
+            allowSameTunnelListener: Number(sharedListenPort || 0) > 0,
+            excludeTunnelId: Number(tunnel.id),
+            protocol: "both",
+          });
+        }
+        if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
+        tunnelExitPort = tunnelExitPortReservation.port;
       }
-      const sharedListenPort = await preferredSharedTunnelListenPort(tunnel, 0, input.isEnabled !== false);
-      // Reuse the reservation acquired while repairing the listener when this
-      // new rule is the shared primary. Secondary rules must release it and
-      // allocate an independent exit port.
-      if (listenerRepair?.reservation && Number(sharedListenPort || 0) === listenerRepair.port) {
-        tunnelExitPortReservation = listenerRepair.reservation;
-      } else {
-        listenerRepair?.reservation.release();
-      }
-      if (!tunnelExitPortReservation) {
-        tunnelExitPortReservation = await reserveTunnelExitPort({
-          hostId: Number(tunnel.exitHostId),
-          preferredStart: (exit as any)?.portRangeStart,
-          preferredEnd: (exit as any)?.portRangeEnd,
-          currentPort: sharedListenPort,
-          // The configured nginx listener belongs to this tunnel and may be
-          // reused by its primary rule; other resources remain conflicts.
-          allowSameTunnelListener: Number(sharedListenPort || 0) > 0,
-          excludeTunnelId: Number(tunnel.id),
-          protocol: "both",
-        });
-      }
-      if (!tunnelExitPortReservation) throw new Error("出口 Agent 已无可用隧道端口");
-      tunnelExitPort = tunnelExitPortReservation.port;
     }
     const runtimeOptionInput = tunnelId ? tunnelRuntimeOptionInput(selectedTunnelForRule) : input;
     const proxyProtocol = normalizeProxyProtocolInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, clearUnsupported: !!tunnelId });
@@ -1490,7 +1492,7 @@ export const crudRulesRouter = router({
           }
 
           let tunnelExitPort: number | null = null;
-          if (nextTunnelId) {
+          if (nextTunnelId && String(selectedTunnelForRule?.mode || "").toLowerCase() !== "forwardx") {
             const tunnel = selectedTunnelForRule;
             const exit = await db.getHostById(tunnel.exitHostId);
             const existingExitPort = Number((rule as any).tunnelExitPort || 0);
@@ -2084,6 +2086,13 @@ export const crudRulesRouter = router({
           }
           const sameTunnel = Number(nextTunnelId) === Number((rule as any).tunnelId || 0);
           const existingExitPort = Number((rule as any).tunnelExitPort || 0);
+          if (String(tunnel.mode || "").toLowerCase() === "forwardx") {
+            // ForwardX carries the rule inside its own tunnel transport and
+            // does not bind a per-rule public exit listener.  Never preserve
+            // or allocate the legacy tunnelExitPort bookkeeping value.
+            (data as any).tunnelExitPort = null;
+            await db.clearForwardRuleTunnelExits(id);
+          } else {
           // Disabling an existing rule is a state change, not a request to
           // move its data-plane listener. In particular, a primary managed
           // GOST rule intentionally shares tunnel.listenPort. Passing
@@ -2139,6 +2148,7 @@ export const crudRulesRouter = router({
             if (!reservation) throw new Error("出口 Agent 已无可用隧道端口");
             tunnelExitPortReservationForUpdate = reservation;
             (data as any).tunnelExitPort = reservation.port;
+          }
           }
         } else {
           (data as any).tunnelExitPort = null;

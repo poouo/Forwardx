@@ -38,6 +38,8 @@ import { normalizeHostProbeMethod, urlProbeOptionsSchema } from "../../shared/ur
 import { getAgentConnectionStats } from "../agentConnectionStats";
 import { resolveAgentAdvertisedPanelUrl } from "../agentPanelUrl";
 import { normalizeAgentPanelUrl } from "../../shared/agentPanelUrl";
+import { enqueueStreamUnlockAgentTask, getStreamUnlockAgentTaskStatus, latestStreamUnlockAgentTask } from "../streamUnlockAgentTasks";
+import { getDevStreamUnlockResult } from "../devStreamUnlock";
 
 const agentPanelUrlFields = {
   agentPanelUrlEnabled: z.boolean().optional(),
@@ -932,6 +934,22 @@ export const hostsRouter = router({
         latest: latestById.get(Number(service.id)) || null,
         health: health.get(Number(service.id)) || null,
       }));
+    }),
+    streamUnlock: router({
+      start: protectedProcedure
+        .input(z.object({ hostId: z.number().int().positive(), family: z.enum(["ipv4", "ipv6", "both"]).optional() }))
+        .mutation(async ({ input, ctx }) => {
+          await requireHostAccess(ctx, input.hostId);
+          return enqueueStreamUnlockAgentTask(input.hostId, { family: input.family || "both" });
+        }),
+      status: protectedProcedure
+        .input(z.object({ hostId: z.number().int().positive(), taskId: z.string().trim().min(1).max(128).optional() }))
+        .query(async ({ input, ctx }) => {
+          await requireHostAccess(ctx, input.hostId);
+          return input.taskId
+            ? getStreamUnlockAgentTaskStatus(input.hostId, input.taskId) || getDevStreamUnlockResult(input.hostId, input.taskId)
+            : latestStreamUnlockAgentTask(input.hostId) || getDevStreamUnlockResult(input.hostId);
+        }),
     }),
     // Mutation avoids retaining provider secrets in the browser's polling/query cache.
     probeServiceIpSwitchHook: adminProcedure

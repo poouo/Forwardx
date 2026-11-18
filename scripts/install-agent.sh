@@ -53,11 +53,20 @@ configure_proxy() {
       --proxy) [ "$#" -ge 2 ] && [ -n "$2" ] || return 1; value="$2"; explicit=true; shift 2 ;;
       --proxy=*) value="${1#*=}"; explicit=true; shift ;;
       --no-proxy) value=''; explicit=true; shift ;;
+      --mimic) [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }; FORWARDX_INSTALL_MIMIC="$2"; shift 2 ;;
+      --mimic=*) FORWARDX_INSTALL_MIMIC="${1#*=}"; [ -n "$FORWARDX_INSTALL_MIMIC" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }; shift ;;
       -h|--help) ACTION=help; shift ;;
       --*) echo '[ERROR] Unknown option.' >&2; return 1 ;;
       *) [ -z "$TOKEN" ] || return 1; TOKEN="$1"; shift ;;
     esac
   done
+  case "${FORWARDX_INSTALL_MIMIC:-ask}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) FORWARDX_INSTALL_MIMIC=yes ;;
+    0|false|FALSE|no|NO|n|N|off|OFF) FORWARDX_INSTALL_MIMIC=no ;;
+    ask) FORWARDX_INSTALL_MIMIC=ask ;;
+    *) echo '[ERROR] --mimic / FORWARDX_INSTALL_MIMIC must be y, n or ask.' >&2; return 1 ;;
+  esac
+  export FORWARDX_INSTALL_MIMIC
   case "$ACTION" in uninstall|remove|delete|help|'') return 0 ;; esac
   if [ "$explicit" = false ]; then
     for file in "$CONFIG_DIR/config.json" "$LEGACY_CONFIG_DIR/config.json"; do
@@ -107,9 +116,11 @@ show_help() {
   uninstall          完全卸载 Agent 及相关服务
   --proxy URL        安装/运行/升级使用代理，例如 socks5h://127.0.0.1:1080
   --no-proxy         保存为直连；升级默认保留配置中的 proxyUrl
+  --mimic y|n|ask    安装时自动安装/跳过 Mimic，ask 表示交互询问（默认）
 
 说明:
-  安装过程中会询问是否安装 mimic UDP 混淆环境，默认 n，只有输入 Y 才会安装。
+  未指定 --mimic 时会询问是否安装 mimic UDP 混淆环境，默认 n，输入 Y 才会安装。
+  兼容 FORWARDX_INSTALL_MIMIC 环境变量，命令行参数优先；也支持 --mimic=y。
 EOF
 }
 
@@ -366,7 +377,7 @@ do_uninstall() {
   echo "[完成] Agent 已卸载"
 }
 
-configure_proxy "$@" || { echo '[ERROR] Cannot configure proxy; cancelled (no direct fallback).' >&2; exit 1; }
+configure_proxy "$@" || { echo '[ERROR] Invalid installation options or proxy configuration; cancelled.' >&2; exit 1; }
 case "$ACTION" in
   help) show_help; exit 0 ;;
   install)

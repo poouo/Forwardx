@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   tunnels,
   hosts,
@@ -918,6 +918,7 @@ export async function findAvailableTunnelExitPort(
   const usedHopMimicPorts = await db.select({ port: tunnelHops.mimicPort }).from(tunnelHops).where(eq(tunnelHops.hostId, exitHostId));
   const usedExitConds: any[] = [
     eq(tunnels.exitHostId, exitHostId),
+    ne(tunnels.mode, "forwardx"),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
@@ -927,9 +928,16 @@ export async function findAvailableTunnelExitPort(
     .from(forwardRules)
     .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
     .where(and(...usedExitConds));
-  const usedMappedExitConds: any[] = [eq(forwardRuleTunnelExits.exitHostId, exitHostId)];
+  const usedMappedExitConds: any[] = [
+    eq(forwardRuleTunnelExits.exitHostId, exitHostId),
+    ne(tunnels.mode, "forwardx"),
+  ];
   if (excludeMappingsSql) usedMappedExitConds.push(excludeMappingsSql);
-  const usedMappedExitPorts = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort }).from(forwardRuleTunnelExits).where(and(...usedMappedExitConds));
+  const usedMappedExitPorts = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
+    .from(forwardRuleTunnelExits)
+    .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
+    .where(and(...usedMappedExitConds));
   const used = new Set<number>();
   reservedPorts.forEach((port) => {
     const n = Number(port);
@@ -1724,6 +1732,7 @@ export async function getUsedPortsOnHost(
 
   const usedPrimaryExitConds: any[] = [
     eq(tunnels.exitHostId, hostId),
+    ne(tunnels.mode, "forwardx"),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
@@ -1731,7 +1740,10 @@ export async function getUsedPortsOnHost(
   if (excludeRuleExitPorts && excludeRulesSql) usedPrimaryExitConds.push(excludeRulesSql);
   if (protocolCond) usedPrimaryExitConds.push(protocolCond);
 
-  const usedExitConds: any[] = [eq(forwardRuleTunnelExits.exitHostId, hostId)];
+  const usedExitConds: any[] = [
+    eq(forwardRuleTunnelExits.exitHostId, hostId),
+    ne(tunnels.mode, "forwardx"),
+  ];
   if (excludeRuleExitPorts && excludeMappingsSql) usedExitConds.push(excludeMappingsSql);
   if (protocolCond) usedExitConds.push(protocolCond);
 
@@ -1751,6 +1763,7 @@ export async function getUsedPortsOnHost(
     db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
       .from(forwardRuleTunnelExits)
       .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+      .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
       .where(and(...usedExitConds)),
     db.select({ id: tunnels.id, listenPort: tunnels.listenPort, mimicPort: tunnels.mimicPort })
       .from(tunnels)
@@ -1826,6 +1839,7 @@ export async function isPortUsedOnHost(
   if ((Number(r[0]?.count) || 0) > 0) return true;
   const primaryExitConds: any[] = [
     eq(tunnels.exitHostId, hostId),
+    ne(tunnels.mode, "forwardx"),
     eq(forwardRules.tunnelExitPort, sourcePort),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
@@ -1842,6 +1856,7 @@ export async function isPortUsedOnHost(
   if ((Number(primaryExitRows[0]?.count) || 0) > 0) return true;
   const exitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, hostId),
+    ne(tunnels.mode, "forwardx"),
     eq(forwardRuleTunnelExits.tunnelExitPort, sourcePort),
   ];
   if (excludeRuleExitPorts && excludedIds.length > 0) {
@@ -1851,6 +1866,7 @@ export async function isPortUsedOnHost(
   const exitRows = await db.select({ count: sqlCountAll() })
     .from(forwardRuleTunnelExits)
     .innerJoin(forwardRules, eq(forwardRuleTunnelExits.ruleId, forwardRules.id))
+    .innerJoin(tunnels, eq(forwardRules.tunnelId, tunnels.id))
     .where(and(...exitConds));
   if ((Number(exitRows[0]?.count) || 0) > 0) return true;
   const tunnelRows = await db.select({ id: tunnels.id, listenPort: tunnels.listenPort, mimicPort: tunnels.mimicPort }).from(tunnels).where(and(
@@ -2441,6 +2457,21 @@ export async function reconcileForwardRuleTunnelExits(
     }
   }
   if (String((tunnel as any)?.mode || "").toLowerCase() === "forwardx") {
+    // ForwardX transports do not use a per-rule public exit listener. Clear
+    // the legacy primary field as well as endpoint mappings so old rows cannot
+    // keep blocking future tunnel port allocations.
+    if (Number(rule?.tunnelExitPort || 0) > 0) {
+      const db = await getDb();
+      if (db) {
+        await db.update(forwardRules).set({
+          tunnelExitPort: null,
+          isRunning: false,
+          updatedAt: nowDate(),
+        } as any).where(eq(forwardRules.id, ruleId));
+      }
+      rule.tunnelExitPort = null;
+      rule.isRunning = false;
+    }
     await clearForwardRuleTunnelExits(ruleId);
     return [];
   }

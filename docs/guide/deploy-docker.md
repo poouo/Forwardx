@@ -18,6 +18,12 @@ JWT 签名密钥无需手动填写：一键安装使用安全随机源生成独�
 
 脚本会选择并校验发布镜像；默认镜像仓库为 ghcr.io/poouo/forwardx。新版本镜像尚未构建完成时不要强行替换正在运行的容器。
 
+### 官方脚本的时间同步
+
+官方一键脚本在宿主机阶段会自动处理时间同步：优先复用并启动已有的 `systemd-timesyncd` 或 `chrony`，都不存在时按当前发行版安装 `chrony`，然后尝试立即校时。时间同步服务启动失败只会输出警告，不会阻止面板安装；面板自身仍会使用 HTTPS 时间源校准旧版 Agent 协议时间。
+
+这项处理只属于官方 `install-panel-docker.sh` 的宿主机安装流程。手动 Compose、直接 `docker run`、第三方面板管理器或已有自定义部署不会安装或修改宿主机时间服务。Docker 容器与宿主机共享时钟，不能通过容器内部单独校时；自行部署时请在宿主机配置 NTP/chrony，也不要为了校时给面板容器增加 `privileged` 或 `SYS_TIME` 权限。
+
 ## 数据与配置
 
 | 项目 | 默认位置 |
@@ -73,6 +79,8 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 ## 手动 Compose 部署
 
 适合已经安装 Docker Engine 与 Compose 插件、能够自行维护配置的用户。使用独立目录，避免与安装脚本管理的目录混用。
+
+手动部署不会执行官方安装脚本的时间同步步骤。请先确认宿主机的 `systemd-timesyncd` 或 `chrony` 正常运行；容器内的 `TZ` 只影响显示时区，不能修正宿主机时钟。
 
 ~~~bash
 sudo mkdir -p /opt/forwardx-compose

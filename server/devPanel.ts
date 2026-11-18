@@ -11,6 +11,7 @@ import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository
 import { AGENT_VERSION } from "../shared/versions";
 import { operationsDay } from "../shared/operations";
 import { seedDevHistoryTrend } from "./devHistoryTrend";
+import { seedDevStreamUnlockResults } from "./devStreamUnlock";
 
 export const DEV_PANEL_FLAG = "FORWARDX_DEV_PANEL";
 export const DEV_ADMIN_USERNAME = "dev.admin@forwardx.local";
@@ -2331,6 +2332,9 @@ export async function seedDevPanelData() {
   if (await getSetting("devPanelSeededAt")) {
     await seedDevHostIpv6Entries();
     await seedDevHistoryTrend();
+    seedDevStreamUnlockResults(await queryRaw<{ id: number; geoCountryCode: string; ip: string; ipv4: string; ipv6: string }>(
+      "SELECT id, geoCountryCode, ip, ipv4, ipv6 FROM hosts ORDER BY sortOrder, id",
+    ));
     console.log("[DevPanel] Reusing existing local development data");
     return;
   }
@@ -2355,6 +2359,9 @@ export async function seedDevPanelData() {
   await seedOperationsData(hostIds, resources);
   await seedOperationsFinanceData(usersSeed, catalog);
   await seedDevHistoryTrend();
+  seedDevStreamUnlockResults(await queryRaw<{ id: number; geoCountryCode: string; ip: string; ipv4: string; ipv6: string }>(
+    "SELECT id, geoCountryCode, ip, ipv4, ipv6 FROM hosts ORDER BY sortOrder, id",
+  ));
   await setSetting("devPanelSeededAt", new Date().toISOString());
 
   console.log(`[DevPanel] Seeded local development data as ${DEV_ADMIN_USERNAME}`);

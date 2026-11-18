@@ -76,6 +76,12 @@ function quotaSourceLabel(kind: TrafficQuotaSourceKind) {
   return translateText("套餐额度");
 }
 
+function formatQuotaBytes(bytes: number | string | null | undefined): string {
+  const num = Number(bytes);
+  if (!Number.isFinite(num) || num <= 0) return "0 GB";
+  return `${parseFloat((num / (1024 ** 3)).toFixed(2))} GB`;
+}
+
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
 }
@@ -282,12 +288,12 @@ function TrafficPieSection({
   title,
   data,
   loading,
-  className,
+  wide = false,
 }: {
   title: string;
   data: Array<{ id: number; name: string; value: number }>;
   loading: boolean;
-  className?: string;
+  wide?: boolean;
 }) {
   const [hasAnimated, setHasAnimated] = useState(false);
   const chartData = useMemo<TrafficPieDatum[]>(() => {
@@ -314,7 +320,7 @@ function TrafficPieSection({
   const shouldAnimate = motionEnabled && chartData.length > 0 && total > 0 && !hasAnimated;
 
   return (
-    <section aria-label={title} className={`min-w-0 p-4 sm:p-5 ${className || ""}`}>
+    <section aria-label={title} className="min-w-0 p-4 sm:p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
             <BarChart3 className="h-4 w-4" />
@@ -328,8 +334,10 @@ function TrafficPieSection({
           <div className="flex h-44 flex-col items-center justify-center gap-2 rounded-xl bg-muted/20 text-sm text-muted-foreground">
             <BarChart3 className="h-5 w-5 text-muted-foreground/50" />{translateText("暂无流量数据")}</div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
-            <div className="h-44 min-w-0">
+          <div className={cn("grid gap-3", wide
+            ? "sm:grid-cols-[220px_minmax(0,1fr)] sm:items-center sm:gap-x-6 xl:grid-cols-[260px_minmax(0,1fr)]"
+            : "sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]")}>
+            <div className={cn("h-44 min-w-0", wide && "sm:h-56")}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
                   <Pie
@@ -365,7 +373,7 @@ function TrafficPieSection({
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="max-h-44 min-w-0 overflow-y-auto text-xs">
+            <div className={cn("max-h-44 min-w-0 overflow-y-auto text-xs", wide && "sm:max-h-56")}>
               {chartData.map((item, index) => (
                 <div
                   key={item.id}
@@ -388,7 +396,9 @@ function TrafficPieSection({
                 </div>
               ))}
             </div>
-            <div className="flex flex-wrap gap-x-3 gap-y-2 sm:col-span-2 lg:col-span-1 2xl:col-span-2">
+            <div className={cn("flex flex-wrap gap-x-3 gap-y-2", wide
+              ? "sm:col-span-2"
+              : "sm:col-span-2 lg:col-span-1 2xl:col-span-2")}>
               {chartData.map((item) => (
                 <div key={item.id} className="flex max-w-full items-center gap-1.5 text-[11px] text-muted-foreground">
                   <span className="h-2.5 w-3.5 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
@@ -443,7 +453,7 @@ export function DashboardTrafficOverview({ tunnelData, portData, groupData, load
             title={section.title}
             data={section.data}
             loading={loading}
-            className={visibleSections.length === 1 && !loading ? "lg:mx-auto lg:w-full lg:max-w-4xl" : undefined}
+            wide={visibleSections.length === 1 && !loading}
           />
         ))}
       </div>
@@ -606,8 +616,8 @@ function DashboardContent() {
   const quotaExpiryText = quota.hasQuota ? formatDate(accountExpiresAt) : "---";
   const quotaProgressText = quota.hasQuota
     ? trafficLimit > 0
-      ? `${formatBytes(trafficUsed)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`
-      : translateText("{0} / 不限", [formatBytes(trafficUsed)])
+      ? `${formatQuotaBytes(trafficUsed)} / ${formatQuotaBytes(trafficLimit)} (${trafficPercent}%)`
+      : translateText("{0} / 不限", [formatQuotaBytes(trafficUsed)])
     : "---";
   const quotaProgressValue = quota.hasQuota && trafficLimit > 0 ? trafficPercent : 0;
   const trafficBillingBytesText = trafficBillingEnabled ? formatBytes(trafficBillingBytes) : translateText("未开启");
@@ -826,7 +836,7 @@ function DashboardContent() {
                   <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                     {quota.sources.map((source) => (
                       <span key={source.kind} className="whitespace-nowrap">
-                        {quotaSourceLabel(source.kind)} {source.unlimited ? translateText("不限") : formatBytes(source.bytes)}
+                        {quotaSourceLabel(source.kind)} {source.unlimited ? translateText("不限") : formatQuotaBytes(source.bytes)}
                       </span>
                     ))}
                   </div>

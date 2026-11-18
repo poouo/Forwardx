@@ -43,6 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 默认安装到 `/opt/forwardx-docker`，容器名 `forwardx-panel`，宿主机端口映射到容器的 `3000`。数据库配置、SQLite 文件等数据保存在挂载到容器 `/data` 的 Docker 命名卷里，**不在部署目录下**。
 
+官方一键 Docker 安装器会在宿主机上自动安装并启用时间同步服务（优先使用已有的 `systemd-timesyncd`/`chrony`，否则按发行版安装 `chrony`）。手动 Compose、`docker run` 或其他自行维护的 Docker 部署不会执行这一步；容器不能独立校准宿主机时间，请自行在宿主机维护 NTP/chrony。
+
 ### Linux 本地安装
 
 ```bash
@@ -57,17 +59,27 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 
 1. 打开 `http://服务器IP:9810`，确认数据库配置并创建管理员。沿用旧数据库时直接用原来的账号登录。
 2. 配置 [HTTPS 与反向代理](docs/guide/reverse-proxy.md)，并在系统设置里填写 Agent 能访问到的面板地址。
-3. 在「主机管理 → Token 管理」为**每台主机分别创建 Token**，复制该主机的安装命令。
+3. 在「主机管理」点击「添加主机」，复制通用安装命令；也可以在「Agent 管理」查看安装命令和接入设置。
 4. 在被管理的主机上用 root 执行安装命令，回到面板确认主机在线。
 5. 在「链路管理」创建端口转发或隧道，再到「转发规则」添加规则，并实际连接一次确认能通。
 
 Agent 安装示例：
 
 ```bash
-curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY
 ```
 
-把地址和 Token 换成自己的。几个常见问题：面板跑在 Docker 里并连接宿主机上的数据库时，地址不能填 `127.0.0.1`（那是容器自己）；NAT 主机要填写实际映射的端口段；云安全组和系统防火墙都要放行转发端口。详见 [快速开始](docs/guide/quick-start.md)、[首次初始化](docs/guide/first-setup.md)、[Agent 安装](docs/guide/agent.md)。
+把地址和接入密钥换成自己的，新机器上线后自动出现在面板。恢复已有主机时，使用「Agent 管理」中该 Agent 的专属安装命令，可保留主机及规则。
+
+安装时可在**完整命令末尾**追加 `--mimic y` 自动安装 Mimic，或 `--mimic n` 跳过；不传参数则交互询问（回车跳过，没有交互终端时也跳过）。例如：
+
+```bash
+curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DISCOVERY_KEY --mimic y
+```
+
+面板复制的完整命令同样支持末尾追加参数，无需修改引号内的内容，已有的结尾 `--` 请保留。通用安装、单机恢复安装及 GitHub 安装入口均支持；跳过不会卸载已安装的 Mimic。详情见 [Mimic 安装参数](docs/guide/agent.md#mimic-udp-混淆可选)。
+
+几个常见问题：面板跑在 Docker 里并连接宿主机上的数据库时，地址不能填 `127.0.0.1`（那是容器自己）；NAT 主机要填写实际映射的端口段；云安全组和系统防火墙都要放行转发端口。详见 [快速开始](docs/guide/quick-start.md)、[首次初始化](docs/guide/first-setup.md)、[Agent 安装](docs/guide/agent.md)。
 
 ## 3. SSH 日常管理
 

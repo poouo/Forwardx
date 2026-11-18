@@ -66,7 +66,7 @@ func (s *speedUDPStats) record(sequence uint64, sender int64, n int, peer string
 	s.last = now
 	s.bytes += uint64(n)
 	s.packets++
-	if elapsed := now.Sub(s.sampleAt).Seconds(); elapsed >= .5 {
+	if elapsed := now.Sub(s.sampleAt).Seconds(); elapsed >= speedSampleInterval.Seconds() {
 		rate := float64(s.bytes-s.sampleBytes) * 8 / elapsed / 1e6
 		if rate > s.peak {
 			s.peak = rate
@@ -315,7 +315,7 @@ func runSpeedUDP(ctx context.Context, task linkSpeedTask, direction string, emit
 				}
 			}
 		}
-		if time.Since(lastLive) >= 500*time.Millisecond {
+		if time.Since(lastLive) >= speedSampleInterval {
 			result := stats.result(0, 0)
 			mbps := float64(result.Bytes-lastLiveBytes) * 8 / time.Since(lastLive).Seconds() / 1e6
 			emit(speedSample{Direction: direction, ElapsedMs: min(time.Since(started).Milliseconds(), int64(task.Duration*1000)), Bytes: result.Bytes, Mbps: mbps})
@@ -366,7 +366,7 @@ func runSpeedUDPUpload(ctx context.Context, conn *net.UDPConn, task linkSpeedTas
 			return speedMeasurement{}, ctx.Err()
 		default:
 		}
-		if time.Since(lastQuery) >= 250*time.Millisecond {
+		if time.Since(lastQuery) >= speedSampleInterval {
 			op := byte('S')
 			var count uint64
 			var duration int64
@@ -386,7 +386,7 @@ func runSpeedUDPUpload(ctx context.Context, conn *net.UDPConn, task linkSpeedTas
 				if reply.Done {
 					result = reply.Result
 				}
-				if time.Since(lastSample) >= 400*time.Millisecond && reply.Result.Bytes >= lastBytes {
+				if time.Since(lastSample) >= speedSampleInterval*9/10 && reply.Result.Bytes >= lastBytes {
 					elapsed := time.Since(lastSample).Seconds()
 					mbps := float64(reply.Result.Bytes-lastBytes) * 8 / elapsed / 1e6
 					emit(speedSample{Direction: "upload", ElapsedMs: min(time.Since(start).Milliseconds(), int64(task.Duration*1000)), Bytes: reply.Result.Bytes, Mbps: mbps})
