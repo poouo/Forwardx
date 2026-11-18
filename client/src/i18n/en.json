@@ -5459,5 +5459,6 @@
   "继续安装将由新 Agent 接管该主机及规则。旧 Agent 停止面板同步，已有转发保留运行；如需添加新机器，请使用统一安装指令。": "Installing transfers this host and its rules to the new Agent. The old Agent stops syncing while existing forwarding continues. Use the universal installation command to add a new machine.",
   "Agent 管理": "Agent management",
   "搜索 Agent / Token / 备注 / 状态 / 关联主机": "Search Agent / Token / note / status / linked host",
-  "点击添加主机，复制统一安装指令": "Click Add host to copy the universal installation command"
+  "点击添加主机，复制统一安装指令": "Click Add host to copy the universal installation command",
+  "开始检测": "Start check"
 }

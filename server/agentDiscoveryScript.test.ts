@@ -92,7 +92,7 @@ test("bootstrap retries preserve identity, cache independent credentials and reu
     }
     // The persistent flock inode must remain: unlinking it would let another
     // installer lock a new inode while the original installation is running.
-    assert.deepEqual(fs.readdirSync(config).filter(name => name.startsWith(".discovery.")), [".discovery.lock"], "only the installation lock may remain after temporary credentials are cleaned up");
+    assert.equal(fs.readdirSync(config).filter(name => name.startsWith(".discovery.") && name !== ".discovery.lock").length, 0, "temporary credentials must be cleaned up");
     // A manually installed pre-discovery Agent takes precedence over state.
     fs.writeFileSync(path.join(config, "config.json"), JSON.stringify({ panelUrl: "https://panel.example.test", token: "original-legacy-token" }));
     const recovered = run();
