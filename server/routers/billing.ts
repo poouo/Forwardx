@@ -5,6 +5,7 @@ import * as db from "../db";
 import { refreshUserForwardEndpoints } from "./helpers";
 import { adjustUserBalanceCommand, setUserBalanceCommand } from "../services/userCommandService";
 import { clearForwardxAiSettingsCache } from "../ai/settings";
+import { MAX_TRAFFIC_ADDON_QUANTITY } from "../../shared/trafficAddonPurchase";
 
 const dateInput = z.string().trim().optional().nullable();
 const billingPageInput = z.object({
@@ -166,11 +167,12 @@ export const billingRouter = router({
     .input(z.object({
       addonId: z.number().int().positive(),
       subscriptionId: z.number().int().positive().optional(),
+      quantity: z.number().int().min(1).max(MAX_TRAFFIC_ADDON_QUANTITY).default(1),
     }))
     .mutation(async ({ input, ctx }) => {
-      const result = await db.purchaseTrafficAddonWithBalance(ctx.user.id, input.addonId, input.subscriptionId);
+      const result = await db.purchaseTrafficAddonWithBalance(ctx.user.id, input.addonId, input.subscriptionId, input.quantity);
       await refreshUserForwardEndpoints(ctx.user.id, "traffic-addon-purchased");
-      appendPanelLog("info", `[TrafficAddon] balance purchase user=${ctx.user.id} addon=${input.addonId} bytes=${result.trafficBytes}`);
+      appendPanelLog("info", `[TrafficAddon] balance purchase user=${ctx.user.id} addon=${input.addonId} quantity=${result.quantity} bytes=${result.trafficBytes} cents=${result.priceCents}`);
       return result;
     }),
 

@@ -44,6 +44,7 @@ import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
+import { tunnelRuntimeFamily } from "./tunnelRuntimePlan";
 import { exitGroupUsesMultipleExits } from "../shared/exitStrategy";
 import { isRuleLatencyReportMethodCompatible } from "../shared/latencyProbe";
 import { completeSupportBundleHost } from "./supportBundle";
@@ -120,7 +121,7 @@ export function trafficAccountingHostIds(
   extraExitHostIds: Set<number> | undefined,
 ) {
   if (!tunnel) return new Set([Number(rule.hostId || 0)]);
-  if (isForwardXTunnel(tunnel)) {
+  if (isForwardXTunnel(tunnel) || tunnelRuntimeFamily(tunnel) === "gost") {
     return entryHostIds && entryHostIds.size > 0
       ? new Set(entryHostIds)
       : new Set([Number(tunnel.entryHostId || 0)]);

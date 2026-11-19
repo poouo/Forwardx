@@ -17,7 +17,9 @@ import (
 
 const streamUnlockProbeVersion = "1"
 const streamUnlockRequestTimeout = 8 * time.Second
-const streamUnlockResponseLimit = 96 * 1024
+
+// Region bootstrap data can occur near the end of large platform pages.
+const streamUnlockResponseLimit = 2 * 1024 * 1024
 
 type streamUnlockTask struct {
 	TaskID      string   `json:"taskId"`
@@ -96,12 +98,19 @@ func streamUnlockAvailabilityState(status int, body, effectiveURL string) (state
 		return "error", fmt.Sprintf("服务入口返回 HTTP %d", status), fmt.Sprintf("HTTP %d", status)
 	}
 
-	response := strings.ToLower(body + "\n" + effectiveURL)
+	response := streamUnlockRestrictionText(body, effectiveURL)
 	for _, marker := range []string{
 		"unsupported_country",
 		"unsupported_country_region_territory",
 		"country_not_supported",
 		"region_not_supported",
+		"region_unavailable",
+		"app-unavailable-in-region",
+		"app unavailable in region",
+		"isn't available in your region",
+		"isn’t available in your region",
+		"isn't available in your country",
+		"isn’t available in your country",
 		"not available in your country",
 		"not available in your region",
 		"not available in your location",
@@ -140,22 +149,23 @@ func streamUnlockAvailabilityState(status int, body, effectiveURL string) (state
 }
 
 func streamUnlockProviders() map[string]streamUnlockProvider {
-	parseGeneric := func(status int, body, effectiveURL string) (string, string, string, string) {
-		state, detail := streamUnlockState(status, body)
-		region := streamUnlockRegex(body, `(?i)"(?:countryCode|country|region|territory|country_code)"\s*:\s*"([A-Za-z]{2,3})"`)
-		return state, strings.ToUpper(region), detail, "HTTP status"
+	parseGeneric := func(providerID string) func(int, string, string) (string, string, string, string) {
+		return func(status int, body, effectiveURL string) (string, string, string, string) {
+			state, detail := streamUnlockState(status, body)
+			return state, streamUnlockProviderRegion(providerID, body), detail, "HTTP status; platform visitor region"
+		}
 	}
 	parseNetflix := func(status int, body, effectiveURL string) (string, string, string, string) {
 		state, detail := streamUnlockState(status, body)
+		region := streamUnlockProviderRegion("netflix", body)
 		if state == "available" && strings.Contains(strings.ToLower(body), "oh no!") {
-			return "partial", "", "仅检测到 Netflix Original 或地区内容受限", "页面包含 Oh no!"
+			return "partial", region, "仅检测到 Netflix Original 或地区内容受限", "页面包含 Oh no!"
 		}
-		region := streamUnlockRegex(body, `(?i)"(?:countryCode|country|id)"\s*:\s*"([A-Za-z]{2})"`)
 		return state, strings.ToUpper(region), detail, "Netflix title page"
 	}
 	parseBahamut := func(status int, body, effectiveURL string) (string, string, string, string) {
 		state, detail := streamUnlockState(status, body)
-		region := streamUnlockRegex(body, `(?i)data-geo="([A-Za-z0-9_-]+)"`)
+		region := streamUnlockProviderRegion("bahamut", body)
 		if state == "available" && region == "" {
 			return "unknown", "", "接口可访问但未返回地区字段", "Bahamut page"
 		}
@@ -163,30 +173,31 @@ func streamUnlockProviders() map[string]streamUnlockProvider {
 	}
 	parseAbema := func(status int, body, effectiveURL string) (string, string, string, string) {
 		state, detail := streamUnlockState(status, body)
-		region := streamUnlockRegex(body, `(?i)"isoCountryCode"\s*:\s*"([A-Za-z]{2})"`)
+		region := streamUnlockProviderRegion("abema", body)
 		if state == "available" && region == "" {
 			return "unknown", "", "接口可访问但未返回地区字段", "Abema ip/check"
 		}
 		return state, region, detail, "Abema isoCountryCode"
 	}
-	parseAvailability := func(status int, body, effectiveURL string) (string, string, string, string) {
-		state, detail, evidence := streamUnlockAvailabilityState(status, body, effectiveURL)
-		region := streamUnlockRegex(body, `(?i)"(?:countryCode|country_code|isoCountryCode|country|region)"\s*:\s*"([A-Za-z]{2})"`)
-		return state, strings.ToUpper(region), detail, evidence
+	parseAvailability := func(providerID string) func(int, string, string) (string, string, string, string) {
+		return func(status int, body, effectiveURL string) (string, string, string, string) {
+			state, detail, evidence := streamUnlockAIPageState(providerID, status, body, effectiveURL)
+			return state, streamUnlockProviderRegion(providerID, body), detail, evidence
+		}
 	}
 	return map[string]streamUnlockProvider{
 		"netflix":     {"netflix", "Netflix", "netflix.com", "https://www.netflix.com/title/81280792", parseNetflix},
-		"disney-plus": {"disney-plus", "Disney+", "disneyplus.com", "https://www.disneyplus.com/", parseGeneric},
-		"youtube":     {"youtube", "YouTube", "youtube.com", "https://www.youtube.com/premium", parseGeneric},
-		"spotify":     {"spotify", "Spotify", "spotify.com", "https://open.spotify.com/", parseGeneric},
-		"bilibili-tv": {"bilibili-tv", "Bilibili TV", "bilibili.tv", "https://www.bilibili.tv/", parseGeneric},
-		"bahamut":     {"bahamut", "巴哈姆特动画疯", "ani.gamer.com.tw", "https://ani.gamer.com.tw/ajax/getdeviceid.php", parseBahamut},
+		"disney-plus": {"disney-plus", "Disney+", "disneyplus.com", "https://www.disneyplus.com/", parseGeneric("disney-plus")},
+		"youtube":     {"youtube", "YouTube", "youtube.com", "https://www.youtube.com/premium", parseGeneric("youtube")},
+		"spotify":     {"spotify", "Spotify", "spotify.com", "https://open.spotify.com/", parseGeneric("spotify")},
+		"bilibili-tv": {"bilibili-tv", "Bilibili TV", "bilibili.tv", "https://www.bilibili.tv/", parseGeneric("bilibili-tv")},
+		"bahamut":     {"bahamut", "巴哈姆特动画疯", "ani.gamer.com.tw", "https://ani.gamer.com.tw/", parseBahamut},
 		"abema":       {"abema", "AbemaTV", "api.abema.io", "https://api.abema.io/v1/ip/check?device=android", parseAbema},
-		"tiktok":      {"tiktok", "TikTok", "", "https://www.tiktok.com/", parseAvailability},
-		"gemini":      {"gemini", "Gemini", "", "https://gemini.google.com/app", parseAvailability},
-		"grok":        {"grok", "Grok", "", "https://grok.com/", parseAvailability},
-		"chatgpt":     {"chatgpt", "ChatGPT", "", "https://chatgpt.com/auth/login", parseAvailability},
-		"claude":      {"claude", "Claude", "", "https://claude.ai/login", parseAvailability},
+		"tiktok":      {"tiktok", "TikTok", "", "https://www.tiktok.com/", parseAvailability("tiktok")},
+		"gemini":      {"gemini", "Gemini", "", "https://gemini.google.com/app", parseAvailability("gemini")},
+		"grok":        {"grok", "Grok", "", "https://grok.com/", parseAvailability("grok")},
+		"chatgpt":     {"chatgpt", "ChatGPT", "", "https://chatgpt.com/auth/login", parseAvailability("chatgpt")},
+		"claude":      {"claude", "Claude", "", "https://claude.ai/login", parseAvailability("claude")},
 	}
 }
 
@@ -242,8 +253,16 @@ func streamUnlockHTTPGet(ctx context.Context, client *http.Client, rawURL string
 }
 
 func streamUnlockProbeProvider(ctx context.Context, provider streamUnlockProvider, family string) streamUnlockProviderResult {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	client := streamUnlockHTTPClient(family)
+	defer client.CloseIdleConnections()
+	return streamUnlockProbeProviderWithClient(ctx, client, provider, family)
+}
+
+func streamUnlockProbeProviderWithClient(ctx context.Context, client *http.Client, provider streamUnlockProvider, family string) streamUnlockProviderResult {
 	result := streamUnlockProviderResult{ProviderID: provider.id, ProviderName: provider.name, Family: family, Status: "error", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	status, body, effectiveURL, latency, err := streamUnlockHTTPGet(ctx, streamUnlockHTTPClient(family), provider.url)
+	status, body, effectiveURL, latency, err := streamUnlockHTTPGet(ctx, client, provider.url)
 	result.HTTPStatus = status
 	result.LatencyMs = latency
 	if err != nil {
@@ -251,6 +270,13 @@ func streamUnlockProbeProvider(ctx context.Context, provider streamUnlockProvide
 		return result
 	}
 	result.Status, result.Region, result.Detail, result.Evidence = provider.parse(status, body, effectiveURL)
+	streamUnlockProbeAIAvailability(ctx, client, provider.id, &result)
+	if result.Region == "" {
+		if region := streamUnlockAIRegion(ctx, client, provider.id, family); region != "" {
+			result.Region = region
+			result.Evidence += "; platform edge request country (not account entitlement)"
+		}
+	}
 	return result
 }
 
@@ -290,6 +316,8 @@ type streamUnlockDoHResponse struct {
 }
 
 func streamUnlockDNS(ctx context.Context, domain, family string) streamUnlockDNSResult {
+	ctx, cancel := context.WithTimeout(ctx, streamUnlockRequestTimeout)
+	defer cancel()
 	result := streamUnlockDNSResult{Domain: domain, Family: family, Mode: "unknown", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	resolver := net.DefaultResolver
 	systemAddresses, systemErr := resolver.LookupHost(ctx, domain)

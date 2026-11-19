@@ -41,16 +41,20 @@ test("uses an authenticated relay for every GOST tunnel rule protocol", () => {
     assert.equal(plan.chainConnector.type, "relay");
     assert.equal(plan.exitHandler.type, "relay");
     assert.deepEqual(plan.chainConnector.auth, plan.exitHandler.auth);
-    assert.equal(plan.chainConnector.auth?.username, "fwx-7-19");
+    assert.equal(plan.chainConnector.auth?.username, "fwx-exit-7");
     assert.equal(plan.chainConnector.auth?.password.length, 64);
     assert.deepEqual(plan.chainConnector.metadata, { nodelay: true });
     assert.deepEqual(plan.exitHandler.metadata, { nodelay: true });
   }
 });
 
-test("derives different relay credentials for different rules", () => {
+test("shares exit authentication across rules but isolates tunnels and secret rotations", () => {
   const first = planGostTunnelRuleProtocol({ protocol: "both", tunnelId: 7, ruleId: 19, secretSeed: "same-secret" });
   const second = planGostTunnelRuleProtocol({ protocol: "both", tunnelId: 7, ruleId: 20, secretSeed: "same-secret" });
 
-  assert.notEqual(first.chainConnector.auth?.password, second.chainConnector.auth?.password);
+  assert.deepEqual(first.chainConnector, second.chainConnector);
+  const otherTunnel = planGostTunnelRuleProtocol({ protocol: "both", tunnelId: 8, ruleId: 19, secretSeed: "same-secret" });
+  const rotated = planGostTunnelRuleProtocol({ protocol: "both", tunnelId: 7, ruleId: 19, secretSeed: "rotated-secret" });
+  assert.notEqual(first.chainConnector.auth?.password, otherTunnel.chainConnector.auth?.password);
+  assert.notEqual(first.chainConnector.auth?.password, rotated.chainConnector.auth?.password);
 });

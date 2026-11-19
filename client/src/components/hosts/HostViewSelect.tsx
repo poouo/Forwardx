@@ -1,5 +1,5 @@
 import { Globe, LayoutGrid, List, MapPinned, Rows3 } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { t } from "@/i18n";
 
 const views = [
@@ -14,16 +14,19 @@ export default function HostViewSelect({ value, onChange }: {
   value: typeof views[number]["value"];
   onChange: (value: typeof views[number]["value"]) => void;
 }) {
-  const selected = views.find(view => view.value === value) || views[0];
-  return <Select value={value} onValueChange={next => {
-    const view = views.find(item => item.value === next);
-    if (view) onChange(view.value);
-  }}>
-    <SelectTrigger className="h-9 w-auto min-w-36" aria-label={t("视图")}>
-      <SelectValue><span className="flex items-center gap-2"><selected.icon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={1.5} />{t(selected.label)}</span></SelectValue>
-    </SelectTrigger>
-    <SelectContent>{views.map(view => <SelectItem key={view.value} value={view.value} className={"desktop" in view ? "hidden md:flex" : undefined}>
-      <span className="flex items-center gap-2"><view.icon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={1.5} />{t(view.label)}</span>
-    </SelectItem>)}</SelectContent>
-  </Select>;
+  return <div role="group" aria-label={t("视图")} className="flex shrink-0 items-center overflow-hidden rounded-md border border-border/40">
+    {views.map(view => <Button
+      key={view.value}
+      type="button"
+      variant={value === view.value ? "secondary" : "ghost"}
+      size="icon"
+      className={"desktop" in view ? "hidden h-8 w-8 rounded-none md:inline-flex" : "h-8 w-8 rounded-none"}
+      title={t(view.label)}
+      aria-label={t(view.label)}
+      aria-pressed={value === view.value}
+      onClick={() => onChange(view.value)}
+    >
+      <view.icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+    </Button>)}
+  </div>;
 }

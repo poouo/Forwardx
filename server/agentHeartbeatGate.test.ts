@@ -254,12 +254,12 @@ test("each rule independently uses the strictest plan, resource and rule rate", 
     { mbps: 20, scope: "rule-42-host-3" });
 });
 
-test("running process-backed Guards remain in desired reconciliation", () => {
-  for (const forwardType of ["gost", "realm", "socat", "nginx"]) {
+test("running process-backed and kernel rule Guards remain in desired reconciliation", () => {
+  for (const forwardType of ["gost", "realm", "socat", "nginx", "iptables", "nftables"]) {
     assert.equal(shouldReconcileProtocolGuardBackend(true, forwardType), true, forwardType);
   }
   assert.equal(shouldReconcileProtocolGuardBackend(false, "realm"), false);
-  assert.equal(shouldReconcileProtocolGuardBackend(true, "iptables"), false);
+  assert.equal(shouldReconcileProtocolGuardBackend(true, "unknown"), false);
 });
 
 test("Nginx guard strips received PROXY headers unless downstream sending is enabled", () => {

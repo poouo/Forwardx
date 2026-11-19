@@ -67,7 +67,7 @@ test("open dialogs and backdrops have visible state styles independent of animat
   const css = readFileSync("client/src/index.css", "utf8");
   const panel = css.match(/\.dialog-panel\[data-state="open"\]\s*\{([^}]+)\}/)?.[1] || "";
   assert.match(panel, /opacity:\s*1\s*;/);
-  assert.match(panel, /transform:\s*translateY\(0\)\s*;/);
+  assert.match(panel, /transform:\s*none\s*;/);
   const overlay = css.match(/\.dialog-overlay\[data-state="open"\]\s*\{([^}]+)\}/)?.[1] || "";
   assert.match(overlay, /background-color:\s*var\(--dialog-overlay-tint\)\s*;/);
   const material = css.match(/\.dialog-overlay\[data-state="open"\]::before,\s*\.dialog-overlay\[data-state="open"\]::after\s*\{([^}]+)\}/)?.[1] || "";
@@ -85,5 +85,5 @@ test("disabling decorative movement preserves functional inline drag transforms"
   assert.doesNotMatch(reduced, /transform:\s*none\s*!important/);
   // Dnd-kit uses direct transforms while dragging, not a decorative animation.
   const sortable = readFileSync("client/src/components/SortableDragHandle.tsx", "utf8");
-  assert.match(sortable, /transform: transform \? CSS\.Translate\.toString\(transform\)/);
+  assert.match(sortable, /transform: moving \? CSS\.Translate\.toString\(transform\)/);
 });

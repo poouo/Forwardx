@@ -3821,17 +3821,7 @@ function TunnelsContent() {
     else if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
     else if (nextViewMode !== "globe") handleChainViewModeChange(nextViewMode);
   };
-  const activeSectionTransitionKey = activeSection === "chains"
-    ? `chains-${chainViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : (isChainGlobeView ? filteredChainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)) > 0 ? "list" : "empty"}`
-    : activeSection === "ports"
-      ? `ports-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
-      : activeSection === "groups"
-        ? `groups-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
-      : activeSection === "entries"
-        ? `entries-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
-        : activeSection === "exits"
-          ? `exits-${groupViewMode}-${normalizedLinkSearchQuery || "all"}-${forwardGroupsLoading ? "loading" : Number(forwardGroupSummaryQuery.data?.totalItems || 0) > 0 ? "list" : "empty"}`
-          : `tunnels-${viewMode}-${normalizedLinkSearchQuery || "all"}-${isLoading || !tunnels ? "loading" : tunnelItems.length > 0 ? "list" : "empty"}`;
+  const activeSectionTransitionKey = `${activeSection}-${activeViewMode}-${normalizedLinkSearchQuery || "all"}`;
   const headerStat = activeSection === "chains"
     ? { value: `${isChainGlobeView ? activeChainCount : Number(forwardGroupSummaryQuery.data?.enabledItems || 0)} / ${isChainGlobeView ? chainGroups.length : Number(forwardGroupSummaryQuery.data?.totalItems || 0)} ${translateText(isChainGlobeView ? "可用" : "已启用")}`, loading: forwardGroupsLoading, cacheKey: "tunnels.header.chainsActive", fallback: `0 / 0 ${translateText(isChainGlobeView ? "可用" : "已启用")}`, iconClass: "text-primary" }
     : activeSection === "ports"

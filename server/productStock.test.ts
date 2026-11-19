@@ -56,6 +56,79 @@ const order = (outTradeNo: string, userId = 2, subscriptionId?: number) => billi
 const rule = (overrides: Record<string, unknown> = {}) => rules.createForwardRule({ name: "stock", hostId: 1, userId: 2, forwardType: "realm", protocol: "both", sourcePort: 22000, targetIp: "127.0.0.1", targetPort: 80, ...overrides } as any);
 const config = (resourceType = "host", resourceId = 1, stockLimit = 1, maxRulesPerUser = 0) => runtime.insertAndGetId("traffic_billing_configs", { resourceType, resourceId, stockLimit, maxRulesPerUser, enabled: true });
 
+test("store repurchases extend one subscription without consuming more stock or ports", async () => {
+  await runtime.executeRaw("UPDATE subscription_plans SET stockLimit = 1, durationDays = 30 WHERE id = 1");
+  const first = await billing.purchasePlanWithBalance(2, 1);
+  const previous = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+  const [second, third] = await Promise.all([billing.purchasePlanWithBalance(2, 1), billing.purchasePlanWithBalance(2, 1)]);
+  assert.equal(second.subscriptionId, first.subscriptionId);
+  assert.equal(third.subscriptionId, first.subscriptionId);
+  const latest = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+  assert.equal(new Date(latest.expiresAt!).getTime(), new Date(previous.expiresAt!).getTime() + 60 * 86400000);
+  assert.equal(latest.portRangeStart, previous.portRangeStart);
+  assert.equal(await billing.getUserBalance(2), 700);
+  assert.equal((await planStock()).stockUsed, 1);
+  assert.equal((await runtime.queryRaw<{ n: number }>("SELECT COUNT(*) AS n FROM user_subscriptions"))[0].n, 1);
+  const { plansRouter } = await import("./routers/plans");
+  const caller = plansRouter.createCaller({ user: { id: 2, role: "user", username: "stock-2" }, req: { headers: {}, socket: {} }, res: {} } as any);
+  const visible = (await caller.storeList()).find(plan => plan.id === 1)!;
+  assert.equal(visible.renewalSubscriptionId, first.subscriptionId);
+  assert.equal(productStock(visible).soldOut, true, "sold-out plan remains renewable by its owner");
+});
+
+test("online repurchases bind the original subscription and duplicate fulfillment never extends twice", async () => {
+  const first = await billing.purchasePlanWithBalance(2, 1);
+  await runtime.executeRaw("UPDATE subscription_plans SET stockLimit = 1 WHERE id = 1");
+  const previous = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+  const pending = await order("auto-renewal");
+  assert.equal(pending?.subscriptionId, first.subscriptionId);
+  assert.equal(pending?.stockReserved, false);
+  await billing.markPaymentOrderPaid("auto-renewal", { tradeNo: "renewal" });
+  const result = await billing.applySubscriptionToUser(2, 1, "payment", "auto-renewal", undefined, null, pending?.subscriptionId);
+  await billing.updatePaymentOrder("auto-renewal", { status: "completed", subscriptionId: result.subscriptionId });
+  assert.equal(new Date(result.expiresAt!).getTime(), new Date(previous.expiresAt!).getTime() + 30 * 86400000);
+  await billing.purchasePlanWithBalance(2, 1);
+  const afterOtherRenewal = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+  await billing.applySubscriptionToUser(2, 1, "payment", "auto-renewal", undefined, null, pending?.subscriptionId);
+  assert.equal(new Date((await billing.getUserSubscriptionById(first.subscriptionId))!.expiresAt!).getTime(), new Date(afterOtherRenewal.expiresAt!).getTime());
+  assert.equal((await planStock()).stockUsed, 1);
+});
+
+test("two new paid orders converge on one subscription and release the extra stock reservation", async () => {
+  await order("parallel-first");
+  await order("parallel-second");
+  assert.equal((await planStock()).stockUsed, 2);
+  await billing.markPaymentOrderPaid("parallel-first", { tradeNo: "first" });
+  await billing.markPaymentOrderPaid("parallel-second", { tradeNo: "second" });
+  const first = await billing.applySubscriptionToUser(2, 1, "payment", "parallel-first");
+  const second = await billing.applySubscriptionToUser(2, 1, "payment", "parallel-second");
+  assert.equal(second.subscriptionId, first.subscriptionId);
+  assert.equal(second.extended, true);
+  assert.equal((await planStock()).stockUsed, 1);
+  assert.equal((await billing.getPaymentOrderByOutTradeNo("parallel-second"))?.stockReserved, false);
+});
+
+test("expired subscriptions restart from now and reacquire ports; cancelled and restricted grants are not auto-renewed", async () => {
+  const first = await billing.purchasePlanWithBalance(2, 1);
+  const original = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+  await billing.updateUserSubscription(first.subscriptionId, { status: "expired", expiresAt: new Date(Date.now() - 86400000) });
+  await billing.purchasePlanWithBalance(3, 1); // Reuses the old port block.
+  const before = Date.now();
+  const renewed = await billing.purchasePlanWithBalance(2, 1);
+  assert.equal(renewed.subscriptionId, first.subscriptionId);
+  assert.notEqual(renewed.portRangeStart, original.portRangeStart);
+  assert.ok(new Date(renewed.expiresAt!).getTime() >= before + 30 * 86400000 - 1000);
+  await billing.cancelUserSubscription(first.subscriptionId);
+  const replacement = await billing.purchasePlanWithBalance(2, 1);
+  assert.notEqual(replacement.subscriptionId, first.subscriptionId);
+  const grant = await billing.applySubscriptionToUser(4, 1, "admin");
+  const purchased = await billing.purchasePlanWithBalance(4, 1);
+  assert.notEqual(purchased.subscriptionId, grant.subscriptionId, "restricted administrative grants are not renewed");
+  const independentGrant = await billing.applySubscriptionToUser(4, 1, "admin");
+  assert.notEqual(independentGrant.subscriptionId, purchased.subscriptionId, "administrative assignments stay independent");
+  await assert.rejects(() => billing.purchasePlanWithBalance(2, 1, null, purchased.subscriptionId), /无权/);
+});
+
 async function race(operation: string, userIds = [2, 3]) {
   const children = userIds.map(userId => {
     const child = spawn(process.execPath, ["--import", "tsx", "server/productStock.test.worker.ts"], { env: { ...process.env }, stdio: ["ignore", "pipe", "pipe", "ipc"] });

@@ -78,13 +78,16 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
       return;
     }
     if (!(container instanceof HTMLElement)) return;
+    // A grid has its own layout animator below. Running both controllers on
+    // the same nodes can remeasure an in-flight transform and compound it.
+    if (animateLayout) return;
     const controller = autoAnimate(container, {
       duration,
       easing: "cubic-bezier(0.22, 1, 0.36, 1)",
     });
     // Fully release observers and polling when disabled, rather than just hiding motion.
     return () => controller.destroy?.();
-  }, [duration, motionEnabled, as]);
+  }, [animateLayout, duration, motionEnabled, as]);
 
   useLayoutEffect(() => {
     const container = elementRef.current;
@@ -120,21 +123,19 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
 
           const deltaX = previousRect.left - nextRect.left;
           const deltaY = previousRect.top - nextRect.top;
-          const scaleX = nextRect.width > 0 ? previousRect.width / nextRect.width : 1;
-          const scaleY = nextRect.height > 0 ? previousRect.height / nextRect.height : 1;
           const moved = Math.abs(deltaX) >= 0.5 || Math.abs(deltaY) >= 0.5;
-          const resized = Math.abs(1 - scaleX) >= 0.01 || Math.abs(1 - scaleY) >= 0.01;
-          if (!moved && !resized) return;
+          // Resize text through layout, never by scaling a rasterized card.
+          if (!moved) return;
 
           if (typeof (child as HTMLElement).animate !== "function") return;
           const animation = (child as HTMLElement).animate(
             [
               {
-                transform: `translate(${deltaX}px, ${deltaY}px) scale(${scaleX}, ${scaleY})`,
+                transform: `translate(${deltaX}px, ${deltaY}px)`,
                 transformOrigin: "top left",
               },
               {
-                transform: "translate(0, 0) scale(1, 1)",
+                transform: "none",
                 transformOrigin: "top left",
               },
             ],
@@ -146,6 +147,7 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
           animationsRef.current.set(child, animation);
           animation.onfinish = () => {
             if (animationsRef.current.get(child) === animation) animationsRef.current.delete(child);
+            animation.cancel();
           };
           animation.oncancel = () => {
             if (animationsRef.current.get(child) === animation) animationsRef.current.delete(child);

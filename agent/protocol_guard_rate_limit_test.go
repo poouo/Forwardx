@@ -401,6 +401,57 @@ func TestSyncProtocolGuardsAppliesRateOnlyUpdateInPlace(t *testing.T) {
 	}
 }
 
+func TestDesiredStatePushSynchronizesGuardRatesAndDeletion(t *testing.T) {
+	resetHeartbeatStateForTest()
+	t.Cleanup(resetHeartbeatStateForTest)
+	base := guardRule{RuleID: 71, ListenPort: 27001, TargetIP: "192.0.2.1", TargetPort: 80,
+		Protocol: "tcp", RateLimitScope: t.Name(), LimitIn: 1024, LimitOut: 1024}
+	server := newProtocolGuardServer(base)
+	id := guardID(base)
+	protocolGuardMu.Lock()
+	originalGuards := protocolGuards
+	protocolGuards = map[string]*protocolGuardServer{id: server}
+	protocolGuardMu.Unlock()
+	t.Cleanup(func() {
+		server.close()
+		protocolGuardMu.Lock()
+		protocolGuards = originalGuards
+		protocolGuardMu.Unlock()
+	})
+	updated := base
+	updated.LimitIn, updated.LimitOut = 4096, 8192
+	handleAgentDesiredStatePush(Config{}, agentDesiredStatePush{
+		GuardRules: []guardRule{updated}, StateSignatures: map[string]string{"guardRules": "new-guard-state"},
+	})
+	if got := heartbeatStateSnapshotCopy().GuardRules; len(got) != 1 || got[0].LimitIn != 4096 {
+		t.Fatalf("SSE omitted Guard configuration: %+v", got)
+	}
+	for direction, want := range map[protocolGuardRateDirection]int64{protocolGuardRateIn: 4096, protocolGuardRateOut: 8192} {
+		limiter := server.rateLimiter(direction)
+		limiter.mu.Lock()
+		got := limiter.bytesPerSecond
+		limiter.mu.Unlock()
+		if got != want {
+			t.Fatalf("SSE Guard rate direction=%v got=%d want=%d", direction, got, want)
+		}
+	}
+	// Older panels omit the section; that must not erase a healthy Guard.
+	handleAgentDesiredStatePush(Config{}, agentDesiredStatePush{StateSignatures: map[string]string{"runningRules": "unchanged"}})
+	protocolGuardMu.Lock()
+	current := protocolGuards[id]
+	protocolGuardMu.Unlock()
+	if current != server {
+		t.Fatal("an omitted Guard section replaced the healthy listener")
+	}
+	// An explicit empty snapshot is authoritative and stops the old listener.
+	handleAgentDesiredStatePush(Config{}, agentDesiredStatePush{GuardRules: []guardRule{}})
+	select {
+	case <-server.done:
+	default:
+		t.Fatal("an empty SSE Guard snapshot did not remove the old Guard")
+	}
+}
+
 func TestProtocolGuardRateLimiterHotUpdateAndCloseCancellation(t *testing.T) {
 	rule := guardRule{
 		RuleID: 21, ListenPort: 22000,

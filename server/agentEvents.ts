@@ -443,6 +443,7 @@ export function pushAgentDesiredState(
     desiredState?: unknown;
     runningRules?: unknown[];
     ruleLatencyProbes?: unknown[];
+    guardRules?: unknown[];
     stateSignatures?: Record<string, string>;
   }
 ) {

@@ -52,7 +52,7 @@ test("forward-group port checks cover every entry and exclude the edited templat
       await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [121, 12, "host", 2, 0, 1]);
       await insert("forward_group_members", ["id", "groupId", "memberType", "hostId", "priority", "isEnabled"], [1310, 13, "host", 3, 0, 1]);
       await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "listenPort", "userId"], [200, "occupied-listener", 1, 2, 17650, 1]);
-      await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "listenPort", "userId"], [201, "child-exit", 1, 3, 17800, 1]);
+      await insert("tunnels", ["id", "name", "entryHostId", "exitHostId", "listenPort", "userId", "mode"], [201, "child-exit", 1, 3, 17800, 1, "nginx_stream"]);
       await insert("forward_rules", [
         "id", "hostId", "name", "forwardType", "protocol", "forwardGroupId", "isForwardGroupTemplate",
         "sourcePort", "targetIp", "targetPort", "userId", "isEnabled", "isRunning",

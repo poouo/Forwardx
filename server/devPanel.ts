@@ -7,7 +7,7 @@ import { getUserByUsername } from "./repositories/userRepository";
 import { hashPassword } from "./password";
 import { builtinAvatarForSeed } from "../shared/avatar";
 import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
-import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
+import { getTunnelById, reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
 import { AGENT_VERSION } from "../shared/versions";
 import { operationsDay } from "../shared/operations";
 import { seedDevHistoryTrend } from "./devHistoryTrend";
@@ -1402,7 +1402,7 @@ async function seedRules(hostIds: number[], resources: DevResources, usersSeed: 
   if (multiExitRuleId) {
     await reconcileForwardRuleTunnelExits(
       { id: multiExitRuleId, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId },
-      { id: resources.tunnels.multiEntryMultiExitTunnelId, mode: "tls", loadBalanceEnabled: true },
+      await getTunnelById(resources.tunnels.multiEntryMultiExitTunnelId),
     );
   }
   for (const groupId of [resources.groups.failoverGroupId, resources.groups.apiFailoverGroupId, resources.groups.mediaFailoverGroupId]) {

@@ -26,6 +26,35 @@ func gostTestConfig(t *testing.T, raw string) map[string]any {
 	return config
 }
 
+type gostStartupTransport struct {
+	calls int
+	fail  bool
+}
+
+func (transport *gostStartupTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	transport.calls++
+	if transport.fail || transport.calls < 3 {
+		return nil, os.ErrNotExist
+	}
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"services":[]}`)), Header: make(http.Header)}, nil
+}
+
+func TestGostLiveConfigWaitsForRuntimeAPIBind(t *testing.T) {
+	transport := &gostStartupTransport{}
+	api := gostAPIClient{client: &http.Client{Transport: transport}, baseURL: "http://localhost"}
+	data, err := api.readLiveConfig(context.Background())
+	if err != nil || string(data) != `{"services":[]}` || transport.calls != 3 {
+		t.Fatalf("startup API did not recover: calls=%d err=%v", transport.calls, err)
+	}
+	transport.fail = true
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := api.readLiveConfig(ctx); err == nil || time.Since(start) > time.Second {
+		t.Fatalf("unavailable API did not honor cancellation: %v", err)
+	}
+}
+
 func TestGostNativeStatsMetadataCasingKeepsAdditionsIncremental(t *testing.T) {
 	live := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","metadata":{"enablestats":true,"observer.resettraffic":false,"dialtimeout":"3s"}}]}`)
 	desired := gostTestConfig(t, `{"services":[{"name":"fwx-1-tcp","metadata":{"enableStats":true,"observer.resetTraffic":false,"dialTimeout":"3s"}},{"name":"fwx-2-tcp"}]}`)

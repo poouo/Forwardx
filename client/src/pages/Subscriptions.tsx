@@ -11,17 +11,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { planResourceText } from "@/lib/planDisplay";
 import { pollingInterval } from "@/lib/polling";
 import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
-import { CalendarClock, CheckCircle2, CreditCard, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
+import { CalendarClock, CheckCircle2, CreditCard, Gauge, Minus, Package, Plus, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "@/lib/localizedToast";
 import { useLocation } from "wouter";
 import { BILLING_DATE_TIME_FORMAT_OPTIONS } from "@shared/billingTime";
+import { MAX_TRAFFIC_ADDON_QUANTITY, trafficAddonPurchaseTotals } from "@shared/trafficAddonPurchase";
 
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
@@ -100,6 +102,7 @@ export default function Subscriptions() {
     placeholderData: (previousData) => previousData,
   });
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
+  const [addonQuantity, setAddonQuantity] = useState("1");
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
@@ -218,11 +221,16 @@ export default function Subscriptions() {
     });
   };
 
-  const selectedPrice = Number(selected?.addon?.priceCents || 0);
+  const addonTotals = useMemo(() => {
+    if (!selected) return null;
+    try {
+      return trafficAddonPurchaseTotals(Number(selected.addon.trafficBytes), Number(selected.addon.priceCents), Number(addonQuantity));
+    } catch { return null; }
+  }, [selected, addonQuantity]);
   const balanceCents = wallet?.balanceCents == null ? null : Number(wallet.balanceCents);
   const balanceReady = !walletLoading && balanceCents !== null;
   const balance = balanceCents ?? 0;
-  const balanceEnough = balanceReady && balance >= selectedPrice;
+  const balanceEnough = balanceReady && !!addonTotals && balance >= addonTotals.priceCents;
   const renewingPrice = Number(renewingSub?.priceCents || 0);
   const renewFinalAmountCents = Number(discountPreview?.finalAmountCents ?? renewingPrice);
   const renewBalanceEnough = balanceReady && balance >= renewFinalAmountCents;
@@ -279,7 +287,7 @@ export default function Subscriptions() {
           </Card>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           {visibleSubscriptions.map((sub: any) => {
             const isActive = sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date());
             const addons = isActive && Number(sub.trafficLimit || 0) > 0 ? (sub.trafficAddons || []) : [];
@@ -295,15 +303,15 @@ export default function Subscriptions() {
               && (sub.source === "redeem" || (sub.source === "admin" && !allowSelfRenew));
 
             return (
-              <Card key={sub.id} hoverable className="flex flex-col">
-                <CardHeader>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <Card key={sub.id} className="flex min-w-0 flex-col" data-subscription-card="true">
+                <CardHeader className="p-4 pb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <CardTitle className="flex items-center gap-2 truncate">
-                        <Package className="h-5 w-5 shrink-0" />
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Package className="h-4 w-4 shrink-0" />
                         <span className="truncate">{sub.planName || translateText("套餐 #{0}", [sub.planId])}</span>
                       </CardTitle>
-                      <CardDescription className="mt-2">{sourceLabel(sub.source)}</CardDescription>
+                      <CardDescription className="mt-1 text-xs">{sourceLabel(sub.source)}</CardDescription>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                       <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
@@ -323,58 +331,44 @@ export default function Subscriptions() {
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="flex-1 space-y-4">
-                  <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
-                    <div className="rounded-md border border-border/50 p-3">
+                <CardContent className="space-y-3 px-4 pb-4">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-muted/30 p-3 text-sm text-muted-foreground">
+                    <div className="min-w-0">
                       <div className="text-xs">{translateText("端口段")}</div>
-                      <div className="mt-1 font-medium text-foreground">{subscriptionPortRangeText(sub)}</div>
+                      <div className="mt-1 break-words font-medium text-foreground">{subscriptionPortRangeText(sub)}</div>
                     </div>
-                    <div className="rounded-md border border-border/50 p-3">
+                    <div className="min-w-0">
                       <div className="text-xs">{translateText("可用资源")}</div>
-                      <div className="mt-1 font-medium text-foreground">{planResourceText(sub)}</div>
+                      <div className="mt-1 break-words font-medium text-foreground">{planResourceText(sub)}</div>
                     </div>
-                    <div className="rounded-md border border-border/50 p-3">
+                    <div className="min-w-0">
                       <div className="text-xs">{translateText("套餐额度")}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5 font-medium text-foreground">{bytes(sub.trafficLimit)}<PlanTrafficModeBadge mode={sub.trafficMode} /></div>
                     </div>
-                    {purchasedAddonBytes > 0 && (
-                      <div className="rounded-md border border-border/50 p-3">
-                        <div className="text-xs">{translateText("已购附加流量")}</div>
-                        <div className="mt-1 font-medium text-foreground">{bytes(purchasedAddonBytes)}</div>
-                      </div>
-                    )}
-                    {grantedAddonBytes > 0 && (
-                      <div className="rounded-md border border-border/50 p-3">
-                        <div className="text-xs">{translateText("管理员加赠")}</div>
-                        <div className="mt-1 font-medium text-foreground">{bytes(grantedAddonBytes)}</div>
-                      </div>
-                    )}
-                    <div className="rounded-md border border-border/50 p-3">
+                    <div className="min-w-0">
                       <div className="text-xs">{translateText("限速")}</div>
                       <div className="mt-1 font-medium text-foreground">{speed(sub.rateLimitMbps)}</div>
                     </div>
                   </div>
 
-                  <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                    <div className="flex items-center gap-2">
-                      <CalendarClock className="h-3.5 w-3.5" />{translateText("到期：")}{dateTime(sub.expiresAt)}
+                  {(purchasedAddonBytes > 0 || grantedAddonBytes > 0) && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      {purchasedAddonBytes > 0 && <span>{translateText("已购附加流量")} <span className="font-medium text-foreground">{bytes(purchasedAddonBytes)}</span></span>}
+                      {grantedAddonBytes > 0 && <span>{translateText("管理员加赠")} <span className="font-medium text-foreground">{bytes(grantedAddonBytes)}</span></span>}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Gauge className="h-3.5 w-3.5" />{translateText("下次流量周期：")}{billingDateTime(sub.nextTrafficResetAt)}
-                    </div>
-                  </div>
+                  )}
 
                   {addons.length > 0 && (
                     <div className="space-y-2">
-                      <div className="text-sm font-medium">{translateText("购买附加流量")}</div>
-                      <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="text-xs font-medium text-muted-foreground">{translateText("购买附加流量")}</div>
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
                         {addons.map((addon: any) => (
                           <Button
                             key={addon.id}
                             type="button"
                             variant="outline"
-                            className="h-auto justify-between gap-3 px-3 py-2"
-                            onClick={() => setSelected({ sub, addon })}
+                            className="h-9 min-w-0 justify-between gap-2 px-3 text-xs"
+                            onClick={() => { setAddonQuantity("1"); setSelected({ sub, addon }); }}
                             disabled={purchaseAddon.isPending}
                           >
                             <span className="font-medium">{bytes(addon.trafficBytes)}</span>
@@ -386,13 +380,22 @@ export default function Subscriptions() {
                   )}
 
                   {isActive && Number(sub.trafficLimit || 0) > 0 && addons.length === 0 && (
-                    <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">{translateText("暂无可购买的附加流量包")}</div>
+                    <div className="text-xs text-muted-foreground">{translateText("暂无可购买的附加流量包")}</div>
                   )}
+                  {isActive && currentAddonBytes > 0 && validUntil && (
+                    <p className="text-xs text-muted-foreground">{translateText("本周期附加流量有效至 ")}{dateTime(validUntil)}</p>
+                  )}
+                  <div className="space-y-2 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                      <span className="flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5 shrink-0" />{translateText("下次流量周期：")}</span>
+                      <span className="tabular-nums">{billingDateTime(sub.nextTrafficResetAt)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                      <span className="flex items-center gap-1.5"><CalendarClock className="h-3.5 w-3.5 shrink-0" />{translateText("到期：")}</span>
+                      <span className="tabular-nums">{dateTime(sub.expiresAt)}</span>
+                    </div>
+                  </div>
                 </CardContent>
-                {isActive && currentAddonBytes > 0 && validUntil && (
-                  <CardFooter className="text-xs text-muted-foreground">{translateText("本周期附加流量有效至 ")}{dateTime(validUntil)}
-                  </CardFooter>
-                )}
               </Card>
             );
           })}
@@ -509,9 +512,44 @@ export default function Subscriptions() {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3 text-sm">
-              <div className="flex items-center justify-between rounded-lg border p-3">
-                <span className="text-muted-foreground">{translateText("价格")}</span>
-                <span className="font-medium">{money(selected?.addon?.priceCents)}</span>
+              <div className="space-y-2 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="traffic-addon-quantity">{translateText("购买数量")}</Label>
+                  <span id="traffic-addon-quantity-help" className="text-xs text-muted-foreground">{translateText("单次最多 {0} 份", [MAX_TRAFFIC_ADDON_QUANTITY])}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button type="button" variant="outline" size="icon" className="shrink-0" aria-label={translateText("减少购买数量")}
+                    disabled={purchaseAddon.isPending || Number(addonQuantity) <= 1}
+                    onClick={() => setAddonQuantity(String(Math.max(1, Math.min(MAX_TRAFFIC_ADDON_QUANTITY, (Number(addonQuantity) || 1) - 1))))}>
+                    <Minus className="h-4 w-4" />
+                  </Button>
+                  <div className="relative min-w-0 flex-1">
+                    <Input id="traffic-addon-quantity" type="number" inputMode="numeric" min={1} max={MAX_TRAFFIC_ADDON_QUANTITY} step={1}
+                      value={addonQuantity} onChange={(event) => setAddonQuantity(event.target.value)} disabled={purchaseAddon.isPending}
+                      aria-invalid={!addonTotals} aria-describedby="traffic-addon-quantity-help"
+                      className="px-9 text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-muted-foreground">{translateText("份")}</span>
+                  </div>
+                  <Button type="button" variant="outline" size="icon" className="shrink-0" aria-label={translateText("增加购买数量")}
+                    disabled={purchaseAddon.isPending || Number(addonQuantity) >= MAX_TRAFFIC_ADDON_QUANTITY}
+                    onClick={() => setAddonQuantity(String(Math.min(MAX_TRAFFIC_ADDON_QUANTITY, Math.max(1, (Number(addonQuantity) || 0) + 1))))}>
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0 text-muted-foreground">{translateText("单价")}</span>
+                  <span className="min-w-0 break-words text-right font-medium">{money(selected?.addon?.priceCents)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0 text-muted-foreground">{translateText("总流量")}</span>
+                  <span className="min-w-0 break-words text-right font-medium">{addonTotals ? bytes(addonTotals.trafficBytes) : "—"}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t pt-2">
+                  <span className="shrink-0 text-muted-foreground">{translateText("合计金额")}</span>
+                  <span className="min-w-0 break-words text-right font-semibold">{addonTotals ? money(addonTotals.priceCents) : "—"}</span>
+                </div>
               </div>
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <span className="text-muted-foreground">{translateText("余额")}</span>
@@ -532,11 +570,11 @@ export default function Subscriptions() {
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setSelected(null)}>{translateText("取消")}</Button>
               <Button
-                onClick={() => selected && purchaseAddon.mutate({ addonId: Number(selected.addon.id), subscriptionId: Number(selected.sub.id) })}
-                disabled={!selected || purchaseAddon.isPending || walletLoading || !balanceEnough}
+                onClick={() => selected && addonTotals && purchaseAddon.mutate({ addonId: Number(selected.addon.id), subscriptionId: Number(selected.sub.id), quantity: addonTotals.quantity })}
+                disabled={!selected || !addonTotals || purchaseAddon.isPending || walletLoading || !balanceEnough}
               >
                 {purchaseAddon.isPending ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {walletLoading ? translateText("余额加载中") : balanceEnough ? translateText("余额购买") : translateText("余额不足")}
+                {!addonTotals ? translateText("请选择有效数量") : walletLoading ? translateText("余额加载中") : balanceEnough ? translateText("余额购买") : translateText("余额不足")}
               </Button>
             </DialogFooter>
           </DialogContent>

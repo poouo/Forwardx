@@ -321,6 +321,7 @@ var heartbeatUrgentWakeFromSSE atomic.Bool
 var heartbeatForceReconcileWake atomic.Bool
 var heartbeatMetricsWake atomic.Bool
 var lastMetricsHeartbeatAt atomic.Int64
+var presenceNetworkMetricsRequested atomic.Bool
 var agentEventStreamConnected atomic.Bool
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
@@ -2519,6 +2520,7 @@ type agentDesiredStatePush struct {
 	DesiredState      *desiredState      `json:"desiredState,omitempty"`
 	RunningRules      []runningRule      `json:"runningRules,omitempty"`
 	RuleLatencyProbes []ruleLatencyProbe `json:"ruleLatencyProbes,omitempty"`
+	GuardRules        []guardRule        `json:"guardRules,omitempty"`
 	StateSignatures   map[string]string  `json:"stateSignatures,omitempty"`
 }
 
@@ -4177,7 +4179,8 @@ func heartbeatKeepalive(cfg Config) (heartbeatResult, error) {
 
 // heartbeatPresence only proves that the authenticated Agent is alive. It is
 // intentionally separate from heartbeatKeepalive: no local readiness probes,
-// metrics collection, plugin inventory or runtime plan is performed here.
+// system scans, plugin inventory or runtime plan is performed here. When a
+// viewer requests live rates, only cheap /proc network counters are included.
 func heartbeatPresence(cfg Config) (int, uint64, error) {
 	return heartbeatPresenceRequest(cfg, nil)
 }
@@ -4200,6 +4203,11 @@ func heartbeatPresenceRequest(cfg Config, expectedGeneration *uint64) (int, uint
 		"agentLastAppliedRevision":  appliedRevision,
 		"agentLastReceivedHash":     receivedHash,
 		"agentLastAppliedHash":      appliedHash,
+	}
+	if presenceNetworkMetricsRequested.Load() {
+		payload["networkSample"] = map[string]any{
+			"networkIn": netBytes(0), "networkOut": netBytes(1), "uptime": uptime(),
+		}
 	}
 	var resp heartbeatResp
 	// Use the short-lived presence client, but retain the shared clock recovery
@@ -4233,6 +4241,7 @@ func heartbeatPresenceRequest(cfg Config, expectedGeneration *uint64) (int, uint
 		return 0, requestGeneration, nil
 	}
 	agentPresenceSupported.Store(true)
+	presenceNetworkMetricsRequested.Store(resp.RefreshMetrics)
 	requestMetricsHeartbeat(resp.RefreshMetrics, time.Now())
 	if handlePanelMigrationDirective(cfg, resp.PanelMigration) {
 		return resp.NextPresenceInterval, requestGeneration, nil
@@ -4981,7 +4990,7 @@ func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
 	if agentSuperseded.Load() {
 		return
 	}
-	if push.DesiredState == nil && len(push.RunningRules) == 0 && len(push.RuleLatencyProbes) == 0 && len(push.StateSignatures) == 0 {
+	if push.DesiredState == nil && push.GuardRules == nil && len(push.RunningRules) == 0 && len(push.RuleLatencyProbes) == 0 && len(push.StateSignatures) == 0 {
 		return
 	}
 	if push.DesiredState != nil && desiredStateRevisionIsStale(push.DesiredState) {
@@ -4992,22 +5001,26 @@ func handleAgentDesiredStatePush(cfg Config, push agentDesiredStatePush) {
 		return
 	}
 	// 先应用 running rules，stale-remove 保护依赖这份数据。
-	if len(push.RunningRules) > 0 || len(push.RuleLatencyProbes) > 0 || len(push.StateSignatures) > 0 {
+	if push.GuardRules != nil || len(push.RunningRules) > 0 || len(push.RuleLatencyProbes) > 0 || len(push.StateSignatures) > 0 {
 		partial := heartbeatResp{
 			RunningRules:      push.RunningRules,
 			RuleLatencyProbes: push.RuleLatencyProbes,
+			GuardRules:        push.GuardRules,
 			StateSignatures:   push.StateSignatures,
 		}
 		state := applyHeartbeatState(partial)
 		rememberDesiredRunningRules(state.RunningRules)
 	}
-	if push.DesiredState == nil {
-		return
-	}
 	done := syncDesiredState(cfg, push.DesiredState)
+	// Guards belong to this desired snapshot as much as the backend actions.
+	// An upgrade loses their in-process listeners even when persisted backend
+	// services survive. Restore them on SSE delivery instead of waiting for a
+	// later full heartbeat. An omitted section from an older panel preserves it.
+	if push.GuardRules != nil {
+		syncProtocolGuardsAfterActions(cfg, push.GuardRules, done)
+	}
 	// desired state 里可能夹带 apply 动作，这些动作执行完才能准确上报端口 ready，
 	// 这里不阻塞等待，让 worker pool 自行处理；后续心跳会确认最终状态。
-	_ = done
 	// 通知下一次心跳重新采集本地状态（可能由于 worker 还未完成所以暂缓），
 	// 同时失效 readiness 缓存，让采集结果反映最新运行时状态。
 	requestLocalRuntimeStateUpload()

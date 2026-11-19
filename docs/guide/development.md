@@ -77,6 +77,20 @@ pnpm dev 直接启动 server/index.ts，不是隔离数据、自动登录的开�
 | `user-selector.png` | 已收录：展开的用户选择器，包含搜索、部分用户及翻页入口 |
 | `port-entry-nodes.png` | 已收录：「节点详情」独立弹窗，示例为两台入口暂无启用规则（0/2、0/0）；不是运行失败示例 |
 
+## 附加流量包购买接口
+
+登录用户调用 tRPC mutation `billing.purchaseTrafficAddonWithBalance`：
+
+```ts
+{ addonId: number, subscriptionId?: number, quantity?: number }
+```
+
+`quantity` 默认为 `1`，允许 `1–100` 的整数，旧调用不传数量仍购买一份。`addonId` 指管理员配置的档位；`subscriptionId` 可指定自己的生效套餐。服务端从数据库读取单价与单份流量，校验归属、套餐和余额，在事务内一次扣款并发放总流量，拒绝不合法数量和超出安全整数范围的合计。
+
+返回 `id`、`subscriptionId`、`quantity`、`unitTrafficBytes`、`unitPriceCents`、`trafficBytes`、`priceCents`、`expiresAt` 和更新后的 `trafficLimit`。流量单位为字节，金额单位为分；`trafficBytes`、`priceCents` 为本次购买合计值。购买记录与余额流水按本次总额汇总，描述包含份数，有效期沿用所属套餐的当前流量周期。
+
+商店同款套餐购买则沿用 `billing.purchasePlanWithBalance` / `payment.createOrder`，不传 `subscriptionId` 时自动选择可续费的同款订阅；传入时续费指定订阅并校验归属和权限。`plans.storeList` 的 `renewalSubscriptionId` 表示当前用户默认续费目标，仅供展示，购买时以服务端事务重新校验为准。
+
 ## Agent 自动发现接口
 
 新机器不再先创建 Token 或批量注册卡片。管理员在「添加主机」获取同一条通用安装指令，每台机器先领取独立 Token，再沿用现有 Agent 加密注册协议上线；无需修改旧 Agent 协议。
@@ -106,9 +120,13 @@ pnpm dev 直接启动 server/index.ts，不是隔离数据、自动登录的开�
 
 状态为 `queued`、`running`、`success`、`error`、`timeout`，整轮超时为 180 秒。`providers` 按 `providerId` 和 `family` 区分结果，包含 `status`、可选 `region`、`httpStatus`、`latencyMs`、`detail` 和 `evidence`；`dns` 按域名和协议区分系统与公共 DNS 查询结果。共享类型和平台列表在 `shared/streamUnlock.ts`。
 
-Agent 完整心跳领取 `streamUnlockTasks`，通过 `/api/agent/stream-unlock-progress` 逐项上报，通过 `/api/agent/stream-unlock-result` 完成任务；两者均沿用 Agent 加密认证，提交 `{ result }`。面板按任务保存合并后的快照，前端每 2 秒查询，关闭弹窗不会取消任务。结果暂存内存，最多保留 24 小时，面板重启会清空。
+Agent 完整心跳领取 `streamUnlockTests`，通过 `/api/agent/stream-unlock-progress` 逐项上报，通过 `/api/agent/stream-unlock-result` 完成任务；两者均经 `/api/sync` 沿用 Agent 加密认证，内层提交 `{ result }`。面板按任务保存合并后的快照，前端每 2 秒查询，关闭弹窗不会取消任务。结果暂存内存，最多保留 24 小时，面板重启会清空。
 
-主题应按协议分别展示结果，使用主机有效地址判断 IPv4 / IPv6 选项是否可用；无结果时保留平台行，执行中的未返回项目显示检测中。地区仅在平台响应可识别时提供，不使用主机归属地推测。DNS 解锁基于解析差异和可访问结果推断，可能受 CDN 或分流影响；AI 服务检测使用公开入口，不保证账号登录、订阅或实际对话一定可用。
+主题应按协议分别展示结果，使用主机有效地址判断 IPv4 / IPv6 选项是否可用；无结果时保留平台行，执行中的未返回项目显示检测中。查询缓存必须按 `hostId` 隔离，切换主机不能用上一台主机的快照作为占位数据。
+
+`region` 为平台可识别的地区代码，统一为 ISO 两字母格式，例如 `HK`、`US`；Netflix 读取请求地区，YouTube 读取访问者 GL，Disney+ 读取访问者 location，Spotify 读取服务端 market，动画疯读取页面 data-geo，TikTok 只读取用户上下文中的地区，Gemini 的三字母地区转为两字母。ChatGPT、Claude、Grok 可补充读取各自站点边缘接口返回的访问者国家；该字段仅表示请求被识别的地区，不代表账号或服务权限。不能识别时省略，不使用主机归属地或 CDN 节点位置推测。
+
+AI 检测优先识别页面可见的地区限制提示、地区不可用重定向，以及服务接口的地区错误。HTTP 200 或地区代码本身不能判定 `available`；只有有效的服务接口响应或明确开放标记才显示服务开放，反爬、登录页或信息不足保留 `unknown`。例如 Claude 的地区不可用页面可能返回 200，ChatGPT 的地区限制可能只在服务接口中返回。检测不代表实际账号可登录、订阅有效或对话一定成功。DNS 解锁基于解析差异和可访问结果推断，可能受 CDN 或分流影响。
 
 ## 链路测速接口
 

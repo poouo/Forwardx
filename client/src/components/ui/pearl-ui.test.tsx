@@ -39,7 +39,7 @@ test("rule card controls reserve identical space with and without sorting", () =
 
 test("idle sortable items do not retain a different compositing layer from filtered cards", () => {
   const source = readFileSync("client/src/components/SortableDragHandle.tsx", "utf8");
-  assert.match(source, /willChange: isDragging \|\| transform \? "transform" : undefined/);
+  assert.match(source, /willChange: isDragging \|\| moving \? "transform" : undefined/);
   assert.doesNotMatch(source, /willChange: "transform"/);
 });
 
@@ -85,9 +85,9 @@ test("rule groups clip during disclosure but let expanded card shadows remain vi
   assert.match(groupItems, /transition-\[grid-template-rows,opacity\]/);
 });
 
-test("grouped rule cards use normal text rasterization without permanent compositing hints", () => {
+test("grouped rule and host cards use normal text rasterization without permanent compositing hints", () => {
   const baseCss = readFileSync("client/src/index.css", "utf8");
-  for (const selector of [".rule-card-grid-static", ".rule-card-grid-static > *"]) {
+  for (const selector of [".rule-card-grid-static", ".rule-card-grid-static > *", ".host-card-grid-static", ".host-card-grid-static > *", ".host-card-mode-content"]) {
     const block = baseCss.slice(baseCss.indexOf(`${selector} {`)).split("}")[0];
     assert.match(block, /transform: none !important/);
     assert.doesNotMatch(block, /will-change:|backface-visibility:|text-rendering:|font-smoothing:/);
@@ -629,9 +629,7 @@ test("Content switches render real content immediately without initial fade or l
   assert.doesNotMatch(html, /inert=""|aria-hidden="true"|opacity:0|scale\(/);
   const source = readFileSync("client/src/components/ui/content-transition.tsx", "utf8");
   assert.match(source, /useMotionEnabled\(\)/);
-  assert.match(source, /inert=\{!present\}/);
-  assert.match(source, /initial=\{false\}/);
-  assert.doesNotMatch(source, /setInterval|requestAnimationFrame/);
+  assert.doesNotMatch(source, /AnimatePresence|key=\{transitionKey\}|opacity:|setInterval|requestAnimationFrame/);
   const rules = readFileSync("client/src/pages/Rules.tsx", "utf8");
   assert.match(rules, /aria-hidden=\{!open\}\s+inert=\{!open\}/);
 });

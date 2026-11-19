@@ -76,6 +76,12 @@ test("subscription quota, cancellation, reassignment, and cancelled-record dismi
       assert.equal(Number(subscriptionWithAddons.activeTrafficAddonBytes), 700);
       assert.equal(Number(subscriptionWithAddons.purchasedTrafficAddonBytes), 500);
       assert.equal(Number(subscriptionWithAddons.grantedTrafficAddonBytes), 200);
+      assert.equal(Number(subscriptionWithAddons.userTrafficUsed), 0);
+      await runtime.executeRaw('UPDATE "users" SET "trafficUsed" = ? WHERE "id" = ?', [123, 1]);
+      assert.equal(Number((await billing.listUserSubscriptions(1))[0].userTrafficUsed), 123, "subscription details use the user's billed traffic counter");
+      const usagePage = await billing.listUserSubscriptionsPage({ page: 1, pageSize: 12, visibility: "admin", userId: 1 });
+      assert.equal(Number(usagePage.items[0].userTrafficUsed), 123, "the paginated admin view includes fresh usage without an extra lookup");
+      await runtime.executeRaw('UPDATE "users" SET "trafficUsed" = 0 WHERE "id" = ?', [1]);
 
       await runtime.executeRaw(
         'CREATE TRIGGER "fail_subscription_entitlement_sync" BEFORE UPDATE OF "trafficLimit" ON "users" BEGIN SELECT RAISE(ABORT, \'forced entitlement sync failure\'); END',

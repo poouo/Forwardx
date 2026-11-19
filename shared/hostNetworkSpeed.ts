@@ -3,6 +3,7 @@ export const HOST_NETWORK_SAMPLE_MAX_AGE_MS = 90_000;
 
 type NetworkMetric = {
   recordedAt?: unknown;
+  networkRecordedAt?: unknown;
   uptime?: unknown;
   networkIn?: unknown;
   networkOut?: unknown;
@@ -32,7 +33,7 @@ export function stampHostNetworkMetrics<T extends NetworkMetric>(metrics: T[], r
 }
 
 export function hostNetworkSampleAgeMs(metric: NetworkMetric, now = Date.now()): number | null {
-  const at = timestamp(metric.recordedAt);
+  const at = timestamp(metric.networkRecordedAt ?? metric.recordedAt);
   return at === null ? null : Math.max(0, now - at);
 }
 
@@ -44,7 +45,7 @@ export function hostNetworkSpeed(
   const unknown = { in: null, out: null };
   if (!latest || options.isOnline === false) return unknown;
   const now = options.now ?? Date.now();
-  const latestAt = timestamp(latest.recordedAt);
+  const latestAt = timestamp(latest.networkRecordedAt ?? latest.recordedAt);
   const receivedAt = timestamp(latest.networkSampleReceivedAt);
   const sampleAge = nonNegative(latest.networkSampleAgeMs);
   // Server and browser clocks need not agree. Use server-calculated age plus

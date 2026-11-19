@@ -1765,7 +1765,7 @@ export function ForwardGroupsContent({
   const emptyDescription = currentModeMeta.emptyDescription;
   const paginationItemName = currentModeMeta.paginationItemName;
   const dialogTitle = editingId ? translateText("编辑{0}", [currentModeMeta.title]) : translateText("添加{0}", [currentModeMeta.title]);
-  const contentTransitionKey = `${activeGroupMode}-${normalizedSearchQuery || "all"}-${isLoading ? "loading" : groupPageQuery.isError ? "error" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
+  const contentTransitionKey = `${activeGroupMode}-${viewMode}-${normalizedSearchQuery || "all"}`;
 
   return (
     <div className="space-y-6">

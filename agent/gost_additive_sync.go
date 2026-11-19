@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -29,6 +31,27 @@ type gostAPIClient struct {
 }
 
 type gostAPIError struct{ status, code int }
+
+// systemctl can report active before the runtime has bound its private API.
+// Wait briefly through that startup window instead of rolling back the next
+// desired generation after a rapid edit. Never restart a healthy runtime here.
+func (api gostAPIClient) readLiveConfig(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	for {
+		data, err := api.request(ctx, http.MethodGet, "", nil)
+		if err == nil || !(errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)) {
+			return data, err
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, err
+		case <-timer.C:
+		}
+	}
+}
 
 func (e *gostAPIError) Error() string {
 	return fmt.Sprintf("GOST API HTTP=%d code=%d", e.status, e.code)
@@ -502,7 +525,7 @@ func tryGostAdditiveSync(service, path string, tx *managedConfigTransaction) (ha
 	defer closeIdle()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	liveData, err := api.request(ctx, http.MethodGet, "", nil)
+	liveData, err := api.readLiveConfig(ctx)
 	if err != nil {
 		return true, err
 	}

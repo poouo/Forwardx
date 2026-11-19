@@ -51,6 +51,7 @@ import {
   syncTunnelExitGroupEndpoints,
   updateTunnel,
   usesSharedTunnelPrimaryListener,
+  usesSharedGostTunnelListener,
 } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { findTrafficBillingResourceForRule, settleTrafficBillingRuleOnDelete, trafficBillingResourceCandidatesForRule } from "./trafficBillingRepository";
@@ -2807,7 +2808,8 @@ async function preferredSharedTunnelListenPortForChild(tunnel: any, ruleId: numb
   if (!usesSharedTunnelPrimaryListener(tunnel)) return null;
   const tunnelId = Number(tunnel?.id || 0);
   const listenPort = Number(tunnel?.listenPort || 0);
-  if (tunnelId <= 0 || listenPort <= 0 || !dbBool(enabled, true)) return null;
+  if (tunnelId <= 0 || listenPort <= 0 || (!usesSharedGostTunnelListener(tunnel) && !dbBool(enabled, true))) return null;
+  if (usesSharedGostTunnelListener(tunnel)) return listenPort;
   const rules = await getForwardRulesByTunnel(tunnelId);
   const activeIds = (rules as any[])
     .filter((candidate) => (

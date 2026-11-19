@@ -872,6 +872,8 @@ func TestShouldCollectRuleTrafficSkipsForwardXAndInvalidRules(t *testing.T) {
 		{name: "forwardx case insensitive", state: localRuleState{Port: "22004", RuleID: 4, ForwardType: " ForwardX "}, want: false},
 		{name: "forwardx v1", state: localRuleState{Port: "22005", RuleID: 5, ForwardType: "forwardx-v1"}, want: false},
 		{name: "forwardx wireguard", state: localRuleState{Port: "22006", RuleID: 6, ForwardType: " ForwardX-WireGuard "}, want: false},
+		{name: "shared gost exit", state: localRuleState{Port: "22003", RuleID: 3, ForwardType: "gost-tunnel-exit"}, want: false},
+		{name: "shared gost hop", state: localRuleState{Port: "22003", RuleID: 3, ForwardType: "gost-tunnel-hop"}, want: false},
 		{name: "missing rule", state: localRuleState{Port: "22007", RuleID: 0, ForwardType: "gost"}, want: false},
 		{name: "missing port", state: localRuleState{RuleID: 7, ForwardType: "gost"}, want: false},
 	}

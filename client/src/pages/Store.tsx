@@ -109,7 +109,7 @@ export function StorePlanCard({
 }) {
   const description = planDescription(plan);
   const benefits = planBenefitItems(plan);
-  const soldOut = productStock(plan).soldOut;
+  const soldOut = productStock(plan).soldOut && !plan.renewalSubscriptionId;
 
   return (
     <div className="pearl-hover-card pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm">
@@ -177,7 +177,7 @@ export function StorePlanCard({
             onClick={onBuy}
             disabled={purchasing || soldOut}
           >
-            <ShoppingBag className="mr-2 h-4 w-4" />{soldOut ? translateText("已售罄") : translateText("购买套餐")}</Button>
+            <ShoppingBag className="mr-2 h-4 w-4" />{soldOut ? translateText("已售罄") : plan.renewalSubscriptionId ? translateText("续费套餐") : translateText("购买套餐")}</Button>
         </div>
       </div>
     </div>
@@ -230,8 +230,8 @@ export default function Store() {
 
   const buyWithBalance = trpc.billing.purchasePlanWithBalance.useMutation({
     onSettled: () => { void utils.plans.storeList.invalidate(); },
-    onSuccess: () => {
-      toast.success(translateText("套餐已购买"));
+    onSuccess: (result) => {
+      toast.success(translateText(result.extended ? "套餐已续费" : "套餐已购买"));
       setSelectedPlan(null);
       setDiscountCode("");
       setDiscountPreview(null);
@@ -267,7 +267,7 @@ export default function Store() {
   const confirmBuy = () => {
     if (!selectedPlan) return;
     const current = plans.find((plan) => plan.id === selectedPlan.id);
-    if (!current || productStock(current).soldOut) return toast.error(translateText("套餐库存不足或已售罄"));
+    if (!current || (productStock(current).soldOut && !current.renewalSubscriptionId)) return toast.error(translateText("套餐库存不足或已售罄"));
     if (payMode === "balance") {
       buyWithBalance.mutate({ planId: selectedPlan.id, discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined });
       return;
@@ -401,6 +401,9 @@ export default function Store() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
+              {selectedPlan?.renewalSubscriptionId && (
+                <p className="text-sm text-muted-foreground">{translateText("已购买同款套餐，本次购买将延长原订阅的有效期。")}</p>
+              )}
               <div className="rounded-lg border bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">{translateText("原价")}</span>
@@ -471,7 +474,7 @@ export default function Store() {
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setSelectedPlan(null)}>{translateText("取消")}</Button>
-              <Button onClick={confirmBuy} disabled={!plans.some((plan) => plan.id === selectedPlan?.id && !productStock(plan).soldOut) || createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
+              <Button onClick={confirmBuy} disabled={!plans.some((plan) => plan.id === selectedPlan?.id && (!productStock(plan).soldOut || plan.renewalSubscriptionId)) || createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
                 {payMode === "balance" ? (walletLoading ? translateText("余额加载中") : translateText("余额购买")) : translateText("去支付")}
               </Button>

@@ -42,6 +42,20 @@ export type GostTunnelRuleProtocolPlan = {
   exitTargetDialType: "tcp" | "udp" | null;
 };
 
+// The exit is a tunnel resource, not a rule resource. Keep its credentials
+// stable as rules are added/removed so the shared listener need not restart.
+// These credentials stay in managed Agent configs, never in user rule data.
+export function planGostTunnelExitRelay(input: {
+  tunnelId: number;
+  secretSeed: string;
+}): GostComponent {
+  const tunnelId = Math.max(0, Math.trunc(Number(input.tunnelId) || 0));
+  return relayComponent(
+    `fwx-exit-${tunnelId}`,
+    `forwardx-gost-exit-relay:v1|${String(input.secretSeed || "")}|${tunnelId}`,
+  );
+}
+
 export function planGostTunnelRuleProtocol(input: {
   protocol: unknown;
   tunnelId: number;
@@ -50,11 +64,7 @@ export function planGostTunnelRuleProtocol(input: {
 }): GostTunnelRuleProtocolPlan {
   const protocol = normalizeForwardRuleProtocol(input.protocol, "tcp");
   const tunnelId = Math.max(0, Math.trunc(Number(input.tunnelId) || 0));
-  const ruleId = Math.max(0, Math.trunc(Number(input.ruleId) || 0));
-  const component = relayComponent(
-    `fwx-${tunnelId}-${ruleId}`,
-    `forwardx-gost-relay:v1|${String(input.secretSeed || "")}|${tunnelId}|${ruleId}`,
-  );
+  const component = planGostTunnelExitRelay({ tunnelId, secretSeed: input.secretSeed });
 
   return {
     protocol,

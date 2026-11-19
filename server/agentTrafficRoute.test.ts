@@ -221,21 +221,21 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
       assert.deepEqual(await runtime.queryRaw('SELECT "quotaUsedIn", "quotaUsedOut" FROM "forward_rules" WHERE "id" = 100'), [{ quotaUsedIn: 107, quotaUsedOut: 210 }]);
 
       await runtime.executeRaw('ALTER TABLE "tunnel_exit_nodes" RENAME TO "tunnel_exit_nodes_unavailable"');
-      const topologyFailure = await postTraffic(baseUrl, 21, "topology-rollback", 300, 11, 13);
+      const topologyFailure = await postTraffic(baseUrl, 20, "topology-rollback", 300, 11, 13);
       assert.equal(topologyFailure.status, 500);
       assert.equal(
-        (await runtime.queryRaw('SELECT COUNT(*) AS "count" FROM "agent_traffic_reports" WHERE "hostId" = ? AND "reportId" = ?', [21, "topology-rollback"]))[0].count,
+        (await runtime.queryRaw('SELECT COUNT(*) AS "count" FROM "agent_traffic_reports" WHERE "hostId" = ? AND "reportId" = ?', [20, "topology-rollback"]))[0].count,
         0,
       );
       await runtime.executeRaw('ALTER TABLE "tunnel_exit_nodes_unavailable" RENAME TO "tunnel_exit_nodes"');
-      const topologyRetry = await postTraffic(baseUrl, 21, "topology-rollback", 300, 11, 13);
+      const topologyRetry = await postTraffic(baseUrl, 20, "topology-rollback", 300, 11, 13);
       assert.equal(topologyRetry.status, 200);
       assert.equal(Number((await runtime.queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "id" = 300'))[0].isRunning), 0,
         "old tunnel traffic must not mark a pending configuration as running");
       assert.equal(topologyRetry.body.success, true);
 
-      const ordinaryFirst = await postTraffic(baseUrl, 21, "ordinary-owner-first", 701, 37, 43);
-      const ordinarySecond = await postTraffic(baseUrl, 21, "ordinary-owner-second", 701, 5, 7);
+      const ordinaryFirst = await postTraffic(baseUrl, 20, "ordinary-owner-first", 701, 37, 43);
+      const ordinarySecond = await postTraffic(baseUrl, 20, "ordinary-owner-second", 701, 5, 7);
       assert.equal(ordinaryFirst.status, 200);
       assert.equal(ordinaryFirst.body.success, true);
       assert.equal(ordinarySecond.status, 200);
@@ -246,12 +246,14 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
         [10, "forwardx-primary", 200],
         [11, "forwardx-enabled-member", 200],
         [12, "forwardx-disabled-member", 200],
+        [20, "gost-entry", 300],
         [21, "gost-primary-exit", 300],
         [22, "gost-enabled-extra-exit", 300],
         [23, "gost-disabled-extra-exit", 300],
         [24, "gost-stale-rule-exit", 300],
         [31, "nginx-primary-exit", 400],
         [32, "nginx-enabled-extra-exit", 400],
+        [40, "no-lb-entry", 500],
         [41, "no-lb-primary-exit", 500],
         [42, "no-lb-extra-exit", 500],
         [51, "none-primary-exit", 600],
@@ -268,21 +270,20 @@ test("SQLite Agent traffic route is atomic, idempotent, and follows the current 
         { hostId: 11, bytesIn: 10, bytesOut: 20, connections: 1 },
       ]);
       assert.deepEqual(await trafficRows(300), [
-        { hostId: 21, bytesIn: 21, bytesOut: 33, connections: 2 },
-        { hostId: 22, bytesIn: 10, bytesOut: 20, connections: 1 },
+        { hostId: 20, bytesIn: 21, bytesOut: 33, connections: 2 },
       ]);
       assert.deepEqual(await trafficRows(400), [
         { hostId: 31, bytesIn: 10, bytesOut: 20, connections: 1 },
         { hostId: 32, bytesIn: 10, bytesOut: 20, connections: 1 },
       ]);
       assert.deepEqual(await trafficRows(500), [
-        { hostId: 41, bytesIn: 10, bytesOut: 20, connections: 1 },
+        { hostId: 40, bytesIn: 10, bytesOut: 20, connections: 1 },
       ]);
       assert.deepEqual(await trafficRows(600), [
         { hostId: 51, bytesIn: 10, bytesOut: 20, connections: 1 },
       ]);
       assert.deepEqual(await trafficRows(701), [
-        { hostId: 21, bytesIn: 42, bytesOut: 50, connections: 2 },
+        { hostId: 20, bytesIn: 42, bytesOut: 50, connections: 2 },
       ]);
       assert.deepEqual(
         await runtime.queryRaw('SELECT "userId", "bytesIn", "bytesOut", "connections" FROM "forward_rule_traffic_counters" WHERE "ruleId" = ?', [701]),

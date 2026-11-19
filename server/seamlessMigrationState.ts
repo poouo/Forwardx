@@ -105,7 +105,9 @@ export function assertSeamlessDatabaseWrite(sql: string) {
   const text = sql.replace(/^\s*(?:\/\*[\s\S]*?\*\/\s*|--[^\n]*\n\s*)*/, "");
   if (/^(SELECT\b|SHOW\b|EXPLAIN\s+SELECT\b)/i.test(text) && !/\bFOR\s+UPDATE\b|\bINTO\s+(?:OUTFILE|DUMPFILE)\b|;\s*\S/i.test(text)) return;
   if (scope?.active && (state?.phase === "frozen" || state?.role === "target")) return; // finish admitted work / accept target Agent reports
-  const error = new Error("旧面板已暂停写入并保留数据，请在新面板操作") as Error & { code: string };
+  const error = new Error(state?.role === "target"
+    ? "新面板正在验证迁移，业务写入已暂停，请等待验证完成"
+    : "旧面板已暂停写入并保留数据，请在新面板操作") as Error & { code: string };
   error.code = "PANEL_MIGRATION_READ_ONLY";
   throw error;
 }

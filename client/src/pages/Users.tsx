@@ -355,7 +355,11 @@ function UsersContent() {
   const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
     page: subscriptionPageRequest.page,
     pageSize: 12,
-  }, { enabled: currentUser?.role === "admin" && manageType === "subscriptions", placeholderData: (previousData) => previousData });
+  }, {
+    enabled: currentUser?.role === "admin" && manageType === "subscriptions",
+    refetchInterval: pollingInterval("slow"),
+    placeholderData: (previousData) => previousData,
+  });
   const allSubscriptions = subscriptionPageQuery.data?.items || [];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
   const enterUserBackend = trpc.users.enterUserBackend.useMutation();
@@ -1662,8 +1666,8 @@ function UsersContent() {
                       <CardContent className="space-y-3 p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">{userLabel({ username: sub.username, name: sub.name, id: sub.userId })}</p>
-                            <p className="mt-1 truncate text-xs text-muted-foreground">{sub.planName || translateText("套餐 #{0}", [sub.planId])}</p>
+                            <p className="truncate text-sm font-semibold">{translateText("用户：{0}", [userLabel({ username: sub.username, name: sub.name, id: sub.userId })])}</p>
+                            <p className="mt-1 truncate text-xs text-muted-foreground">{translateText("套餐：{0}", [sub.planName || translateText("套餐 #{0}", [sub.planId])])}</p>
                           </div>
                           <Badge variant={active ? "default" : "secondary"} className="shrink-0 text-[11px]">
                             {subscriptionStatusLabel(sub.status)}
@@ -1685,14 +1689,18 @@ function UsersContent() {
                             <p className="text-muted-foreground">{translateText("套餐额度")}</p>
                             <p className="mt-1 break-words font-medium">{trafficLimit > 0 ? formatBytes(trafficLimit) : translateText("不限")}</p>
                           </div>
+                          <div className="min-w-0 rounded-md bg-muted/25 p-2">
+                            <p className="text-muted-foreground" title={translateText("当前用户的已用流量，多个套餐共用统计。")}>{translateText("用户已用流量")}</p>
+                            <p className="mt-1 break-words font-medium tabular-nums">{formatBytes(sub.userTrafficUsed)}</p>
+                          </div>
                           {purchasedAddonBytes > 0 && (
-                            <div className="min-w-0 rounded-md bg-muted/25 p-2">
+                            <div className={`min-w-0 rounded-md bg-muted/25 p-2 ${grantedAddonBytes > 0 ? "" : "col-span-2"}`}>
                               <p className="text-muted-foreground">{translateText("已购附加流量")}</p>
                               <p className="mt-1 break-words font-medium">{formatBytes(purchasedAddonBytes)}</p>
                             </div>
                           )}
                           {grantedAddonBytes > 0 && (
-                            <div className="min-w-0 rounded-md bg-muted/25 p-2">
+                            <div className={`min-w-0 rounded-md bg-muted/25 p-2 ${purchasedAddonBytes > 0 ? "" : "col-span-2"}`}>
                               <p className="text-muted-foreground">{translateText("管理员加赠")}</p>
                               <p className="mt-1 break-words font-medium">{formatBytes(grantedAddonBytes)}</p>
                             </div>

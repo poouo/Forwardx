@@ -4,6 +4,7 @@ import { getSqlite, readDatabaseConfig, withSqliteExclusive, type DatabaseConfig
 import { MYSQL_COMPATIBILITY_FLAGS } from "./mysqlCompatibility";
 import { guardDatabasePool } from "./databaseNetworkGuard";
 import { performance } from "node:perf_hooks";
+import { seamlessInternal } from "./seamlessMigrationState";
 
 function boundedSetting(value: unknown, fallback: number, min: number, max: number) {
   const parsed = Number(value);
@@ -36,9 +37,11 @@ export async function probeDatabase(config: DatabaseConfig, options: { timeoutMs
     return;
   }
   // Reuse the SQLite handle and its transaction-safe connection lock.
-  if (getSqlite()) await withSqliteExclusive((sqlite) => {
+  // EXCLUSIVE describes the connection lock, not the fixed read below. Keep
+  // migration's write fence intact while allowing this internal health probe.
+  if (getSqlite()) await seamlessInternal(() => withSqliteExclusive((sqlite) => {
     sqlite.prepare("SELECT 1").get();
-  });
+  }));
 }
 
 export function startDatabaseHealthMonitor(options: {

@@ -13,6 +13,9 @@ export function registerDatabaseHealthRoutes(app: Express) {
 }
 
 export const databaseUnavailableApiGuard: RequestHandler = (req, res, next) => {
+  // The migration status endpoint reports persisted ownership/readiness and
+  // must remain inspectable during a database outage. Mutations stay guarded.
+  if (req.method === "GET" && req.path === "/api/migration/seamless-status") return next();
   if (databaseHealth.snapshot().state !== "unavailable" || !req.path.startsWith("/api/") || req.path.startsWith("/api/trpc")) return next();
   res.setHeader("Retry-After", "15");
   res.status(503).json({ error: DATABASE_UNAVAILABLE_MESSAGE, code: "DATABASE_UNAVAILABLE" });

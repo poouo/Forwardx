@@ -1,5 +1,6 @@
 export const SIDEBAR_MENU_KEYS = [
   "dashboard",
+  "operations",
   "announcements",
   "tickets",
   "affiliates",
@@ -18,6 +19,7 @@ export type SidebarMenuSettings = Record<SidebarMenuKey, boolean>;
 
 export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
   dashboard: "仪表盘",
+  operations: "运维看板",
   announcements: "公告",
   tickets: "工单支持",
   affiliates: "推广返佣",

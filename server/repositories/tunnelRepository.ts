@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   tunnels,
   hosts,
@@ -42,23 +42,14 @@ function databaseBool(value: unknown, fallback = false) {
   return normalized === "1" || normalized === "true";
 }
 
-// The Agent uses the tunnel row's listener for the lowest-id active GOST
-// rule. Nginx Stream follows the same convention. Keep this predicate local
-// to the allocation repository so every writer applies the same ownership
-// rule; ForwardX has a separate endpoint allocator and is intentionally not
-// included here.
-const SHARED_TUNNEL_PRIMARY_LISTENER_MODES = new Set([
-  "tls",
-  "wss",
-  "tcp",
-  "mtls",
-  "mwss",
-  "mtcp",
-  "nginx_stream",
-]);
-
+// GOST Relay carries the destination in each connection. Every rule can
+// therefore share the tunnel endpoint. Nginx keeps its primary-rule convention.
+const SHARED_GOST_LISTENER_MODES = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
+export function usesSharedGostTunnelListener(tunnel: any) {
+  return SHARED_GOST_LISTENER_MODES.includes(String(tunnel?.mode || "").trim().toLowerCase());
+}
 export function usesSharedTunnelPrimaryListener(tunnel: any) {
-  return SHARED_TUNNEL_PRIMARY_LISTENER_MODES.has(String(tunnel?.mode || "").trim().toLowerCase());
+  return usesSharedGostTunnelListener(tunnel) || String(tunnel?.mode || "").trim().toLowerCase() === "nginx_stream";
 }
 
 /**
@@ -918,7 +909,7 @@ export async function findAvailableTunnelExitPort(
   const usedHopMimicPorts = await db.select({ port: tunnelHops.mimicPort }).from(tunnelHops).where(eq(tunnelHops.hostId, exitHostId));
   const usedExitConds: any[] = [
     eq(tunnels.exitHostId, exitHostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
@@ -930,7 +921,7 @@ export async function findAvailableTunnelExitPort(
     .where(and(...usedExitConds));
   const usedMappedExitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, exitHostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
   ];
   if (excludeMappingsSql) usedMappedExitConds.push(excludeMappingsSql);
   const usedMappedExitPorts = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort })
@@ -1086,12 +1077,9 @@ export async function reserveTunnelListenerPort(
   if (excludeRuleIds == null && tunnelId > 0) {
     const db = await getDb();
     if (db) {
-      // A tunnel listener may be shared by the Agent's primary GOST rule,
-      // but secondary rules still own independent exit ports.  Excluding all
-      // rules here (the old fallback) made a stale secondary exit port
-      // invisible during listener allocation and allowed a collision.  Only
-      // exempt the lowest-id active GOST rule, which is the same primary
-      // convention used by the Agent runtime.
+      // Nginx's first active rule can share its listener; other Nginx rules
+      // still reserve independent ports. GOST rule exit fields are endpoint
+      // references and are excluded from occupancy queries altogether.
       const rows = await db.select({
         id: forwardRules.id,
         isEnabled: forwardRules.isEnabled,
@@ -1269,20 +1257,18 @@ export async function syncTunnelListenerPortReferences(
     isForwardGroupTemplate: forwardRules.isForwardGroupTemplate,
     forwardType: forwardRules.forwardType,
   }).from(forwardRules).where(eq(forwardRules.tunnelId, tunnelId));
-  const primary = (rules as any[])
-    .filter((rule) => (
-      !databaseBool(rule.pendingDelete)
+  const tunnel = await getTunnelById(tunnelId);
+  const sharedGost = usesSharedGostTunnelListener(tunnel);
+  const eligible = (rules as any[])
+    .filter((rule) => !databaseBool(rule.pendingDelete)
       && !databaseBool(rule.isForwardGroupTemplate)
-      && databaseBool(rule.isEnabled)
-      && String(rule.forwardType || "").trim().toLowerCase() === "gost"
-    ))
-    .sort((left, right) => Number(left.id) - Number(right.id))[0];
-  if (primary) {
+      && (sharedGost || databaseBool(rule.isEnabled))
+      && String(rule.forwardType || "").trim().toLowerCase() === "gost")
+    .sort((left, right) => Number(left.id) - Number(right.id));
+  for (const rule of sharedGost ? eligible : eligible.slice(0, 1)) {
     await db.update(forwardRules).set({
-      tunnelExitPort: listenPort,
-      isRunning: false,
-      updatedAt: nowDate(),
-    } as any).where(eq(forwardRules.id, Number(primary.id)));
+      tunnelExitPort: listenPort, isRunning: false, updatedAt: nowDate(),
+    } as any).where(eq(forwardRules.id, Number(rule.id)));
   }
 }
 
@@ -1296,10 +1282,9 @@ export async function syncTunnelListenerPortReferences(
  * they are not part of the Agent data plane and rotating them can create
  * surprising conflicts when they are restored later.
  *
- * GOST and Nginx Stream have one shared primary listener per tunnel. The
- * lowest-id active GOST rule is the runtime primary and must point at
- * `tunnel.listenPort`; all other active GOST rules receive independent exit
- * ports. Load-balanced mapping rows are reconciled separately.
+ * Every GOST rule follows the shared tunnel endpoint. Nginx Stream keeps its
+ * first-rule listener and independent secondary ports. Extra endpoint mappings
+ * are reconciled separately.
  */
 export async function reconcileTunnelRulePrimaryExitPorts(
   tunnelInput: any,
@@ -1338,6 +1323,20 @@ export async function reconcileTunnelRulePrimaryExitPorts(
     ))
     .sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
   if (rules.length === 0) return { processed: 0, changed: 0 };
+
+  if (usesSharedGostTunnelListener(tunnel)) {
+    if (listenPort <= 0) throw new Error("隧道缺少有效的出口监听端口");
+    let changed = 0;
+    const database = await getDb();
+    for (const rule of rules) {
+      if (Number(rule.tunnelExitPort || 0) === listenPort) continue;
+      await database!.update(forwardRules).set({
+        tunnelExitPort: listenPort, isRunning: false, updatedAt: nowDate(),
+      } as any).where(eq(forwardRules.id, Number(rule.id)));
+      changed++;
+    }
+    return { processed: rules.length, changed };
+  }
 
   const activeRuleIds = rules.map((rule) => Number(rule.id || 0)).filter((id) => id > 0);
   const sharedPrimaryId = usesSharedTunnelPrimaryListener(tunnel) ? activeRuleIds[0] || 0 : 0;
@@ -1732,7 +1731,7 @@ export async function getUsedPortsOnHost(
 
   const usedPrimaryExitConds: any[] = [
     eq(tunnels.exitHostId, hostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
@@ -1742,7 +1741,7 @@ export async function getUsedPortsOnHost(
 
   const usedExitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, hostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
   ];
   if (excludeRuleExitPorts && excludeMappingsSql) usedExitConds.push(excludeMappingsSql);
   if (protocolCond) usedExitConds.push(protocolCond);
@@ -1839,7 +1838,7 @@ export async function isPortUsedOnHost(
   if ((Number(r[0]?.count) || 0) > 0) return true;
   const primaryExitConds: any[] = [
     eq(tunnels.exitHostId, hostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
     eq(forwardRules.tunnelExitPort, sourcePort),
     eq(forwardRules.isForwardGroupTemplate, false),
     eq(forwardRules.isEnabled, true),
@@ -1856,7 +1855,7 @@ export async function isPortUsedOnHost(
   if ((Number(primaryExitRows[0]?.count) || 0) > 0) return true;
   const exitConds: any[] = [
     eq(forwardRuleTunnelExits.exitHostId, hostId),
-    ne(tunnels.mode, "forwardx"),
+    notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
     eq(forwardRuleTunnelExits.tunnelExitPort, sourcePort),
   ];
   if (excludeRuleExitPorts && excludedIds.length > 0) {
@@ -2224,6 +2223,10 @@ export async function syncTunnelExitGroupEndpoints(
         heldReservations.length = 0;
         await mapWithConcurrency(mappedRules as any[], 8, async (rule) => {
           const ruleId = Number(rule.id || 0);
+          if (usesSharedGostTunnelListener(refreshedTunnel)) {
+            await reconcileForwardRuleTunnelExits(rule, refreshedTunnel);
+            return;
+          }
           const preferredPorts = ruleExitPortsByHostId.get(ruleId) || new Map<number, number>();
           // The primary managed rule shares the tunnel listener. When an exit
           // group changes its primary host, prefer the newly planned listener
@@ -2404,9 +2407,32 @@ export async function reconcileForwardRuleTunnelExits(
   const tunnelId = Number(tunnel?.id || rule?.tunnelId || 0);
   if (!ruleId || !tunnelId) return [];
   return withKeyedTaskLock(`rule-tunnel-exits:${ruleId}`, async () => {
+  if (usesSharedGostTunnelListener(tunnel)) {
+    const listenPort = Number(tunnel.listenPort || 0);
+    if (listenPort <= 0) throw new Error("隧道缺少有效的出口监听端口");
+    if (Number(rule.tunnelExitPort || 0) !== listenPort) {
+      const database = await getDb();
+      if (database) await database.update(forwardRules).set({
+        tunnelExitPort: listenPort, isRunning: false, updatedAt: nowDate(),
+      } as any).where(eq(forwardRules.id, ruleId));
+      rule.tunnelExitPort = listenPort;
+      rule.isRunning = false;
+    }
+    const endpoints = databaseBool(tunnel.loadBalanceEnabled)
+      ? (await getTunnelExitEndpoints(tunnel)).filter((endpoint) => !endpoint.primary) : [];
+    const nextRows = endpoints.map((endpoint) => ({
+      tunnelId, exitNodeId: Number(endpoint.exitNodeId), exitSeq: Number(endpoint.seq),
+      exitHostId: Number(endpoint.hostId), tunnelExitPort: Number(endpoint.listenPort),
+    }));
+    const existing = await getForwardRuleTunnelExits(ruleId);
+    const key = (rows: any[]) => JSON.stringify(rows.map((row) => [
+      Number(row.exitNodeId), Number(row.exitSeq), Number(row.exitHostId), Number(row.tunnelExitPort),
+    ]).sort((a, b) => a[0] - b[0]));
+    if (key(existing) !== key(nextRows)) await replaceForwardRuleTunnelExits(ruleId, nextRows);
+    return nextRows;
+  }
   /*
-   * The lowest-id active GOST rule is the primary route for every managed
-   * GOST/Nginx tunnel (the same convention used by the Agent), so its
+   * Nginx Stream's lowest-id active rule is its primary route, so its
    * bookkeeping port must always follow the tunnel endpoint's listenPort.
    * Reconcile it here as well as secondary mappings so every call site shares
    * the same invariant.

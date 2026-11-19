@@ -30,6 +30,7 @@ import { dashboardSummaries } from "../backgroundSummaryCache";
 import { billingStartOfCalendarDay } from "../../shared/billingTime";
 import { writeMysqlTrafficCounters } from "../mysqlTrafficCounters";
 import { hostNetworkSpeed } from "../../shared/hostNetworkSpeed";
+import { hostNetworkLive } from "../hostNetworkLive";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -251,11 +252,11 @@ export async function getLatestHostMetricRows(hostIds?: number[]) {
     const previous = sorted[1];
     if (!latest) return null;
     const speed = hostNetworkSpeed(latest, previous);
-    return {
+    return hostNetworkLive.merge({
       ...latest,
       networkSpeedIn: speed.in,
       networkSpeedOut: speed.out,
-    };
+    });
   }).filter(Boolean);
 }
 
@@ -292,7 +293,9 @@ export async function getLatestHostMetricSnapshots(hostIds?: number[]) {
     ids,
     ["id", "hostId", "networkIn", "networkOut", "uptime", "recordedAt"],
   ).catch(() => []);
-  return (rows as any[]).map(mapLatestHostMetricSnapshot).filter((row) => row.hostId > 0);
+  const mapped = (rows as any[]).map(mapLatestHostMetricSnapshot).filter((row) => row.hostId > 0);
+  return ids.flatMap(hostId => hostNetworkLive.snapshots(hostId) || mapped.filter(row => row.hostId === hostId))
+    .sort((a, b) => a.hostId - b.hostId || a.rn - b.rn);
 }
 
 export function summarizeHostInstantTraffic(rows: LatestHostMetricSnapshot[]) {

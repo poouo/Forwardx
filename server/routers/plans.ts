@@ -86,9 +86,15 @@ export const plansRouter = router({
     .query(async ({ input }) => {
       return db.listSubscriptionPlansPage(input);
     }),
-  storeList: protectedProcedure.query(async () => {
+  storeList: protectedProcedure.query(async ({ ctx }) => {
     if ((await db.getSetting("storeEnabled")) !== "true") return [];
-    return db.listSubscriptionPlans(false);
+    const [plans, subscriptions] = await Promise.all([
+      db.listSubscriptionPlans(false), db.listStoreRenewalSubscriptions(ctx.user.id),
+    ]);
+    return plans.map(plan => ({
+      ...plan,
+      renewalSubscriptionId: subscriptions.find(sub => Number(sub.planId) === Number(plan.id))?.id ?? null,
+    }));
   }),
   create: adminProcedure
     .input(planInput)

@@ -298,6 +298,8 @@ test("Web and diagnostic endpoints survive DB failure, business requests return 
   const app = express();
   registerDatabaseHealthRoutes(app);
   app.use(databaseUnavailableApiGuard);
+  app.get("/api/migration/seamless-status", (_req, res) => res.json({ state: { phase: "verifying" } }));
+  app.post("/api/migration/seamless-activate", (_req, res) => res.json({ success: true }));
   app.get("/api/test", (_req, res, next) => next(refused));
   app.use(databaseRequestErrorHandler);
   app.get("/", (_req, res) => res.type("html").send("<html>ForwardX Web</html>"));
@@ -316,6 +318,8 @@ test("Web and diagnostic endpoints survive DB failure, business requests return 
     assert.match(diagnostic.headers.get("cache-control") || "", /no-store/);
     assert.equal((await diagnostic.json()).reason.code, "ECONNREFUSED");
     assert.equal((await fetch(`${base}/`)).status, 200);
+    assert.equal((await fetch(`${base}/api/migration/seamless-status`)).status, 200);
+    assert.equal((await fetch(`${base}/api/migration/seamless-activate`, { method: "POST" })).status, 503);
     databaseHealth.healthy();
     assert.equal((await (await fetch(`${base}/api/database-health`)).json()).state, "healthy");
   } finally { databaseHealth.healthy(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }

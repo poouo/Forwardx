@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import AnnouncementExcerpt from "@/components/AnnouncementExcerpt";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -174,7 +175,11 @@ export default function Announcements() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="forwardx-rich-text text-sm leading-6 text-foreground/85" dangerouslySetInnerHTML={renderAnnouncementHtml(item.content || "")} />
+                    <AnnouncementExcerpt
+                      title={item.title || ""}
+                      content={item.content || ""}
+                      description={isPopup ? announcementTypeLabel(type) : `${translateText("发布时间：")}${dateText(item.createdAt || item.updatedAt)}`}
+                    />
                   </CardContent>
                 </Card>
               );

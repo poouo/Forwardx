@@ -133,19 +133,22 @@ function statusClass(status: string, dnsUnlocked: boolean) {
 }
 
 export default function HostStreamUnlockDialog({ host, onOpenChange }: HostStreamUnlockDialogProps) {
+  return <HostStreamUnlockDialogContent key={Number(host?.id || 0)} host={host} onOpenChange={onOpenChange} />;
+}
+
+function HostStreamUnlockDialogContent({ host, onOpenChange }: HostStreamUnlockDialogProps) {
   const open = !!host;
   const hostId = Number(host?.id || 0);
   const hasIpv4 = hostAddressOptions(host, "ipv4").length > 0;
   const hasIpv6 = hostAddressOptions(host, "ipv6").length > 0;
   const defaultFamily = !hasIpv4 && hasIpv6 ? "ipv6" : "ipv4";
-  const [selectedFamily, setSelectedFamily] = useState<"ipv4" | "ipv6">("ipv4");
+  const [selectedFamily, setSelectedFamily] = useState<"ipv4" | "ipv6">(defaultFamily);
   const statusQuery = trpc.hosts.streamUnlock.status.useQuery(
     { hostId },
     {
       enabled: open && hostId > 0,
       refetchInterval: open ? 2_000 : false,
       refetchOnWindowFocus: false,
-      placeholderData: (previousData: any) => previousData,
     },
   );
   const startMutation = trpc.hosts.streamUnlock.start.useMutation({

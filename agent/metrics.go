@@ -176,7 +176,7 @@ const (
 
 func trafficCounterFamilyForForwardType(forwardType string) trafficCounterFamily {
 	normalized := strings.ToLower(strings.TrimSpace(forwardType))
-	if normalized == "forwardx" || strings.HasPrefix(normalized, "forwardx-") {
+	if normalized == "forwardx" || strings.HasPrefix(normalized, "forwardx-") || normalized == "gost-tunnel" || strings.HasPrefix(normalized, "gost-tunnel-") {
 		return trafficCounterFamilyNone
 	}
 	if normalized == "nftables" {
@@ -1262,7 +1262,11 @@ func collectTraffic(cfg Config) time.Duration {
 				fallbackStates = append(fallbackStates, state)
 			}
 		}
-		nativeSamples := gostNativeTrafficSnapshot(fallbackStates)
+		// Shared GOST exits cannot provide per-rule counters. Prefer the entry
+		// listener's payload statistics even when kernel packet counters exist;
+		// otherwise TCP/IP overhead and local tunnel traffic change the billable
+		// amount depending on the host's nftables/iptables environment.
+		nativeSamples := gostNativeTrafficSnapshot(states)
 		if nativeSamples == nil {
 			nativeSamples = map[string]nativeTrafficSample{}
 		}
@@ -1284,7 +1288,13 @@ func collectTraffic(cfg Config) time.Duration {
 		// cannot report the same connection from both sources.
 		missingCountingLayouts := repairMissingCountingLayouts(kernelStates, diagnostics)
 		if len(fallbackStates) > 0 && shouldLogAgentReport("traffic-counter-compatibility", 5*time.Minute) {
-			logf("traffic compatibility nativeRules=%d unavailable=%d; native=listener-payload-bytes; unavailable rules require NET_ADMIN/kernel tools or a native-statistics engine (GOST/ForwardX)", len(nativeSamples), len(fallbackStates)-len(nativeSamples))
+			unavailable := 0
+			for _, state := range fallbackStates {
+				if _, native := nativeSamples[state.Port]; !native {
+					unavailable++
+				}
+			}
+			logf("traffic compatibility nativeRules=%d unavailable=%d; native=listener-payload-bytes; unavailable rules require NET_ADMIN/kernel tools or a native-statistics engine (GOST/ForwardX)", len(nativeSamples), unavailable)
 		}
 		for _, state := range states {
 			nativeSample, native := nativeSamples[state.Port]

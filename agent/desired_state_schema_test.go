@@ -54,6 +54,11 @@ func TestExistingDesiredActionStatusReportRequiresExplicitRequest(t *testing.T) 
 	if !shouldReportExistingDesiredActionStatus(action) {
 		t.Fatal("explicit tunnel status report was not accepted for an existing record")
 	}
+	action.StatusType = "rule"
+	action.RuleID = 17
+	if !shouldReportExistingDesiredActionStatus(action) {
+		t.Fatal("a pending rule must acknowledge an already-adopted local listener")
+	}
 
 	report = false
 	if shouldReportExistingDesiredActionStatus(action) {

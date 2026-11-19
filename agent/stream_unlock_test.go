@@ -45,15 +45,19 @@ func TestStreamUnlockProvidersIncludesAIAvailabilityChecks(t *testing.T) {
 			t.Errorf("provider %q unexpectedly requests DNS classification for domain %q", id, provider.domain)
 		}
 		state, region, _, _ := provider.parse(200, `<html><title>Sign in</title></html>`, provider.url)
-		if state != "available" {
-			t.Errorf("provider %q login entry state = %q, want available", id, state)
+		wantState := "unknown"
+		if id == "tiktok" {
+			wantState = "available"
+		}
+		if state != wantState {
+			t.Errorf("provider %q login entry state = %q, want %q", id, state, wantState)
 		}
 		if region != "" {
 			t.Errorf("provider %q unexpectedly reports a country region %q", id, region)
 		}
 		state, region, _, _ = provider.parse(200, `{"countryCode":"sg"}`, provider.url)
-		if state != "available" || region != "SG" {
-			t.Errorf("provider %q detected region = (%q, %q), want (available, SG)", id, state, region)
+		if state != wantState || region != "SG" {
+			t.Errorf("provider %q detected region = (%q, %q), want (%q, SG)", id, state, region, wantState)
 		}
 	}
 }

@@ -41,6 +41,7 @@ import { getSetting, setSetting } from "./settingsRepository";
 import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/pagination";
 import { withKeyedTaskLock, withTrafficBillingUserLock } from "../keyedTaskLock";
 import { normalizePlanTrafficMode, rulePlanTrafficMode, type PlanTrafficMode, type PlanTrafficEntitlement } from "../../shared/planTraffic";
+import { trafficAddonPurchaseTotals, validateTrafficAddonQuantity } from "../../shared/trafficAddonPurchase";
 import {
   getUserForwardRuleIdsDisabledByAccess,
   scheduleUserForwardRulesAfterAccessRecovery,
@@ -107,6 +108,10 @@ export async function createPaymentOrder(order: InsertPaymentOrder) {
         .where(eq(subscriptionPlans.id, Number(order.planId)))
         .limit(1);
       if (!plan[0]) throw new Error("套餐已删除，无法创建支付订单");
+      if (!order.subscriptionId) {
+        const target = await getStoreRenewalSubscription(Number(order.userId), Number(order.planId));
+        if (target) order = { ...order, subscriptionId: target.id };
+      }
       if (!order.subscriptionId) {
         await reservePlanStock(Number(order.planId));
         order = { ...order, stockReserved: true };
@@ -799,6 +804,7 @@ function userSubscriptionsListQuery(db: any) {
       userId: userSubscriptions.userId,
       username: users.username,
       name: users.name,
+      userTrafficUsed: users.trafficUsed,
       planId: userSubscriptions.planId,
       planName: subscriptionPlans.name,
       priceCents: subscriptionPlans.priceCents,
@@ -2423,6 +2429,36 @@ export function isUserRenewableSubscriptionSource(source: unknown, allowSelfRene
   return source === "payment" || source === "balance" || (source === "admin" && allowSelfRenew === true);
 }
 
+/** Prefer a live subscription, then the most recently created eligible record.
+ * Cancelled and dismissed records are never selected by a store purchase. */
+type StoreRenewalSubscription = {
+  id: number; planId: number | null; source: string; allowSelfRenew: boolean | number;
+  status: string; expiresAt: Date | null;
+};
+
+export async function listStoreRenewalSubscriptions(userId: number): Promise<StoreRenewalSubscription[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows: StoreRenewalSubscription[] = await db.select({
+    id: userSubscriptions.id, planId: userSubscriptions.planId,
+    source: userSubscriptions.source, allowSelfRenew: userSubscriptions.allowSelfRenew,
+    status: userSubscriptions.status, expiresAt: userSubscriptions.expiresAt,
+  }).from(userSubscriptions).where(and(
+    eq(userSubscriptions.userId, userId),
+    inArray(userSubscriptions.status, ["active", "expired"]),
+    isNull(userSubscriptions.userDismissedAt), isNull(userSubscriptions.adminDismissedAt),
+  )).orderBy(desc(userSubscriptions.id));
+  const now = Date.now();
+  const live = (row: typeof rows[number]) => row.status === "active"
+    && (!row.expiresAt || new Date(row.expiresAt).getTime() > now);
+  return rows.filter(row => isUserRenewableSubscriptionSource(row.source, Boolean(row.allowSelfRenew)))
+    .sort((a, b) => Number(live(b)) - Number(live(a)) || Number(b.id) - Number(a.id));
+}
+
+async function getStoreRenewalSubscription(userId: number, planId: number) {
+  return (await listStoreRenewalSubscriptions(userId)).find(row => Number(row.planId) === planId);
+}
+
 function addSubscriptionDays(base: Date, days: number) {
   return new Date(base.getTime() + days * 24 * 3600 * 1000);
 }
@@ -2463,12 +2499,15 @@ async function applySubscriptionToUserUnlocked(
   const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const user = await getUserById(userId);
   const hadActiveSubscription = activeSubscriptions.length > 0;
-  // A purchase/assignment without an explicit target is always a new
-  // subscription. Renewal must name the exact subscription being extended.
-  let sameActiveSubscription = targetSubscriptionId
-    ? await getUserSubscriptionById(Number(targetSubscriptionId))
+  // Store purchases renew the same plan. Administrative assignments and
+  // redemption grants continue to create independent subscriptions.
+  const automaticTarget = !targetSubscriptionId && isUserRenewableSubscriptionSource(source)
+    ? await getStoreRenewalSubscription(userId, planId) : null;
+  const renewalId = targetSubscriptionId || automaticTarget?.id;
+  let sameActiveSubscription = renewalId
+    ? await getUserSubscriptionById(Number(renewalId))
     : null;
-  if (targetSubscriptionId) {
+  if (renewalId) {
     if (!sameActiveSubscription || Number(sameActiveSubscription.userId) !== Number(userId)) {
       throw new Error("订阅不存在或无权操作");
     }
@@ -2486,6 +2525,12 @@ async function applySubscriptionToUserUnlocked(
     }
   }
   if (sameActiveSubscription) {
+    // An order placed before another purchase completed may still hold a new
+    // subscription's stock reservation. It now renews, so release that slot.
+    if (paymentOrder?.stockReserved) {
+      await releasePlanStock(planId);
+      await updatePaymentOrder(paymentOrderNo!, { stockReserved: false });
+    }
     const currentExpiresAt = sameActiveSubscription.expiresAt ? new Date(sameActiveSubscription.expiresAt) : null;
     const baseExpiresAt = currentExpiresAt && Number.isFinite(currentExpiresAt.getTime()) && currentExpiresAt.getTime() > now.getTime()
       ? currentExpiresAt
@@ -2525,7 +2570,8 @@ async function applySubscriptionToUserUnlocked(
     if (paymentOrderNo) {
       (updateData as any).paymentOrderNo = paymentOrderNo;
     }
-    if (Number(plan.portCount) === 0 || !portRangeStart || !portRangeEnd) {
+    if (Number(plan.portCount) === 0 || !portRangeStart || !portRangeEnd
+      || sameActiveSubscription.status === "expired" || (currentExpiresAt && currentExpiresAt.getTime() <= now.getTime())) {
       const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount), hostIds, tunnelIds, forwardGroupIds);
       if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
       portRangeStart = block.start;
@@ -2658,7 +2704,8 @@ function pickActiveFiniteTrafficSubscription(activeSubscriptions: any[], planId?
     })[0];
 }
 
-export async function purchaseTrafficAddonWithBalance(userId: number, addonId: number, subscriptionId?: number | null) {
+export async function purchaseTrafficAddonWithBalance(userId: number, addonId: number, subscriptionId?: number | null, quantity = 1) {
+  validateTrafficAddonQuantity(quantity);
   let cycleSettled = false;
   let entitlementsSynced = false;
   try {
@@ -2675,11 +2722,13 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
   const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const subscription = pickActiveFiniteTrafficSubscription(activeSubscriptions as any[], Number(addon.planId), subscriptionId || undefined);
   if (!subscription) throw new Error("当前没有可购买流量包的生效套餐");
-  const amountCents = Number(addon.priceCents || 0);
+  const totals = trafficAddonPurchaseTotals(Number(addon.trafficBytes || 0), Number(addon.priceCents || 0), quantity);
+  const amountCents = totals.priceCents;
   const balance = await getUserBalance(userId);
   if (balance < amountCents) throw new Error("余额不足");
   const expiresAt = getTrafficAddonCycleEnd(subscription);
-  const description = `购买附加流量：${addon.planName || `套餐 #${addon.planId}`} ${formatAddonTraffic(Number(addon.trafficBytes || 0))}`;
+  const description = `购买附加流量：${addon.planName || `套餐 #${addon.planId}`} ${formatAddonTraffic(totals.unitTrafficBytes)}`
+    + (quantity > 1 ? ` × ${quantity}（共 ${formatAddonTraffic(totals.trafficBytes)}）` : "");
   if (amountCents > 0) {
     await addUserBalance(userId, -amountCents, {
       type: "traffic_addon_purchase",
@@ -2692,7 +2741,7 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
     subscriptionId: subscription.id,
     planId: addon.planId,
     addonId: addon.id,
-    trafficBytes: Number(addon.trafficBytes || 0),
+    trafficBytes: totals.trafficBytes,
     priceCents: amountCents,
     source: "user",
     status: "active",
@@ -2707,8 +2756,7 @@ export async function purchaseTrafficAddonWithBalance(userId: number, addonId: n
   return {
     id,
     subscriptionId: subscription.id,
-    trafficBytes: Number(addon.trafficBytes || 0),
-    priceCents: amountCents,
+    ...totals,
     expiresAt,
     trafficLimit: limits.trafficLimit,
   };

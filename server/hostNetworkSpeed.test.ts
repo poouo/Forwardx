@@ -57,6 +57,44 @@ test("host management and public monitoring exclude offline historic speeds with
       const monitor = await anonymous.publicMonitor({path:"network-test"});
       assert.equal(monitor.summary.currentTrafficIn,1000);
       assert.equal(monitor.metrics.find(row=>row.hostId===2).networkSpeedIn,null);
+      // Hold the real configuration gate: metric ingestion must survive both
+      // a coalesced full heartbeat and independent presence requests.
+      const express = (await import('express')).default;
+      const {registerAgentHeartbeatRoute}=await import(url('server/agentHeartbeatRoute.ts'));
+      const {agentHeartbeatGate}=await import(url('server/agentHeartbeatGate.ts'));
+      const {displayQueries}=await import(url('server/displayQueryCache.ts'));
+      const {markHostMetricsWatching}=await import(url('server/agentEvents.ts'));
+      await runtime.executeRaw('UPDATE hosts SET agentToken=? WHERE id=1',['metric-route-token']);
+      const release=agentHeartbeatGate.tryAcquire(1,{force:true}); assert.ok(release);
+      const app=express();app.use(express.json());
+      app.use((req,_res,next)=>{req.agentToken=String(req.headers.authorization||'').replace(/^Bearer /,'');next();});
+      registerAgentHeartbeatRoute(app);
+      const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+      const endpoint='http://127.0.0.1:'+server.address().port;
+      const send=async(path,body,token='metric-route-token')=>{
+        const response=await fetch(endpoint+path,{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify(body)});
+        return {status:response.status,body:await response.json()};
+      };
+      try {
+        markHostMetricsWatching([1]);
+        const result=await send('/api/agent/heartbeat',{m:[10,20,30,40,0,0,0,10000,20000,10,20,30,200],agentBootId:'network-test-boot'});
+        assert.equal(result.status,200);assert.equal(result.body.reconciliationCoalesced,true);
+        assert.equal((await runtime.queryRaw('SELECT COUNT(*) AS n FROM host_metrics WHERE hostId=1'))[0].n,2,'full configuration gate really remained closed');
+        await new Promise(resolve=>setTimeout(resolve,1100));
+        const presence=await send('/api/agent/presence',{agentBootId:'network-test-boot',networkSample:{networkIn:15000,networkOut:30000,uptime:205}});
+        assert.equal(presence.status,200);assert.equal(presence.body.refreshMetrics,true);
+        assert.equal((await send('/api/agent/presence',{networkSample:{networkIn:999999,networkOut:999999,uptime:999}},'invalid')).status,401);
+        displayQueries.invalidate();
+        const current=(await admin.latestMetricsSummary({hostIds:[1]}))[0];
+        assert.equal(current.networkSpeedIn,1000);assert.equal(current.networkSpeedOut,2000);
+        assert.equal(current.networkIn,15000);assert.equal(current.cpuUsage,null,'network-only presence does not fabricate CPU measurements');
+        const raw=await admin.metrics({hostId:1,limit:2,live:true});
+        assert.equal(raw[0].networkSpeedIn,1000);
+        const history=await admin.metrics({hostId:1,limit:60,live:true});
+        assert.equal(history[0].networkIn,3000,'history must keep its original counter/timestamp pair');
+        assert.ok(current.networkSampleAgeMs < 5000);
+        const liveSummary=await admin.summary();assert.equal(liveSummary.currentTrafficIn,1000);
+      } finally {release();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
     } finally { await runtime.closeDatabase(); }
   `;
   try {

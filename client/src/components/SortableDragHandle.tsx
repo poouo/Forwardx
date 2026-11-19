@@ -335,13 +335,14 @@ export function SortableItem({
     disabled,
   });
 
+  const moving = !!transform && (transform.x !== 0 || transform.y !== 0);
   const style: CSSProperties = {
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    transform: moving ? CSS.Translate.toString(transform) : undefined,
     transition: isDragging ? "none" : transition,
     zIndex: isDragging ? 20 : undefined,
     position: isDragging ? "relative" : undefined,
     display: itemKind === "row" ? "table-row" : undefined,
-    willChange: isDragging || transform ? "transform" : undefined,
+    willChange: isDragging || moving ? "transform" : undefined,
   };
 
   return (

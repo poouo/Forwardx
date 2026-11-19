@@ -50,6 +50,36 @@ test("freeze drains admitted work, rejects later writes, and never expires commi
   process.exit(0);
 `));
 
+test("SQLite health probes stay healthy behind migration write fences without allowing business writes", () => isolated(String.raw`
+  import assert from 'node:assert/strict';
+  import * as r from './server/dbRuntime.ts';
+  import * as s from './server/seamlessMigrationState.ts';
+  import {databaseHealth} from './server/databaseHealthState.ts';
+  import {probeDatabase,startDatabaseHealthMonitor} from './server/databaseHealthMonitor.ts';
+  const config={type:'sqlite',sqlite:{path:process.env.SQLITE_PATH}};
+  await r.connectDatabase(config);
+  await r.executeRaw('CREATE TABLE health_fixture (id INTEGER)');
+  const monitor=startDatabaseHealthMonitor({initialized:true,readConfig:()=>config,intervalMs:100000,initialize:async()=>({ready:true}),onReady(){},logger:{warn(){}}});
+  const initial={version:1,id:'health',role:'source',phase:'forwarding',sourceUrl:'http://old.test',targetUrl:'http://new.test',tokenHash:'a'.repeat(64),startedAt:Date.now(),expiresAt:Date.now()+3600000};
+  try {
+    for (const [role,phase] of [['source','frozen'],['source','forwarding'],['source','archived'],['target','verifying']]) {
+      s.persistSeamlessMigrationState({...initial,role,phase});
+      await probeDatabase(config);
+      await monitor.check();
+      assert.equal(databaseHealth.snapshot().state,'healthy',role+':'+phase);
+      await assert.rejects(()=>r.executeRaw('INSERT INTO health_fixture VALUES (1)'),{code:'PANEL_MIGRATION_READ_ONLY'});
+      await assert.rejects(()=>r.withSqliteExclusive(db=>db.prepare('INSERT INTO health_fixture VALUES (2)').run()),{code:'PANEL_MIGRATION_READ_ONLY'});
+      assert.equal((await r.queryRaw('SELECT COUNT(*) AS n FROM health_fixture'))[0].n,0);
+    }
+    assert.throws(()=>s.assertSeamlessDatabaseWrite('UPDATE health_fixture SET id=3'),/新面板正在验证/);
+    r.getSqlite().close();
+    await assert.rejects(()=>probeDatabase(config));
+    await monitor.check(); await monitor.check(); await monitor.check();
+    assert.equal(databaseHealth.snapshot().state,'unavailable','real closed-handle failures must still be detected');
+  } finally {monitor.stop();s.persistSeamlessMigrationState(null);databaseHealth.healthy();}
+  process.exit(0);
+`));
+
 test("exact-ID import rolls back entirely on an invalid row and preserves runtime fields", () => isolated(String.raw`
   import assert from 'node:assert/strict';
   import * as r from './server/dbRuntime.ts';

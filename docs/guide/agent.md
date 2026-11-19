@@ -132,6 +132,8 @@ curl -fsSL https://panel.example.com/api/agent/install.sh | bash -s -- upgrade
 
 `fwxm agent repair` 保留配置，重新下载安装当前可用版本并重启，可能升级版本，不等同于只重启。升级或修复运行时不保证业务连接不断；跨面板迁移请用 [迁移流程](./migration.md)，不要先卸载。
 
+面板和 Agent 配套更新后，升级或重启 Agent 会自动核对已有规则的 Guard 限速监听器；iptables、nftables 等规则即使之前已标记为运行中，也会检查并恢复，不需要手动重启每条规则。Guard 配置随即时配置推送和完整心跳同步，进程后端准备完成后再建立对应监听。仍需保证 Agent 能正常连接面板；健康监听器可直接复用，单纯限速调整原位更新令牌桶。
+
 ## 6. 卸载
 
 ```bash

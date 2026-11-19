@@ -25,7 +25,7 @@ import {
   tryReserveHostPort,
   type HostPortReservation,
 } from "../portReservations";
-import { ensureTunnelListenerPortPolicy, reserveTunnelExitPort, usesSharedTunnelPrimaryListener } from "../repositories/tunnelRepository";
+import { ensureTunnelListenerPortPolicy, reserveTunnelExitPort, usesSharedTunnelPrimaryListener, usesSharedGostTunnelListener } from "../repositories/tunnelRepository";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
 import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
@@ -259,16 +259,15 @@ function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | nu
 }
 
 /**
- * Managed GOST/Nginx tunnels share the tunnel listener for the first active
- * rule. Additional rules need their own exit listener. Keep this decision in
- * one place when allocating the rule's bookkeeping port; the Agent uses the
- * same lowest-id primary convention.
+ * GOST rules all follow their tunnel endpoint. Nginx Stream retains the
+ * first-active-rule convention because it cannot carry arbitrary Relay targets.
  */
 async function preferredSharedTunnelListenPort(tunnel: any, ruleId = 0, enabled = true) {
   if (!usesSharedTunnelPrimaryListener(tunnel)) return null;
   const tunnelId = Number(tunnel?.id || 0);
   const listenPort = Number(tunnel?.listenPort || 0);
-  if (tunnelId <= 0 || listenPort <= 0 || !dbBool(enabled, true)) return null;
+  if (tunnelId <= 0 || listenPort <= 0 || (!usesSharedGostTunnelListener(tunnel) && !dbBool(enabled, true))) return null;
+  if (usesSharedGostTunnelListener(tunnel)) return listenPort;
   const rules = await db.getForwardRulesByTunnel(tunnelId);
   const activeIds = (rules as any[])
     .filter((candidate) => (
@@ -923,9 +922,8 @@ export async function createDirectForwardRuleForActor(
           throw new Error("出口 Agent 已无可用隧道监听端口");
         }
         const sharedListenPort = await preferredSharedTunnelListenPort(tunnel, 0, input.isEnabled !== false);
-        // Reuse the reservation acquired while repairing the listener when this
-        // new rule is the shared primary. Secondary rules must release it and
-        // allocate an independent exit port.
+        // GOST rules reuse the validated tunnel listener reservation. Nginx
+        // secondary rules continue to allocate independent listeners.
         if (listenerRepair?.reservation && Number(sharedListenPort || 0) === listenerRepair.port) {
           tunnelExitPortReservation = listenerRepair.reservation;
         } else {

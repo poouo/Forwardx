@@ -20,7 +20,10 @@ test("operations period describes the applied single day or range in both langua
       if (language === "en") assert.doesNotMatch(day + range, /\p{Script=Han}/u);
       for (const value of ["compact-card", "card", "table", "map", "flat-map"] as const) {
         const view = renderToStaticMarkup(<HostViewSelect value={value} onChange={() => {}} />);
-        assert.match(view, /role="combobox"/);
+        assert.match(view, /role="group"/);
+        assert.doesNotMatch(view, /role="combobox"/);
+        assert.equal((view.match(/<button\b/g) || []).length, 5);
+        assert.equal((view.match(/aria-pressed="true"/g) || []).length, 1);
         assert.match(view, /aria-label="(?:视图|View)"/);
         assert.match(view, /h-4 w-4 shrink-0/);
         if (language === "en") assert.doesNotMatch(view, /\p{Script=Han}/u);

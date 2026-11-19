@@ -6383,7 +6383,7 @@ function RulesContent() {
     ? "grid gap-2"
     : "grid gap-3";
   const ruleContentModeKey = effectiveViewMode === "card" ? "card" : displayMode;
-  const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
+  const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}`;
 
   function renderRuleGroupIcon(type: RuleGroupType, className = "h-4 w-4") {
     if (type === "chain") return <GitBranch className={`${className} text-amber-600`} />;

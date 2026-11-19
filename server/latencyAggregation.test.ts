@@ -377,3 +377,14 @@ test("forward-chain traffic counts only the first internal listener", () => {
     false,
   );
 });
+
+
+test("shared GOST tunnels account per-rule entry payload and reject shared exit counters", () => {
+  for (const mode of ["tcp", "tls", "wss", "mtcp", "mtls", "mwss"]) {
+    const hosts = trafficAccountingHostIds({ id: 44, hostId: 5 }, {
+      id: 10, mode, entryHostId: 5, exitHostId: 9, loadBalanceEnabled: true,
+      loadBalanceStrategy: "round_robin",
+    }, new Set([5, 6]), new Set([9, 10]));
+    assert.deepEqual([...hosts], [5, 6]);
+  }
+});

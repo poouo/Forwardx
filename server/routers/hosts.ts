@@ -4,6 +4,7 @@ import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
 import { hostNetworkSpeed, hostNetworkSampleAgeMs } from "../../shared/hostNetworkSpeed";
+import { hostNetworkLive } from "../hostNetworkLive";
 import { notificationSettings } from "../notificationSettings";
 import { appendPanelLog } from "../_core/panelLogger";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
@@ -480,6 +481,7 @@ function compactHostMetricSummary(row: any, isOnline = true) {
     networkOut: row?.networkOut == null ? null : Math.max(0, Number(row.networkOut) || 0),
     networkSpeedOut: speed.out == null ? null : Math.round(speed.out),
     networkSampleAgeMs: hostNetworkSampleAgeMs(row),
+    networkRecordedAt: row?.networkRecordedAt || null,
     diskUsage: row?.diskUsage ?? null,
     diskUsed: row?.diskUsed ?? null,
     diskTotal: row?.diskTotal ?? null,
@@ -1444,7 +1446,12 @@ export const hostsRouter = router({
           { ttlMs: 10_000, staleMs: 60_000 },
           () => db.getLatestHostMetrics(input.hostId, input.limit),
         );
-        return rows.map((row: any) => ({ ...row, networkSampleAgeMs: hostNetworkSampleAgeMs(row) }));
+        return rows.map((row: any, index: number) => {
+          // The two-row card query may use live counters. Historical charts
+          // must keep counters paired with their persisted collection times.
+          const metric = index === 0 && input.limit <= 2 ? hostNetworkLive.merge(row) : row;
+          return { ...metric, networkSampleAgeMs: hostNetworkSampleAgeMs(metric) };
+        });
       }),
     latestMetricsSummary: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(500).optional() }).optional())

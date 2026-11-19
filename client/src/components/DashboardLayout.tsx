@@ -121,7 +121,7 @@ const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: translateTex
 const pluginManagementMenuItem: SidebarNavItem = { icon: Puzzle, label: translateText("插件管理"), path: "/plugins", menuKey: "plugins" };
 
 const adminMenuItems: SidebarNavItem[] = [
-  { icon: LayoutDashboard, label: translateText("运维看板"), path: "/operations" },
+  { icon: LayoutDashboard, label: translateText("运维看板"), path: "/operations", menuKey: "operations" },
   { icon: CreditCard, label: translateText("支付对接"), path: "/payments", menuKey: "payments" },
   { icon: WalletCards, label: translateText("账单与兑换"), path: "/billing", menuKey: "billing" },
   { icon: Handshake, label: translateText(getSidebarMenuLabel("affiliates", true)), path: "/affiliate-management", menuKey: "affiliates" },
