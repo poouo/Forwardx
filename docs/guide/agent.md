@@ -32,7 +32,7 @@ curl -fsSL https://panel.example.com/api/agent/discovery.sh | bash -s -- YOUR_DI
 
 安装器默认选择兼容的 Realm `2.9.4`，其他版本可通过 `FORWARDX_REALM_VERSION` 显式选择。iperf3 仅用于网络测试，安装失败会警告，不应阻断 Agent 主流程。
 
-Agent 安装与升级默认准备 Nginx 及 stream 模块，与「系统设置 → 转发协议总开关」无关。优先复用已有且通过 stream 自检的 Nginx；缺少时通过系统包管理器安装，再校验并准备 ForwardX 独立的 Nginx 程序。协议开关只控制转发功能是否可用，不再决定安装流程是否安装或移除 Nginx。依赖安装失败会提示警告并继续 Agent 主流程，可执行 `fwxm agent tools install nginx` 重试；旧主机也可用此命令单独补装，或在后续升级时自动补齐。
+Agent 安装与升级默认准备独立的 `forwardx-nginx`，与「系统设置 → 转发协议总开关」无关。主机已有支持 stream 的 Nginx 时，安装器校验后复制可执行文件给 ForwardX 使用。ForwardX 使用自己的服务、配置和 PID 文件。已有 Nginx 或 OpenResty 的主机即使服务已停用，安装器也会跳过系统 Nginx 软件包安装。已有程序缺少 stream 时，Agent 会提示并继续安装，可准备独立且支持 stream 的程序放在 `/usr/local/bin/forwardx-nginx`，然后执行 `fwxm agent tools install nginx` 校验。没有系统 Nginx 的主机仍会通过包管理器安装所需组件，随后关闭软件包的默认服务和开机自启。
 
 ### 自动发现与重复安装
 

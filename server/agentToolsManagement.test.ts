@@ -165,24 +165,86 @@ FORWARDX_AGENT_PROXY=''
   }
 });
 
-test("default Nginx setup reuses healthy stream runtime and installs packages only when needed", () => {
-  const setup = `${selective.slice(0, selective.indexOf("do_install_tool() {"))}
+test("Nginx setup disables a fresh default service and preserves existing system Nginx", () => {
+  const helpers = selective.slice(0, selective.indexOf("do_install_tool() {"))
+    .replace("/etc/nginx", '"$TEST_NGINX_CONFIG"')
+    .replace(/\/etc\/init\.d\/(?:nginx|openresty)|\/usr\/local\/(?:nginx|openresty)|\/usr\/sbin\/nginx/g, "/nonexistent-forwardx-test$&");
+  const setup = `${helpers}
+exec 3>&1
+is_systemd_host() { [ "$INIT" = systemd ]; }
+pgrep() { [ "$BEFORE" = process ]; }
+command() {
+  case "$*" in
+    "-v nginx") [ "$BEFORE" = binary ] ;;
+    "-v openresty") return 1 ;;
+    *) builtin command "$@" ;;
+  esac
+}
+systemctl() {
+  case "$*" in
+    "show --property=LoadState nginx.service") echo "LoadState=$UNIT_STATE" ;;
+    "show --property=LoadState openresty.service") echo LoadState=not-found ;;
+    "is-active --quiet nginx") [ "$NGINX_ACTIVE" = 1 ] ;;
+    "is-enabled --quiet nginx") [ "$NGINX_ENABLED" = 1 ] ;;
+    "disable --now nginx") echo SYSTEMD_DISABLE >&3; NGINX_ACTIVE=0; NGINX_ENABLED=0 ;;
+    *) return 1 ;;
+  esac
+}
+rc-service() {
+  case "$*" in
+    "nginx status") [ "$NGINX_ACTIVE" = 1 ] ;;
+    "nginx stop") echo OPENRC_STOP >&3; NGINX_ACTIVE=0 ;;
+    *) return 1 ;;
+  esac
+}
+rc-update() {
+  case "$*" in
+    show) if [ "$NGINX_ENABLED" = 1 ]; then echo " nginx | default"; fi ;;
+    "-a del nginx") echo OPENRC_DISABLE >&3; NGINX_ENABLED=0 ;;
+    *) return 1 ;;
+  esac
+}
 RUNTIME_ATTEMPTS=0
 install_nginx_runtime() {
   RUNTIME_ATTEMPTS=$((RUNTIME_ATTEMPTS + 1))
   echo CHECK_RUNTIME
   [ "$RUNTIME_ATTEMPTS" -gt "$TEST_MISSING_CHECKS" ]
 }
-install_forward_tool_package() { echo PACKAGE_"$1"; return "$TEST_PACKAGE_FAILURE"; }
+install_forward_tool_package() {
+  echo PACKAGE_"$1"
+  NGINX_ACTIVE=1
+  NGINX_ENABLED=1
+  return "$TEST_PACKAGE_FAILURE"
+}
+NGINX_ACTIVE=0 NGINX_ENABLED=0 UNIT_STATE=not-found TEST_NGINX_CONFIG=/nonexistent-forwardx-test/ngx
+NGINX_BIN=/usr/local/bin/forwardx-nginx
+case "$BEFORE" in
+  active) NGINX_ACTIVE=1 ;;
+  enabled) NGINX_ENABLED=1 ;;
+  unit) UNIT_STATE=loaded ;;
+  masked) UNIT_STATE=masked ;;
+  config) TEST_NGINX_CONFIG=/dev/null ;;
+esac
 `;
-  for (const [missingChecks, packageFailure, expected, succeeds] of [
-    [0, 0, ["CHECK_RUNTIME"], true],
-    [1, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "CHECK_RUNTIME"], true],
-    [1, 1, ["CHECK_RUNTIME", "PACKAGE_nginx"], false],
-    [2, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "CHECK_RUNTIME"], false],
+  for (const [init, before, missingChecks, packageFailure, expected, succeeds] of [
+    ["systemd", "active", 0, 0, ["CHECK_RUNTIME"], true],
+    ["systemd", "absent", 1, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "SYSTEMD_DISABLE", "CHECK_RUNTIME"], true],
+    ["systemd", "active", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "enabled", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "unit", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "masked", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "config", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "binary", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "process", 1, 0, ["CHECK_RUNTIME"], false],
+    ["systemd", "absent", 1, 1, ["CHECK_RUNTIME", "PACKAGE_nginx", "SYSTEMD_DISABLE"], false],
+    ["systemd", "absent", 2, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "SYSTEMD_DISABLE", "CHECK_RUNTIME"], false],
+    ["openrc", "absent", 1, 0, ["CHECK_RUNTIME", "PACKAGE_nginx", "OPENRC_STOP", "OPENRC_DISABLE", "CHECK_RUNTIME"], true],
+    ["openrc", "enabled", 1, 0, ["CHECK_RUNTIME"], false],
   ] as const) {
-    const result = run(`${setup}\nTEST_MISSING_CHECKS=${missingChecks}\nTEST_PACKAGE_FAILURE=${packageFailure}\nensure_nginx_runtime`);
-    assert.equal(result.status === 0, succeeds, result.stderr);
-    assert.deepEqual(result.stdout.split(/\r?\n/).filter(line => /^(CHECK_RUNTIME|PACKAGE_)/.test(line)), expected);
+    const result = run(`INIT=${init} BEFORE=${before}\n${setup}\nTEST_MISSING_CHECKS=${missingChecks} TEST_PACKAGE_FAILURE=${packageFailure}\nensure_nginx_runtime`);
+    assert.equal(result.status === 0, succeeds, `${init}/${before}: ${result.stderr}`);
+    assert.deepEqual(result.stdout.split(/\r?\n/).filter(line => /^(CHECK_RUNTIME|PACKAGE_|SYSTEMD_|OPENRC_)/.test(line)), expected, `${init}/${before}`);
+    if (before !== "absent" && missingChecks > 0) assert.match(result.stdout, /已跳过系统软件包安装/);
+    assert.doesNotMatch(result.stdout, /无法关闭系统 nginx/);
   }
 });

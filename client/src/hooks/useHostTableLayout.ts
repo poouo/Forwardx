@@ -4,7 +4,7 @@ import { toast } from "@/lib/localizedToast";
 import { t } from "@/i18n";
 import { defaultHostTableLayout, normalizeHostTableLayout, hostTableColumns, type HostTableLayout } from "@shared/hostTableLayout";
 
-export function useHostTableLayout(user: { id?: number; hostTableLayout?: unknown } | null) {
+export function useHostTableLayout(user: { id?: number; role?: string; hostTableLayout?: unknown } | null) {
   const utils = trpc.useUtils();
   const mutation = trpc.auth.updateHostTableLayout.useMutation();
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -26,10 +26,11 @@ export function useHostTableLayout(user: { id?: number; hostTableLayout?: unknow
       if (request === revision.current) void utils.auth.me.invalidate();
     });
   }, [user?.id, utils, mutation.mutateAsync]);
+  const showRenewalCost = user?.role === "admin";
   return {
     layout, setLayout,
-    columns: useMemo(() => hostTableColumns(layout), [layout]),
-    allColumns: useMemo(() => hostTableColumns(layout, true), [layout]),
+    columns: useMemo(() => hostTableColumns(layout).filter(column => showRenewalCost || column.id !== "renewalCost"), [layout, showRenewalCost]),
+    allColumns: useMemo(() => hostTableColumns(layout, true).filter(column => showRenewalCost || column.id !== "renewalCost"), [layout, showRenewalCost]),
     reset: () => setLayout(defaultHostTableLayout()),
   };
 }

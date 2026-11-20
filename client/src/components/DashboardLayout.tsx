@@ -75,7 +75,7 @@ import QRCode from "qrcode";
 import { useLocation } from "wouter";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { trpc } from "@/lib/trpc";
@@ -1104,6 +1104,9 @@ function DashboardLayoutContent({
     : "";
   const accountDisplayName = String(user?.name || "").trim() || String(user?.username || "").trim() || translateText("账号");
   const accountUsername = String(user?.username || "").trim() || accountDisplayName;
+  const accountBindingStatus = discordStatus?.selected
+    ? `Discord ${discordStatus.bound ? translateText("已绑定") : translateText("未绑定")}`
+    : telegramStatus?.bound ? translateText("TG 已绑定") : null;
 
   useEffect(() => {
     if (telegramStatus?.bound) {
@@ -1591,7 +1594,8 @@ function DashboardLayoutContent({
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-sm font-medium leading-5">{accountDisplayName}</p>
                   <p className="mt-1 whitespace-normal break-words text-xs leading-4 text-muted-foreground">
-                    {isAdmin ? translateText("管理员") : translateText("用户")} · {discordStatus?.selected ? `Discord ${discordStatus.bound ? translateText("已绑定") : translateText("未绑定")}` : telegramStatus?.bound ? translateText("TG 已绑定") : translateText("TG 未绑定")}
+                    {isAdmin ? translateText("管理员") : translateText("用户")}
+                    {accountBindingStatus && <> · {accountBindingStatus}</>}
                   </p>
                 </div>
               </button>
@@ -2208,6 +2212,9 @@ function DashboardLayoutContent({
             )}
           </div>
           <DialogFooter className="gap-2">
+            <DialogClose asChild>
+              <Button type="button" variant="outline">{translateText("关闭")}</Button>
+            </DialogClose>
             {telegramStatus?.bound ? (
               <>
                 {telegramBotUrl && (

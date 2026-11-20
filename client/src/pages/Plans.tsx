@@ -33,6 +33,10 @@ import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, CircleHelp, Coins, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
+import { billingCycleLabel } from "@/components/PlanBillingCycleSelect";
+import { MAX_PLAN_PURCHASE_AMOUNT_CENTS, PLAN_BILLING_CYCLE_DAYS, planBillingCycles, readPlanCyclePrices, type PlanCyclePriceRule } from "@shared/planPurchase";
+
+type CyclePriceField = { kind: "fixed" | "percent"; value: string };
 
 type PlanForm = {
   stockLimit: string;
@@ -42,6 +46,7 @@ type PlanForm = {
   price: string;
   currency: string;
   durationDays: string;
+  cyclePrices: Partial<Record<number, CyclePriceField>>;
   portCount: string;
   trafficGB: string;
   trafficMode: PlanTrafficMode;
@@ -102,6 +107,7 @@ const emptyForm: PlanForm = {
   price: "0",
   currency: "CNY",
   durationDays: "30",
+  cyclePrices: {},
   portCount: "20",
   trafficGB: "0",
   trafficMode: "both",
@@ -256,7 +262,7 @@ function PlanCard({
       <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
         <ProductStockBadge product={plan} />
         <PlanDetails description={plan.description}>
-        <MobileInfoRow label={translateText("价格")}>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
+        <MobileInfoRow label={translateText("价格")}>{money(planBillingCycles(plan)[0].priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
         <MobileInfoRow label={translateText("资源")}>
           <div className="flex flex-wrap justify-end gap-1">
             {resourceParts.map((item) => (
@@ -576,6 +582,9 @@ function toForm(plan: any): PlanForm {
     price: String((Number(plan.priceCents || 0) / 100).toFixed(2)),
     currency: plan.currency || "CNY",
     durationDays: String(plan.durationDays ?? 30),
+    cyclePrices: Object.fromEntries(readPlanCyclePrices(plan.cyclePrices).map(rule => [rule.durationDays,
+      { kind: rule.kind, value: String(rule.kind === "percent" ? rule.pricePercent : rule.priceCents / 100) },
+    ])),
     portCount: String(plan.portCount ?? 20),
     trafficGB: String(Number(plan.trafficLimit || 0) / 1024 / 1024 / 1024 || 0),
     trafficMode: normalizePlanTrafficMode(plan.trafficMode),
@@ -608,6 +617,12 @@ function payload(form: PlanForm) {
     priceCents: Math.round(Number(form.price || 0) * 100),
     currency: (form.currency || "CNY").toUpperCase(),
     durationDays: ([30, 90, 180, 365, 730].includes(durationDays) ? durationDays : 30) as PlanDurationDays,
+    cyclePrices: durationDays === 30 ? PLAN_BILLING_CYCLE_DAYS.flatMap((days): PlanCyclePriceRule[] => {
+      const field = form.cyclePrices[days];
+      if (!field) return [];
+      if (field.kind === "percent") return [{ durationDays: days, kind: "percent", pricePercent: Number(field.value) }];
+      return [{ durationDays: days, kind: "fixed", priceCents: Math.round(Number(field.value) * 100) }];
+    }) : [],
     portCount: Math.max(0, Math.floor(Number(form.portCount || 0))),
     trafficLimit: Math.max(0, Math.floor(Number(form.trafficGB || 0) * 1024 * 1024 * 1024)),
     trafficMode: form.trafficMode,
@@ -950,6 +965,14 @@ export default function Plans() {
       return;
     }
     const data = payload(form);
+    if (Number(form.durationDays) === 30 && data.cyclePrices.some(rule => {
+      const field = form.cyclePrices[rule.durationDays];
+      return !field?.value.trim() || (rule.kind === "percent" ? !(rule.pricePercent >= 1 && rule.pricePercent <= 100)
+        : !(rule.priceCents >= 0 && rule.priceCents <= MAX_PLAN_PURCHASE_AMOUNT_CENTS));
+    })) {
+      setPlanDialogTab("settings");
+      return toast.error(translateText("请填写有效的周期价格或原价百分比（1%–100%）"));
+    }
     if (form.id) updatePlan.mutate({ id: form.id, syncExistingSubscribers: form.syncExistingSubscribers, ...data });
     else createPlan.mutate(data);
   };
@@ -1150,8 +1173,8 @@ export default function Plans() {
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如：基础套餐")} />
             </div>
             <div className="space-y-2">
-              <Label>{translateText("价格")}</Label>
-              <Input type="number" min={0} step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+              <Label htmlFor="plan-base-price">{translateText(form.durationDays === "30" ? "月付基准价" : "价格")}</Label>
+              <Input id="plan-base-price" type="number" min={0} step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             </div>
             <div className="space-y-2">
               <div className="flex items-center gap-1">
@@ -1167,6 +1190,42 @@ export default function Plans() {
                 </SelectContent>
               </Select>
             </div>
+            {form.durationDays === "30" && (
+              <div className="col-span-full space-y-3 rounded-lg border border-border/60 p-3">
+                <Label>{translateText("付款周期定价")}</Label>
+                {PLAN_BILLING_CYCLE_DAYS.map(days => {
+                  const field = form.cyclePrices[days];
+                  const monthly = days === 30;
+                  return (
+                    <div key={days} className="grid min-w-0 grid-cols-2 items-center gap-2 sm:grid-cols-[5rem_minmax(0,1fr)_minmax(0,1fr)]">
+                      <Label htmlFor={`plan-cycle-mode-${days}`} className="col-span-2 sm:col-span-1">{billingCycleLabel(days)}</Label>
+                      <Select value={field?.kind ?? (monthly ? "base" : "off")} onValueChange={(kind) => setForm(current => ({
+                        ...current, cyclePrices: { ...current.cyclePrices, [days]: kind === "fixed" || kind === "percent" ? { kind, value: "" } : undefined },
+                      }))}>
+                        <SelectTrigger id={`plan-cycle-mode-${days}`} className="min-w-0"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={monthly ? "base" : "off"}>{translateText(monthly ? "按基准价" : "不销售")}</SelectItem>
+                          {!monthly && <SelectItem value="fixed">{translateText("固定价格")}</SelectItem>}
+                          <SelectItem value="percent">{translateText("按原价百分比")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {field && <Input type="number" inputMode="decimal" step="0.01"
+                        min={field.kind === "percent" ? 1 : 0} max={field.kind === "percent" ? 100 : MAX_PLAN_PURCHASE_AMOUNT_CENTS / 100}
+                        aria-label={`${billingCycleLabel(days)} ${translateText(field.kind === "percent" ? "原价百分比" : "价格")}`}
+                        placeholder={translateText(field.kind === "percent" ? "例如 90" : "价格")}
+                        value={field.value} onChange={(event) => {
+                          const value = event.target.value;
+                          setForm(current => ({ ...current, cyclePrices: { ...current.cyclePrices, [days]: { ...field, value } } }));
+                        }} />}
+                    </div>
+                  );
+                })}
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  <p>{translateText("原价为月付基准价乘以月数。输入 90 按原价的 90% 收费，输入 100 按原价收费。")}</p>
+                  <p>{translateText("启用任一较长周期后，用户每次可购买所选周期的多份。")}</p>
+                </div>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>{translateText("连续端口数（0 为不限）")}</Label>
               <Input type="number" min={0} max={65535} value={form.portCount} onChange={(e) => setForm({ ...form, portCount: e.target.value })} />

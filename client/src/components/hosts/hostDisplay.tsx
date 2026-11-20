@@ -1,4 +1,5 @@
-import { t as translateText } from "@/i18n";
+import { getFormatLocale, t as translateText } from "@/i18n";
+import { hostRenewalCostSchema } from "@shared/hostRenewalCost";
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
 
@@ -55,6 +56,18 @@ export function formatUptime(seconds: number | null | undefined): string {
   if (d > 0) return translateText("{0}天 {1}小时", [d, h]);
   if (h > 0) return translateText("{0}小时 {1}分", [h, m]);
   return translateText("{0}分钟", [m]);
+}
+
+export function formatHostRenewalCost(amountCents: unknown, currency: unknown): string | null {
+  if (amountCents == null || currency == null) return null;
+  const cost = hostRenewalCostSchema.safeParse({ amountCents, currency });
+  if (!cost.success) return null;
+  return new Intl.NumberFormat(getFormatLocale(), {
+    style: "currency",
+    currency: cost.data.currency,
+    currencyDisplay: "narrowSymbol",
+    maximumFractionDigits: 2,
+  }).format(cost.data.amountCents / 100);
 }
 
 function normalizeVersion(version: string | null | undefined) {

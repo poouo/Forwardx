@@ -42,7 +42,7 @@ import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/p
 import { withKeyedTaskLock, withTrafficBillingUserLock } from "../keyedTaskLock";
 import { normalizePlanTrafficMode, rulePlanTrafficMode, type PlanTrafficMode, type PlanTrafficEntitlement } from "../../shared/planTraffic";
 import { trafficAddonPurchaseTotals, validateTrafficAddonQuantity } from "../../shared/trafficAddonPurchase";
-import { planPurchaseTotals } from "../../shared/planPurchase";
+import { planCyclePurchaseTotals } from "../../shared/planPurchase";
 import {
   getUserForwardRuleIdsDisabledByAccess,
   scheduleUserForwardRulesAfterAccessRecovery,
@@ -104,16 +104,24 @@ export async function createPaymentOrder(order: InsertPaymentOrder) {
       // update holds one stable database row until this transaction commits.
       await setSetting(SUBSCRIPTION_PLAN_PAYMENT_MARKER, "1");
       const plan = await db
-        .select({ id: subscriptionPlans.id, priceCents: subscriptionPlans.priceCents, durationDays: subscriptionPlans.durationDays })
+        .select({ id: subscriptionPlans.id, priceCents: subscriptionPlans.priceCents, durationDays: subscriptionPlans.durationDays, cyclePrices: subscriptionPlans.cyclePrices })
         .from(subscriptionPlans)
         .where(eq(subscriptionPlans.id, Number(order.planId)))
         .limit(1);
       if (!plan[0]) throw new Error("套餐已删除，无法创建支付订单");
-      const totals = planPurchaseTotals(Number(plan[0].priceCents), Number(plan[0].durationDays), order.planQuantity ?? 1);
-      order = { ...order, planQuantity: totals.quantity, planDurationDays: order.planDurationDays ?? totals.durationDays };
+      const quantity = order.planQuantity ?? 1;
+      order = { ...order, planQuantity: quantity, planDurationDays: order.planDurationDays ?? planCyclePurchaseTotals(plan[0], quantity).durationDays };
       if (!order.subscriptionId) {
         const target = await getStoreRenewalSubscription(Number(order.userId), Number(order.planId));
         if (target) order = { ...order, subscriptionId: target.id };
+      }
+      if (order.subscriptionId) {
+        const q = quoteDbIdentifier;
+        const [target] = await queryRaw<{ adminDismissedAt: unknown }>(
+          `SELECT ${q("adminDismissedAt")} FROM ${q("user_subscriptions")} WHERE ${q("id")} = ?${getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE"}`,
+          [order.subscriptionId],
+        );
+        if (target?.adminDismissedAt != null) throw new Error("该订阅已删除");
       }
       if (!order.subscriptionId) {
         await reservePlanStock(Number(order.planId));
@@ -813,6 +821,7 @@ function userSubscriptionsListQuery(db: any) {
       priceCents: subscriptionPlans.priceCents,
       currency: subscriptionPlans.currency,
       durationDays: subscriptionPlans.durationDays,
+      cyclePrices: subscriptionPlans.cyclePrices,
       portCount: subscriptionPlans.portCount,
       trafficLimit: subscriptionPlans.trafficLimit,
       trafficMode: subscriptionPlans.trafficMode,
@@ -880,6 +889,7 @@ export async function getUserSubscriptionById(id: number) {
 
 export async function listUserSubscriptionsPage(input: PageRequest & {
   userId?: number;
+  status?: "active" | "expired";
   excludeCancelled?: boolean;
   visibility?: SubscriptionListVisibility;
 }) {
@@ -889,8 +899,13 @@ export async function listUserSubscriptionsPage(input: PageRequest & {
   if (input.userId !== undefined) conditions.push(eq(userSubscriptions.userId, input.userId));
   if (input.excludeCancelled !== false) conditions.push(sql`${userSubscriptions.status} <> 'cancelled'`);
   conditions.push(...subscriptionVisibilityConditions(input.visibility || "all"));
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
   const nowSec = Math.floor(Date.now() / 1000);
+  const active = and(eq(userSubscriptions.status, "active"),
+    sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`);
+  if (input.status === "active") conditions.push(active);
+  if (input.status === "expired") conditions.push(or(eq(userSubscriptions.status, "expired"),
+    and(eq(userSubscriptions.status, "active"), sql`${userSubscriptions.expiresAt} <= ${nowSec}`)));
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
   const aggregateQuery = db
     .select({
       totalItems: sql<number>`COUNT(*)`,
@@ -1408,8 +1423,10 @@ export async function cancelUserSubscription(id: number) {
       id: userSubscriptions.id,
       userId: userSubscriptions.userId,
       status: userSubscriptions.status,
+      adminDismissedAt: userSubscriptions.adminDismissedAt,
     }).from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
     if (!subscription) throw new Error("订阅不存在");
+    if (subscription.adminDismissedAt) throw new Error("该订阅已删除");
     if (subscription.status !== "cancelled") {
       await updateUserSubscription(id, { status: "cancelled" } as any);
     }
@@ -1451,12 +1468,41 @@ export async function dismissCancelledUserSubscription(input: {
   });
 }
 
+export async function dismissExpiredUserSubscription(id: number) {
+  return withUserSubscriptionLock(id, async () => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    // Use the same database lock as checkout so a renewal cannot be created
+    // between the order check and hiding its target subscription.
+    await setSetting(SUBSCRIPTION_PLAN_PAYMENT_MARKER, "1");
+    const [subscription] = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
+    if (!subscription || subscription.status !== "expired") throw new Error("只能删除已过期的订阅");
+    if (subscription.adminDismissedAt) return;
+    const [order] = await db.select({ id: paymentOrders.id }).from(paymentOrders).where(and(
+      eq(paymentOrders.subscriptionId, id),
+      inArray(paymentOrders.status, ["pending", "paid", "processing"]),
+    )).limit(1);
+    if (order) throw new Error("该订阅仍有待支付或待发放的续费订单");
+    await db.update(userSubscriptions).set({ adminDismissedAt: nowDate() }).where(eq(userSubscriptions.id, id));
+  });
+}
+
+async function reserveAdminRenewalPorts(subscription: typeof userSubscriptions.$inferSelect, plan: Awaited<ReturnType<typeof getSubscriptionPlanById>>, now: Date) {
+  if (subscription.status === "active" && (!subscription.expiresAt || new Date(subscription.expiresAt) > now)) return {};
+  const snapshot = parsePlanSnapshot(subscription.planSnapshot) ?? (plan ? buildPlanSnapshot(plan) : null);
+  if (!snapshot) throw new Error("套餐不存在");
+  const block = await findAvailableSubscriptionPortBlock(snapshot.portCount, snapshot.hostIds, snapshot.tunnelIds, snapshot.forwardGroupIds);
+  if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
+  return { portRangeStart: block.start, portRangeEnd: block.end };
+}
+
 async function setUserSubscriptionExpiresAtUnlocked(id: number, expiresAt: Date | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const rows = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
   const subscription = rows[0] as any;
   if (!subscription) throw new Error("订阅不存在");
+  if (subscription.adminDismissedAt) throw new Error("该订阅已删除");
   if (subscription.status === "cancelled") throw new Error("已取消的订阅不能更改到期时间");
   const nextExpiresAt = expiresAt ? new Date(expiresAt) : null;
   if (nextExpiresAt && !Number.isFinite(nextExpiresAt.getTime())) throw new Error("到期时间无效");
@@ -1485,6 +1531,7 @@ async function setUserSubscriptionExpiresAtUnlocked(id: number, expiresAt: Date 
     nextTrafficResetAt = null;
   }
   await updateUserSubscription(id, {
+    ...(expired ? {} : await reserveAdminRenewalPorts(subscription, plan, now)),
     status: expired ? "expired" : "active",
     expiresAt: nextExpiresAt,
     nextTrafficResetAt,
@@ -1502,7 +1549,7 @@ async function setUserSubscriptionExpiresAtUnlocked(id: number, expiresAt: Date 
 }
 
 export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date | null) {
-  return withUserSubscriptionLock(id, () => withDatabaseTransaction(
+  return withUserSubscriptionLock(id, () => withSubscriptionPortAllocationLock(
     () => setUserSubscriptionExpiresAtUnlocked(id, expiresAt),
   ));
 }
@@ -1515,6 +1562,7 @@ async function extendUserSubscriptionUnlocked(id: number, days: number) {
   const rows = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
   const subscription = rows[0] as any;
   if (!subscription) throw new Error("订阅不存在");
+  if (subscription.adminDismissedAt) throw new Error("该订阅已删除");
   if (subscription.status === "cancelled") throw new Error("已取消的订阅不能延长");
   if (!subscription.expiresAt) throw new Error("永久订阅无需延长");
   const now = nowDate();
@@ -1539,6 +1587,7 @@ async function extendUserSubscriptionUnlocked(id: number, days: number) {
     nextTrafficResetAt = null;
   }
   await updateUserSubscription(id, {
+    ...await reserveAdminRenewalPorts(subscription, plan, now),
     status: "active",
     expiresAt,
     nextTrafficResetAt,
@@ -1866,7 +1915,7 @@ async function restoreUserForwardRulesIfEligible(userId: number) {
 }
 
 export async function extendUserSubscription(id: number, days: number) {
-  return withUserSubscriptionLock(id, () => withDatabaseTransaction(
+  return withUserSubscriptionLock(id, () => withSubscriptionPortAllocationLock(
     () => extendUserSubscriptionUnlocked(id, days),
   ));
 }
@@ -2522,6 +2571,7 @@ async function applySubscriptionToUserUnlocked(
     if (sameActiveSubscription.status === "cancelled") {
       throw new Error("已取消的订阅不能续费");
     }
+    if (sameActiveSubscription.adminDismissedAt) throw new Error("该订阅已删除");
     if (!isUserRenewableSubscriptionSource(sameActiveSubscription.source, sameActiveSubscription.allowSelfRenew === true || sameActiveSubscription.allowSelfRenew === 1)) {
       throw new Error("管理员分配的套餐不能自行续费，请联系管理员处理");
     }
@@ -2642,7 +2692,7 @@ export async function applySubscriptionToUser(
   targetSubscriptionId?: number | null,
   allowSelfRenew?: boolean,
 ) {
-  return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(
+  return withTrafficBillingUserTransaction(userId,
     // Port blocks are allocated by reading all active reservations and then
     // inserting the selected range. Hold the shared database marker row for
     // the entire transaction so separate panel instances cannot choose the
@@ -2657,7 +2707,7 @@ export async function applySubscriptionToUser(
       targetSubscriptionId,
       allowSelfRenew,
     )),
-  ));
+  );
 }
 
 function getTrafficAddonCycleEnd(subscription: any) {
@@ -3030,7 +3080,8 @@ async function listUserSubscriptionsForLedger(
   const db = await getDb();
   if (!db || selectedIds?.length === 0) return [];
   const query = userSubscriptionsListQuery(db);
-  const conditions = subscriptionVisibilityConditions(options.isAdmin ? "admin" : "user");
+  const conditions = [or(isNull(userSubscriptions.adminDismissedAt), eq(userSubscriptions.status, "expired"))];
+  if (!options.isAdmin) conditions.push(isNull(userSubscriptions.userDismissedAt));
   if (userId !== undefined) conditions.push(eq(userSubscriptions.userId, userId));
   if (!options.includeCancelledSubscriptions) conditions.push(ne(userSubscriptions.status, "cancelled"));
   if (selectedIds) conditions.push(inArray(userSubscriptions.id, selectedIds));
@@ -3152,7 +3203,7 @@ function billingLedgerUnion(input: BillingLedgerOptions, upperIds?: Map<BillingL
     if (upperIds) { conditions.push(`${q("id")} <= ?`); parameters.push(upperIds.get(kind) ?? 0); }
     if (kind === "payment") conditions.push(`${q("adminDismissedAt")} IS NULL`);
     if (kind === "subscription") {
-      conditions.push(`${q("adminDismissedAt")} IS NULL`);
+      conditions.push(`(${q("adminDismissedAt")} IS NULL OR ${q("status")} = 'expired')`);
       if (!input.isAdmin) conditions.push(`${q("userDismissedAt")} IS NULL`);
       if (input.includeCancelledSubscriptions === false) conditions.push(`${q("status")} <> 'cancelled'`);
     }
@@ -3246,6 +3297,7 @@ export async function purchasePlanWithBalance(
   discountCodeId?: number | null,
   subscriptionId?: number | null,
   quantity = 1,
+  billingCycleDays?: number,
 ) {
   return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(async () => {
   const plan = await getSubscriptionPlanById(planId);
@@ -3264,7 +3316,7 @@ export async function purchasePlanWithBalance(
       throw new Error("折扣码不适用于该套餐");
     }
   }
-  const totals = planPurchaseTotals(Number(plan.priceCents || 0), Number(plan.durationDays), quantity);
+  const totals = planCyclePurchaseTotals(plan, quantity, billingCycleDays);
   const amountCents = calculateDiscountedAmount(totals.priceCents, discount);
   if (amountCents > 0) {
     await addUserBalance(userId, -amountCents, {

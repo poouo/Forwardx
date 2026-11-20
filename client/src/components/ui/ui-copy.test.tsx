@@ -116,7 +116,8 @@ test("cancelled subscriptions stay in default billing history, not in the packag
   assert.match(billing, /\{ledger\.map\(\(item: any\) =>/);
   assert.match(billing, /item\.statusLabel \? translateText\(item\.statusLabel\) : paymentStatusText\(item\.status\)/);
   assert.doesNotMatch(packages, /showCancelled|cancelledCount|已取消记录当前处于隐藏状态|删除已取消订阅/);
-  assert.match(packages, /subscriptions\.filter\(\(sub: any\) => sub\.status !== "cancelled"\)/);
+  assert.match(packages, /const isActive =[^;]+sub\.status === "active"/);
+  assert.match(packages, /subscriptions\.filter\(\(sub\) => sub\.status === "expired" \|\| \(sub\.status === "active" && !isActive\(sub\)\)\)/);
   const wallet = readFileSync("client/src/pages/Wallet.tsx", "utf8");
   assert.match(wallet, /item\.statusLabel \? translateText\(item\.statusLabel\) : paymentStatusText\(item\.status\)/);
 });

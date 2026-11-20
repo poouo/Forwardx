@@ -29,9 +29,19 @@ test("host layout normalizes order, protects required columns and clamps per-col
 
 test("all host detail columns can be controlled independently", () => {
   const columns = hostTableColumns({ ...defaultHostTableLayout(), hidden: [] });
-  for (const id of ["status", "region", "address", "version", "load", "uptime", "expiry", "cpu", "memory", "disk", "total", "network", "system", "tcpConnections", "udpConnections"]) {
+  for (const id of ["status", "region", "address", "version", "load", "uptime", "expiry", "renewalCost", "cpu", "memory", "disk", "total", "network", "system", "tcpConnections", "udpConnections"]) {
     assert.ok(columns.some(column => column.id === id && !column.required), id);
   }
+});
+
+test("the renewal cost column appears beside expiry in existing layouts and can be hidden", () => {
+  const old = defaultHostTableLayout();
+  old.order = old.order.filter(id => id !== "renewalCost");
+  const next = normalizeHostTableLayout(old);
+  assert.equal(next.order[next.order.indexOf("expiry") + 1], "renewalCost");
+  assert.deepEqual(next.order.filter(id => id !== "renewalCost"), old.order);
+  assert.ok(hostTableColumns(next).some(column => column.id === "renewalCost"));
+  assert.ok(!hostTableColumns({ ...next, hidden: [...next.hidden, "renewalCost"] }).some(column => column.id === "renewalCost"));
 });
 
 test("connection columns are visible by default and added without resetting saved host layouts", () => {

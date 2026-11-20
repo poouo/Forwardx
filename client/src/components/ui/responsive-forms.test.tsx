@@ -43,7 +43,8 @@ test("shutdown thresholds move below the header in narrow cards and inline in wi
 test("host billing and paired controls use mobile columns without squeezing timestamps", () => {
   const host = section("pages/Hosts.tsx", '<TabsContent value="other"', 'translateText("DDNS 服务")');
   assert.match(host, /grid min-w-0 grid-cols-2 gap-2\.5 px-1/);
-  assert.equal((host.match(/col-span-2 min-w-0 space-y-1 sm:col-span-1/g) || []).length, 2);
+  assert.equal((host.match(/col-span-2 min-w-0 space-y-1 sm:col-span-1">\s*<Label className="text-sm">\{translateText\("机器(?:购买|停止)时间"\)\}/g) || []).length, 2);
+  assert.match(host, /col-span-2 min-w-0 space-y-1 sm:col-span-1">\s*<Label htmlFor="host-renewal-amount"/);
   assert.match(host, /col-span-2 row-start-2 min-w-0 space-y-1 md:col-span-1 md:row-start-auto/);
   assert.equal((host.match(/mt-2\.5 grid min-w-0 grid-cols-2 gap-2\.5/g) || []).length, 2);
   assert.match(host, /@min-\[16rem\]:grid-cols-/);

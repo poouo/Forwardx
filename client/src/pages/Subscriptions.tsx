@@ -3,6 +3,9 @@ import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
+import { PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
+import { planBillingCycles } from "@shared/planPurchase";
+import { SubscriptionStatusTabs, type SubscriptionListStatus } from "@/components/SubscriptionStatusTabs";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
@@ -90,6 +93,7 @@ export default function Subscriptions() {
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
   const { data: subscriptions = [], isLoading } = trpc.plans.mySubscriptions.useQuery();
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionListStatus>("active");
   const hasRenewableSubscription = subscriptions.some((sub: any) =>
     sub.status !== "cancelled"
     && sub.source === "admin"
@@ -106,19 +110,19 @@ export default function Subscriptions() {
   const [addonQuantity, setAddonQuantity] = useState("1");
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
   const [renewQuantity, setRenewQuantity] = useState("1");
+  const [renewalCycleDays, setRenewalCycleDays] = useState<number | undefined>();
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
 
-  const activeCount = useMemo(
-    () => subscriptions.filter((sub: any) => sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date())).length,
-    [subscriptions],
-  );
-  const visibleSubscriptions = useMemo(
-    () => subscriptions.filter((sub: any) => sub.status !== "cancelled"),
-    [subscriptions],
-  );
+  const now = Date.now();
+  const isActive = (sub: (typeof subscriptions)[number]) =>
+    sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt).getTime() > now);
+  const activeSubscriptions = subscriptions.filter(isActive);
+  const activeCount = activeSubscriptions.length;
+  const visibleSubscriptions = subscriptionStatus === "active" ? activeSubscriptions
+    : subscriptions.filter((sub) => sub.status === "expired" || (sub.status === "active" && !isActive(sub)));
   const currentUserTraffic = useMemo(
     () => userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || user,
     [user, userTraffic],
@@ -199,6 +203,7 @@ export default function Subscriptions() {
     setDiscountCode("");
     setDiscountPreview(null);
     setRenewQuantity("1");
+    setRenewalCycleDays(undefined);
     setRenewingSub(sub);
   };
 
@@ -206,11 +211,12 @@ export default function Subscriptions() {
     if (!renewingSub?.planId || !renewTotals) return;
     const planId = Number(renewingSub.planId);
     const code = billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined;
-    if (payMode === "balance") {
+    if (payMode === "balance" || freeRenewal) {
       renewWithBalance.mutate({
         planId,
         subscriptionId: Number(renewingSub.id),
         quantity: renewTotals.quantity,
+        billingCycleDays: selectedRenewalCycleDays,
         discountCode: code,
       });
       return;
@@ -218,6 +224,7 @@ export default function Subscriptions() {
     createOrder.mutate({
       amount: Math.max(0.01, renewTotals.priceCents / 100),
       quantity: renewTotals.quantity,
+      billingCycleDays: selectedRenewalCycleDays,
       paymentType,
       planId,
       subscriptionId: Number(renewingSub.id),
@@ -236,10 +243,14 @@ export default function Subscriptions() {
   const balanceReady = !walletLoading && balanceCents !== null;
   const balance = balanceCents ?? 0;
   const balanceEnough = balanceReady && !!addonTotals && balance >= addonTotals.priceCents;
-  const renewTotals = planPurchaseQuote(renewingSub, renewQuantity);
+  const selectedRenewalCycleDays = renewalCycleDays ?? Number(renewingSub?.durationDays || 0);
+  const renewalCycles = renewingSub ? planBillingCycles(renewingSub) : [];
+  const permitsMultiple = renewalCycles.length > 1;
+  const renewTotals = planPurchaseQuote(renewingSub, permitsMultiple ? renewQuantity : "1", selectedRenewalCycleDays);
   const renewingPrice = renewTotals?.priceCents ?? 0;
   const appliedDiscount = billingFeatures?.discountEnabled && discountPreview?.quoteKey === discountQuoteKey(Number(renewingSub?.planId), renewTotals?.priceCents, discountCode) ? discountPreview : null;
   const renewFinalAmountCents = Number(appliedDiscount?.finalAmountCents ?? renewingPrice);
+  const freeRenewal = !!renewTotals && renewFinalAmountCents === 0;
   const renewBalanceEnough = balanceReady && balance >= renewFinalAmountCents;
 
   return (
@@ -275,6 +286,7 @@ export default function Subscriptions() {
           </div>
         )}
 
+        <SubscriptionStatusTabs value={subscriptionStatus} onChange={setSubscriptionStatus}>
         {isLoading && (
           <DataSectionLoading label={translateText("正在加载订阅数据")} />
         )}
@@ -282,10 +294,9 @@ export default function Subscriptions() {
         {!isLoading && visibleSubscriptions.length === 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(" 暂无可显示订阅")}</CardTitle>
-              <CardDescription>{translateText("当前账户还没有套餐记录。")}</CardDescription>
+              <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" />{translateText(subscriptionStatus === "active" ? "暂无有效订阅" : "暂无过期订阅")}</CardTitle>
             </CardHeader>
-            {storeStatus?.enabled && (
+            {subscriptionStatus === "active" && storeStatus?.enabled && (
               <CardFooter>
                 <Button onClick={() => setLocation("/store")}>
                   <ShoppingBag className="mr-2 h-4 w-4" />{translateText(" 去商店购买")}</Button>
@@ -296,7 +307,7 @@ export default function Subscriptions() {
 
         <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           {visibleSubscriptions.map((sub: any) => {
-            const isActive = sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date());
+            const isActive = subscriptionStatus === "active";
             const addons = isActive && Number(sub.trafficLimit || 0) > 0 ? (sub.trafficAddons || []) : [];
             const currentAddonBytes = Number(sub.activeTrafficAddonBytes || 0);
             const purchasedAddonBytes = Number(sub.purchasedTrafficAddonBytes || 0);
@@ -321,7 +332,7 @@ export default function Subscriptions() {
                       <CardDescription className="mt-1 text-xs">{sourceLabel(sub.source)}</CardDescription>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-                      <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
+                      <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(subscriptionStatus)}</Badge>
                       {canRenew && (
                         <Button
                           type="button"
@@ -408,6 +419,7 @@ export default function Subscriptions() {
           })}
         </div>
 
+        </SubscriptionStatusTabs>
         <Dialog open={!!renewingSub} onOpenChange={(open) => !open && closeRenewDialog()}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -416,11 +428,13 @@ export default function Subscriptions() {
               <DialogDescription>{translateText("再次购买 ")}{renewingSub?.planName || translateText("当前套餐")}{translateText(" 会延长当前订阅有效期。")}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
-              <PlanPurchaseQuantity value={renewQuantity} onChange={(value) => { setRenewQuantity(value); setDiscountPreview(null); }}
-                durationDays={Number(renewingSub?.durationDays || 0)} valid={!!renewTotals} disabled={createOrder.isPending || renewWithBalance.isPending} />
+              {renewingSub && <PlanBillingCycleSelect options={renewalCycles} value={selectedRenewalCycleDays} currency={renewingSub.currency || undefined}
+                onChange={(days) => { setRenewalCycleDays(days); setDiscountPreview(null); }} disabled={createOrder.isPending || renewWithBalance.isPending} />}
+              {permitsMultiple && <PlanPurchaseQuantity value={renewQuantity} onChange={(value) => { setRenewQuantity(value); setDiscountPreview(null); }}
+                durationDays={selectedRenewalCycleDays} valid={!!renewTotals} disabled={createOrder.isPending || renewWithBalance.isPending} />}
               <div className="rounded-lg border bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{translateText("原价")}</span>
+                  <span className="text-muted-foreground">{translateText("套餐金额")}</span>
                   <span>{money(renewingPrice, renewingSub?.currency || "CNY")}</span>
                 </div>
                 {appliedDiscount && (
@@ -451,7 +465,7 @@ export default function Subscriptions() {
                 </div>
               )}
 
-              <div className="grid gap-2">
+              {!freeRenewal && <div className="grid gap-2">
                 <button
                   type="button"
                   onClick={() => setPayMode("balance")}
@@ -490,7 +504,7 @@ export default function Subscriptions() {
                 {paymentMethods.length === 0 && (
                   <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{translateText("暂无在线支付方式。")}</div>
                 )}
-              </div>
+              </div>}
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={closeRenewDialog}>{translateText("取消")}</Button>
@@ -500,12 +514,11 @@ export default function Subscriptions() {
                   !renewingSub || !renewTotals || previewDiscount.isPending ||
                   createOrder.isPending ||
                   renewWithBalance.isPending ||
-                  (payMode === "gateway" && paymentMethods.length === 0) ||
-                  (payMode === "balance" && (walletLoading || !renewBalanceEnough))
+                  (!freeRenewal && (payMode === "gateway" ? paymentMethods.length === 0 : walletLoading || !renewBalanceEnough))
                 }
               >
                 {(createOrder.isPending || renewWithBalance.isPending) ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {payMode === "balance" ? (walletLoading ? translateText("余额加载中") : renewBalanceEnough ? translateText("余额续费") : translateText("余额不足")) : translateText("去支付")}
+                {freeRenewal ? translateText("确认续费") : payMode === "balance" ? (walletLoading ? translateText("余额加载中") : renewBalanceEnough ? translateText("余额续费") : translateText("余额不足")) : translateText("去支付")}
               </Button>
             </DialogFooter>
           </DialogContent>

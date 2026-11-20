@@ -2,6 +2,7 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
 import * as db from "../db";
+import { afterDatabaseCommit } from "../dbRuntime";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
@@ -1623,6 +1624,11 @@ export const tunnelsRouter = router({
         const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
         const hopIdsToWrite = hopHostIds || existingHopHostIds;
         if (shouldWriteHops && hopIdsToWrite.length >= 3) {
+          // Allocate the replacement first hop around the public ports that
+          // will follow the tunnel to that host in this transaction.
+          const movingEntryPorts = entryHostId !== Number(tunnel.entryHostId)
+            ? referencedRules.filter((rule: any) => !dbBool(rule.pendingDelete)).map((rule: any) => Number(rule.sourcePort))
+            : [];
           const hops: { hostId: number; listenPort: number; connectHost?: string | null }[] = [];
           const existingHopByHostId = new Map<number, any>();
           for (const hop of existingHops || []) {
@@ -1645,9 +1651,10 @@ export const tunnelsRouter = router({
                 preferredStart: hopHost?.portRangeStart,
                 preferredEnd: hopHost?.portRangeEnd,
                 currentPort: existingHopPort,
-                reservedPorts: heldReservations
-                  .filter((item) => item.hostId === Number(hopIdsToWrite[i]))
-                  .map((item) => item.port),
+                reservedPorts: [
+                  ...heldReservations.filter((item) => item.hostId === Number(hopIdsToWrite[i])).map((item) => item.port),
+                  ...(i === 0 ? movingEntryPorts : []),
+                ],
                 sameTunnelResource: Number(existingHop?.id || 0) > 0 && existingHopPort > 0
                   ? {
                     tunnelId: id,
@@ -1676,6 +1683,9 @@ export const tunnelsRouter = router({
           await hopRepo.clearTunnelExitNodes(id);
           await hopRepo.clearForwardRuleTunnelExitsByTunnel(id);
         }
+        const movedRuleHosts = entryHostId !== Number(tunnel.entryHostId)
+          ? await hopRepo.syncTunnelRuleEntryHosts(id)
+          : [];
         // `forwardRules.tunnelExitPort` belongs to the tunnel's exit Agent,
         // so changing the exit host/listener (or switching into a non-
         // ForwardX transport) invalidates every active GOST rule's previous
@@ -1750,8 +1760,11 @@ export const tunnelsRouter = router({
             ...normalizedRequestedHopIds,
             ...existingExtraHostIds,
             ...nextExtraHostIds,
+            ...movedRuleHosts,
           ];
-          await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated", { urgent: true });
+          await afterDatabaseCommit(() => refreshTunnelRuntimeHosts(
+            id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated", { urgent: true },
+          ));
         }
         const updatedTunnel = await db.getTunnelById(id);
         const hydratedTunnel = updatedTunnel ? (await attachTunnelEndpointHosts([updatedTunnel as any]))[0] : null;

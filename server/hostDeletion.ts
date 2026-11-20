@@ -4,6 +4,7 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { deleteHost, getHostById, releaseHostPendingRuleCleanup } from "./repositories/hostRepository";
 import { repairForwardGroupRuleIntegrity } from "./forwardGroupRuleIntegrity";
 import { repairForwardGroupTemplateHostReferencesForHost } from "./repositories/forwardGroupRepository";
+import { repairTunnelRuleEntryHostsForHost } from "./repositories/tunnelRepository";
 import { pushAgentRefresh } from "./agentEvents";
 
 type Reference = { id: number; name: string; groupMode?: string | null };
@@ -56,6 +57,7 @@ export async function prepareHostDeletion(hostId: number) {
   // Do not re-save user's rules or rebuild healthy runtimes to fix stale metadata.
   await repairForwardGroupRuleIntegrity(hostId);
   await repairForwardGroupTemplateHostReferencesForHost(hostId);
+  await repairTunnelRuleEntryHostsForHost(hostId);
   const impact = await getHostDeletionImpact(hostId);
   if (impact.online && impact.pendingCleanupCount > 0) {
     pushAgentRefresh(hostId, "host-delete-pending-cleanup", { urgent: true });

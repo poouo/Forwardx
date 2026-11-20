@@ -284,6 +284,41 @@ test("subscription quota, cancellation, reassignment, and cancelled-record dismi
         [2000, 2, 1, "cancelled", "admin", snapshot, epoch(now), epoch(now + 1000000)],
       );
       assert.ok((await userBilling.ledger({ userId: 2 })).every((item) => Number(item.userId) === 1), "user cannot read another user's cancellation history");
+
+      const list = (status, page = 1) => adminPackages.subscriptionsPage({ status, page, pageSize: 1, userId: 1 });
+      assert.deepEqual((await list("expired")).items.map((sub) => Number(sub.id)), [900]);
+      assert.equal((await list("active")).items.some((sub) => Number(sub.id) === 900), false);
+      await assert.rejects(() => userPackages.deleteExpiredSubscription({ id: 900 }), (error) => error.code === "FORBIDDEN");
+      const renewalOrder = {
+        outTradeNo: "pending-expired-renewal", userId: 1, planId: 1, subscriptionId: 900,
+        amountCents: 100, subject: "Renewal", provider: "alipay", paymentType: "alipay", orderType: "plan", status: "pending",
+      };
+      await billing.createPaymentOrder(renewalOrder);
+      await assert.rejects(() => adminPackages.deleteExpiredSubscription({ id: 900 }), /续费订单/);
+      await billing.updatePaymentOrder("pending-expired-renewal", { status: "expired" });
+
+      // The expired subscription's previous port has since been allocated.
+      await runtime.executeRaw('UPDATE "user_subscriptions" SET "portRangeStart" = 10000, "portRangeEnd" = 10000, "expiresAt" = ? WHERE "id" = 900', [epoch(now - 1000)]);
+      await runtime.executeRaw(
+        'INSERT INTO "user_subscriptions" ("id", "userId", "planId", "status", "source", "planSnapshot", "portRangeStart", "portRangeEnd") VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [2001, 2, 1, "active", "admin", snapshot, 10000, 10000],
+      );
+      await adminPackages.extendSubscription({ id: 900, expiresAt: new Date(now + 86400000).toISOString() });
+      const revived = await billing.getUserSubscriptionById(900);
+      assert.equal(revived.status, "active");
+      assert.notEqual(Number(revived.portRangeStart), 10000);
+      assert.equal((await list("expired")).totalItems, 0);
+      assert.ok((await adminPackages.subscriptionsPage({ status: "active", userId: 1, page: 1, pageSize: 100 })).items.some((sub) => Number(sub.id) === 900));
+      await assert.rejects(() => adminPackages.deleteExpiredSubscription({ id: 900 }), /只能删除已过期/);
+      await adminPackages.extendSubscription({ id: 900, expiresAt: new Date(now - 1000).toISOString() });
+      await adminPackages.deleteExpiredSubscription({ id: 900 });
+      assert.equal((await list("expired")).totalItems, 0);
+      assert.equal((await userPackages.mySubscriptions()).some((sub) => Number(sub.id) === 900), false);
+      assert.equal((await billing.getUserSubscriptionById(900)).status, "expired");
+      assert.ok((await userBilling.ledger({ limit: 100, includeCancelledSubscriptions: false })).some((item) => item.id === "subscription-900"));
+      assert.ok((await billing.listBillingLedgerPage({ viewerUserId: 1, page: 1, pageSize: 100, includeCancelledSubscriptions: false })).items.some((item) => item.id === "subscription-900"));
+      await assert.rejects(() => adminPackages.extendSubscription({ id: 900, days: 1 }), /订阅已删除/);
+      await assert.rejects(() => billing.createPaymentOrder({ ...renewalOrder, outTradeNo: "archived-subscription" }), /订阅已删除/);
     } finally {
       await runtime.closeDatabase().catch(() => undefined);
     }

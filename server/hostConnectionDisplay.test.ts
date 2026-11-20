@@ -29,6 +29,6 @@ test("host list and live status project the latest connection snapshot without d
     assert.equal(project({ id: 1001 }).connectionStats.stats.tcp.total, 15, "fresh snapshots are read outside database query caches");
   }
   // These projectors only run after normal list/page/status host ACL filtering.
-  assert.match(text, /getVisibleHostsForUser\(ctx.user\)[\s\S]*?hosts.map\(compactHostForList\)/);
+  assert.match(text, /getVisibleHostsForUser\(ctx.user\)[\s\S]*?hosts\.map\(host => compactHostForList\(host, ctx\.user\.role === "admin"\)\)/);
   assert.match(text, /db.getHostStatusRows\(query\)[\s\S]*?\.map\(compactHostStatus\)/);
 });

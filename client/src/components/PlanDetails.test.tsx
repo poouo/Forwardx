@@ -75,12 +75,15 @@ test("plan management keeps status controls outside replaceable card content and
   assert.doesNotMatch(source, /<Table|planViewMode|PlanListViewMode|forwardx\.plans\.viewMode|列表视图|卡片视图/);
 });
 
-test("store replaces default benefits but retains actual price and purchase controls", () => {
-  const source = readFileSync(new URL("../pages/Store.tsx", import.meta.url), "utf8");
-  const card = source.slice(source.indexOf("function StorePlanCard("), source.indexOf("export default function Store("));
-  assert.match(card, /\{description \? \([\s\S]*?<PlanDetails description=\{description\}[\s\S]*?: \(<>/);
-  const end = card.indexOf("</>)}");
-  assert.ok(end > 0);
-  assert.ok(card.indexOf("money(plan.priceCents, plan.currency)") > end);
-  assert.ok(card.indexOf("onClick={onBuy}") > end);
+test("store replaces default benefits but retains actual price and purchase controls", async () => {
+  const { StorePlanCard } = await import("../pages/Store");
+  const plan = {
+    name: "Plan", description: "Custom plan details", priceCents: 2000, durationDays: 30, currency: "CNY",
+    cyclePrices: JSON.stringify([{ durationDays: 30, kind: "percent", pricePercent: 75 }]),
+  };
+  const card = renderToStaticMarkup(<StorePlanCard plan={plan} onBuy={() => {}} />);
+  assert.match(card, /Custom plan details/);
+  assert.match(card, /15\.00/);
+  assert.doesNotMatch(card, /20\.00|套餐权益|Plan benefits/);
+  assert.match(card, /<button/);
 });

@@ -41,6 +41,7 @@ import type { ThemeViews } from "@shared/themeViews";
 import ThemeBlocks from "@/components/themes/ThemeBlocks";
 import {
   formatBytes,
+  formatHostRenewalCost,
   formatUptime,
   HostRegionBadge,
   hostPrimaryAddressText,
@@ -387,6 +388,27 @@ export default function HostCard({
     : remainingTimeLabel === translateText("不足1天")
       ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  const renewalCost = formatHostRenewalCost(host.renewalCostCents, host.renewalCurrency);
+  const renewalCostBadge = renewalCost !== null && (
+    <span className="min-w-0 max-w-full truncate rounded border border-border/60 bg-muted/35 px-1.5 py-0.5 text-[11px] font-medium leading-none tabular-nums text-foreground"
+      title={translateText("续费金额") + " " + renewalCost}>
+      <span className="sr-only">{translateText("续费金额")} </span>{renewalCost}
+    </span>
+  );
+  const renderRuntimeFooter = (uptime: number | null | undefined) => (
+    <div className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 text-xs", !compact && "pt-1")}>
+      <span className="inline-flex shrink-0 items-center gap-2 text-muted-foreground">
+        <Clock className="h-3 w-3" />{translateText(compact ? "运行" : "运行时间")}
+      </span>
+      {remainingTimeLabel && (
+        <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${remainingTimeClass}`}>
+          {remainingTimeLabel}
+        </span>
+      )}
+      {renewalCostBadge}
+      <span className="ml-auto shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatUptime(uptime)}</span>
+    </div>
+  );
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const isOnline = !!host.isOnline;
@@ -476,6 +498,7 @@ export default function HostCard({
       {theme.actionsPlacement !== "footer" && <CardHeader className="pb-2">{actions}</CardHeader>}
       <CardContent data-theme-part="host-card" className={theme.actionsPlacement === "footer" ? "pt-6" : undefined}>
         <ThemeBlocks node={theme.card} values={{ ...themeValues, ...hostThemeValues(host, displayMetrics, traffic) }} />
+        {renewalCostBadge && <div className="mt-2 flex justify-end">{renewalCostBadge}</div>}
       </CardContent>
       {theme.actionsPlacement === "footer" && <div className="px-6 pb-4">{actions}</div>}
     </Card>;
@@ -626,16 +649,7 @@ export default function HostCard({
                 </div>
               </TooltipProvider>
               {renderTrafficSplitBox()}
-              <div className="flex items-center gap-2 text-xs">
-                <Clock className="h-3 w-3 text-muted-foreground" />
-                <span className="text-muted-foreground">{translateText("运行")}</span>
-                {remainingTimeLabel && (
-                  <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${remainingTimeClass}`}>
-                    {remainingTimeLabel}
-                  </span>
-                )}
-                <span className="ml-auto shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatUptime(latestMetric.uptime)}</span>
-              </div>
+              {renderRuntimeFooter(latestMetric.uptime)}
             </div>
           ) : (
           <div className="space-y-3 border-t border-border/30 pt-2">
@@ -693,21 +707,13 @@ export default function HostCard({
             <div className="pt-1">
               {renderTrafficSplitBox()}
             </div>
-            <div className="flex items-center gap-2 text-xs pt-1">
-              <Clock className="h-3 w-3 text-muted-foreground" />
-              <span className="text-muted-foreground">{translateText("运行时间")}</span>
-              {remainingTimeLabel && (
-                <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${remainingTimeClass}`}>
-                  {remainingTimeLabel}
-                </span>
-              )}
-              <span className="ml-auto shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatUptime(latestMetric.uptime)}</span>
-            </div>
+            {renderRuntimeFooter(latestMetric.uptime)}
           </div>
           )
         ) : (
           <div className={`border-t border-border/30 text-center text-muted-foreground/80 ${compact ? "py-3" : "py-4"}`}>
             <p className="text-xs">{translateText("暂无监控数据")}</p>
+            {renewalCostBadge && <div className="mt-2 flex justify-end">{renewalCostBadge}</div>}
           </div>
         )}
       </CardContent>

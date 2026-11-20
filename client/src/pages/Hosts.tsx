@@ -13,6 +13,7 @@ import ListSettings from "@/components/ListSettings";
 import ColumnResizeHandle from "@/components/ColumnResizeHandle";
 import { useHostTableLayout } from "@/hooks/useHostTableLayout";
 import type { HostTableColumnId } from "@shared/hostTableLayout";
+import { DEFAULT_HOST_RENEWAL_CURRENCY, HOST_RENEWAL_CURRENCIES, hostRenewalCostSchema, type HostRenewalCost } from "@shared/hostRenewalCost";
 import DateTimePickerInput, {
   formatDateInputValue as formatDateTimeLocal,
   parseDateInputValue as parseDateTimeLocal,
@@ -40,6 +41,7 @@ import HostStreamUnlockDialog from "@/components/hosts/HostStreamUnlockDialog";
 import {
   compareVersions,
   formatBytes,
+  formatHostRenewalCost,
   formatUptime,
   hostAddressText,
   hostPrimaryAddressText,
@@ -554,6 +556,8 @@ type HostFormData = {
   portAllowlist: string;
   purchasedAt: string;
   stoppedAt: string;
+  renewalAmount: string;
+  renewalCurrency: HostRenewalCost["currency"];
   trafficLimitGb: string;
   trafficMeasureMode: HostTrafficMeasureMode;
   trafficFailoverEnabled: boolean;
@@ -596,6 +600,8 @@ const defaultFormData: HostFormData = {
   portAllowlist: "",
   purchasedAt: "",
   stoppedAt: "",
+  renewalAmount: "",
+  renewalCurrency: DEFAULT_HOST_RENEWAL_CURRENCY,
   trafficLimitGb: "",
   trafficMeasureMode: "both",
   trafficFailoverEnabled: false,
@@ -1740,6 +1746,8 @@ function HostsContent() {
       portAllowlist: host.portAllowlist || "",
       purchasedAt: formatDateTimeLocal(host.purchasedAt),
       stoppedAt: formatDateTimeLocal(host.stoppedAt),
+      renewalAmount: host.renewalCostCents == null ? "" : String(host.renewalCostCents / 100),
+      renewalCurrency: HOST_RENEWAL_CURRENCIES.find(currency => currency === host.renewalCurrency) ?? DEFAULT_HOST_RENEWAL_CURRENCY,
       trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
       trafficFailoverEnabled: !!host.trafficFailoverEnabled,
@@ -1830,6 +1838,20 @@ function HostsContent() {
       toast.error(translateText("机器停止时间必须晚于购买时间"));
       return;
     }
+    const renewalAmount = form.renewalAmount.trim();
+    let renewalCost: HostRenewalCost | null = null;
+    if (user?.role === "admin" && renewalAmount) {
+      const result = hostRenewalCostSchema.safeParse({
+        amountCents: Math.round(Number(renewalAmount) * 100),
+        currency: form.renewalCurrency,
+      });
+      if (!/^(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(renewalAmount) || !result.success) {
+        toast.error(translateText("请输入有效的续费金额，最多两位小数"));
+        setHostDialogTab("other");
+        return;
+      }
+      renewalCost = result.data;
+    }
     const trafficLimitGb = Number(String(form.trafficLimitGb || "").trim() || 0);
     if (user?.role === "admin" && (!Number.isFinite(trafficLimitGb) || trafficLimitGb < 0)) {
       toast.error(translateText("套餐流量不能小于 0"));
@@ -1863,6 +1885,7 @@ function HostsContent() {
           agentPanelUrl: normalizeAgentPanelUrl(form.agentPanelUrl) || null,
           purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
+          renewalCost,
           trafficLimit: trafficLimitBytes,
           trafficMeasureMode: form.trafficMeasureMode,
           trafficFailoverEnabled: form.trafficFailoverEnabled,
@@ -2243,6 +2266,10 @@ function HostsContent() {
       case "expiry": {
         const remaining = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
         return <span className={cn("block truncate text-xs font-medium tabular-nums", hostRemainingClass(remaining))} title={formatHostExpiryTitle(host.stoppedAt, remaining)}>{remaining}</span>;
+      }
+      case "renewalCost": {
+        const cost = formatHostRenewalCost(host.renewalCostCents, host.renewalCurrency);
+        return <span className="block truncate text-xs tabular-nums" title={cost ?? undefined}>{cost ?? "—"}</span>;
       }
       case "cpu": return <HostListResourceRow icon={Cpu} label="CPU" value={metric?.cpuUsage} detail={host.cpuInfo ? String(host.cpuInfo) : undefined} isOnline={!!host.isOnline} />;
       case "memory": return <HostListResourceRow icon={MemoryStick} label="RAM" value={metric?.memoryUsage} detail={formatMetricSizeDetail(metric?.memoryUsed, host.memoryTotal)} isOnline={!!host.isOnline} />;
@@ -3172,6 +3199,23 @@ function HostsContent() {
                             onChange={(value) => setForm({ ...form, stoppedAt: value })}
                             align="end"
                           />
+                        </div>
+                        <div className="col-span-2 min-w-0 space-y-1 sm:col-span-1">
+                          <Label htmlFor="host-renewal-amount" className="text-sm">{translateText("续费金额")}</Label>
+                          <div className="flex min-w-0 gap-2">
+                            <Input id="host-renewal-amount" inputMode="decimal" className="h-8 min-w-0"
+                              value={form.renewalAmount} placeholder={translateText("留空不记录")}
+                              onChange={(event) => setForm({ ...form, renewalAmount: event.target.value })} />
+                            <Select value={form.renewalCurrency}
+                              onValueChange={(currency) => setForm({ ...form, renewalCurrency: currency as HostRenewalCost["currency"] })}>
+                              <SelectTrigger aria-label={translateText("币种")} className="h-8 w-[5.25rem] shrink-0">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {HOST_RENEWAL_CURRENCIES.map(currency => <SelectItem key={currency} value={currency}>{currency}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                         <div className="col-span-2 grid min-w-0 grid-cols-2 gap-2.5 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)_minmax(0,1fr)]">
                           <div className="min-w-0 space-y-1">

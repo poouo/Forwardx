@@ -51,6 +51,8 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
+import { SubscriptionStatusTabs, type SubscriptionListStatus } from "@/components/SubscriptionStatusTabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -352,13 +354,15 @@ function UsersContent() {
     placeholderData: (previousData) => previousData,
   });
   const subscriptionPageRequest = usePersistentPageRequest("forwardx.users.subscriptions.page");
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionListStatus>("active");
+  const confirmDialog = useConfirmDialog();
   const subscriptionPageQuery = trpc.plans.subscriptionsPage.useQuery({
     page: subscriptionPageRequest.page,
     pageSize: 12,
+    status: subscriptionStatus,
   }, {
     enabled: currentUser?.role === "admin" && manageType === "subscriptions",
     refetchInterval: pollingInterval("slow"),
-    placeholderData: (previousData) => previousData,
   });
   const allSubscriptions = subscriptionPageQuery.data?.items || [];
   const subscriptionsLoading = subscriptionPageQuery.isLoading;
@@ -671,6 +675,7 @@ function UsersContent() {
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
       utils.plans.subscriptionsPage.invalidate();
+      utils.plans.mySubscriptions.invalidate();
       toast.success(translateText("订阅到期时间已更新"));
       setShowExtendDialog(false);
       setExtendSubscriptionId(null);
@@ -679,6 +684,30 @@ function UsersContent() {
     },
     onError: (err) => toast.error(err.message || translateText("更新订阅到期时间失败")),
   });
+
+  const deleteExpiredSubscription = trpc.plans.deleteExpiredSubscription.useMutation({
+    onSuccess: async () => {
+      toast.success(translateText("已删除过期订阅"));
+      await Promise.all([
+        utils.plans.subscriptions.invalidate(),
+        utils.plans.subscriptionsPage.invalidate(),
+        utils.plans.mySubscriptions.invalidate(),
+      ]);
+    },
+    onError: (error) => toast.error(error.message || translateText("删除订阅记录失败")),
+  });
+
+  const confirmDeleteExpiredSubscription = async (sub: any) => {
+    const user = userLabel({ username: sub.username, name: sub.name, id: sub.userId });
+    const plan = sub.planName || translateText("套餐 #{0}", [sub.planId]);
+    const confirmed = await confirmDialog({
+      title: translateText("删除订阅记录"),
+      description: translateText("确认删除“{0}”记录？支付和余额流水会继续保留。", [`${user} · ${plan}`]),
+      confirmText: translateText("删除"),
+      tone: "destructive",
+    });
+    if (confirmed) deleteExpiredSubscription.mutate({ id: Number(sub.id) });
+  };
 
   const cancelSubscriptionMutation = trpc.plans.cancelSubscription.useMutation({
     onMutate: (variables) => {
@@ -1641,6 +1670,10 @@ function UsersContent() {
         </TabsContent>
 
         <TabsContent value="subscriptions" className="space-y-4 data-[state=inactive]:hidden">
+          <SubscriptionStatusTabs value={subscriptionStatus} onChange={(next) => {
+            setSubscriptionStatus(next);
+            subscriptionPageRequest.setPage(1);
+          }}>
           {subscriptionsLoading ? (
             <DataSectionLoading label={translateText("正在加载订阅数据")} minHeight="min-h-[240px]" />
           ) : visibleSubscriptions.length === 0 ? (
@@ -1648,8 +1681,7 @@ function UsersContent() {
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/30">
                 <Package className="h-7 w-7 opacity-40" />
               </div>
-              <p className="text-base font-medium">{translateText("暂无用户订阅")}</p>
-              <p className="mt-1 text-sm text-muted-foreground/80">{translateText("分配或购买套餐后会显示在这里。")}</p>
+              <p className="text-base font-medium">{translateText(subscriptionStatus === "active" ? "暂无有效订阅" : "暂无过期订阅")}</p>
             </div>
           ) : (
             <>
@@ -1670,7 +1702,7 @@ function UsersContent() {
                             <p className="mt-1 truncate text-xs text-muted-foreground">{translateText("套餐：{0}", [sub.planName || translateText("套餐 #{0}", [sub.planId])])}</p>
                           </div>
                           <Badge variant={active ? "default" : "secondary"} className="shrink-0 text-[11px]">
-                            {subscriptionStatusLabel(sub.status)}
+                            {subscriptionStatusLabel(subscriptionStatus)}
                           </Badge>
                         </div>
 
@@ -1731,14 +1763,14 @@ function UsersContent() {
                         )}
 
                         <div className="flex flex-wrap gap-2 pt-1">
-                          <Button
+                          {active && <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             className="h-8 flex-1 px-2 text-xs sm:flex-none"
                             onClick={() => openAddonDialog(sub)}
                             disabled={!canAddAddon || adminAddTrafficAddonMutation.isPending}
-                          >{translateText("加赠流量")}</Button>
+                          >{translateText("加赠流量")}</Button>}
                           <Button
                             type="button"
                             variant="outline"
@@ -1746,15 +1778,22 @@ function UsersContent() {
                             className="h-8 flex-1 px-2 text-xs sm:flex-none"
                             onClick={() => openExtendDialog(sub)}
                             disabled={!canChangeExpiry || extendSubscriptionMutation.isPending}
-                          >{translateText("更改到期")}</Button>
-                          <Button
+                          >{translateText(active ? "更改到期" : "续期")}</Button>
+                          {active ? <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             className="h-8 flex-1 px-2 text-xs text-destructive hover:text-destructive sm:flex-none"
                             disabled={!active || cancelSubscriptionMutation.isPending}
                             onClick={() => openCancelSubscriptionDialog(sub)}
-                          >{translateText("取消")}</Button>
+                          >{translateText("取消")}</Button> : <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 flex-1 px-2 text-xs text-destructive hover:text-destructive sm:flex-none"
+                            disabled={deleteExpiredSubscription.isPending}
+                            onClick={() => { void confirmDeleteExpiredSubscription(sub); }}
+                          >{translateText("删除")}</Button>}
                         </div>
                       </CardContent>
                     </Card>
@@ -1764,6 +1803,7 @@ function UsersContent() {
               <PersistentPagination pagination={subscriptionPagination} itemName={translateText("条订阅")} />
             </>
           )}
+          </SubscriptionStatusTabs>
         </TabsContent>
       </Tabs>
 

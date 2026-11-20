@@ -285,6 +285,8 @@ export const hosts = table("hosts", {
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
   purchasedAt: epoch("purchasedAt"),
   stoppedAt: epoch("stoppedAt"),
+  renewalCostCents: bigint("renewalCostCents", { mode: "number" }),
+  renewalCurrency: varchar("renewalCurrency", { length: 3 }),
   // Host billing calendar. The legacy stoppedAt value remains the source of
   // truth; these fields only control optional automatic cycle extension.
   billingCycleMonths: int("billingCycleMonths").notNull().default(1),
@@ -999,6 +1001,7 @@ export const subscriptionPlans = table("subscription_plans", {
   id: serial("id"),
   name: text("name").notNull(),
   description: text("description"),
+  cyclePrices: text("cyclePrices"), // Additional billing cycles as JSON. Base price and duration remain the defaults.
   stockLimit: int("stockLimit").notNull().default(0),
   stockUsed: int("stockUsed").notNull().default(0),
   priceCents: bigint("priceCents", { mode: "number" }).notNull().default(0),

@@ -298,6 +298,50 @@ test("disabled topology changes and historical tombstones release only obsolete 
       await groups.deleteForwardGroup(114);
       await deletion.deleteHostWithImpact(22);
 
+      // Ordinary tunnel rules keep their IDs and ports when a front node is replaced.
+      const { tunnelsRouter } = await mod("server/routers/tunnels.ts");
+      const tunnelCaller = tunnelsRouter.createCaller({ user: { id: 1, role: "admin" }, req: { headers: {} }, res: {} });
+      await insert("tunnels", { id: 201, name: "front replacement", mode: "tls", entryHostId: 24, exitHostId: 27, listenPort: 19010, userId: 1 });
+      for (const [seq, hostId] of [24, 31, 27].entries()) await insert("tunnel_hops", { tunnelId: 201, seq, hostId, listenPort: 19008 + seq });
+      await runtime.executeRaw('UPDATE "hosts" SET "portRangeStart" = 18400, "portRangeEnd" = 18402 WHERE "id" = 26');
+      const addTunnelRule = (id, hostId, sourcePort, options = {}) => insert("forward_rules", {
+        id, name: "site-" + id, hostId, sourcePort, targetIp: "203.0.113.50", targetPort: 443,
+        userId: 1, protocol: "tcp", forwardType: "gost", tunnelId: 201, ...options,
+      });
+      const ruleRows = async () => runtime.queryRaw('SELECT "id", "hostId", "sourcePort", "isEnabled", "isRunning", "pendingDelete" FROM "forward_rules" WHERE "tunnelId" = 201 ORDER BY "id"');
+      await addTunnelRule(1910, 24, 18400, { isRunning: 1 });
+      await addTunnelRule(1911, 24, 18401, { isEnabled: 0 });
+      await addTunnelRule(1912, 24, 18402, { isEnabled: 0, isRunning: 1, pendingDelete: 1 });
+      const original = await ruleRows();
+      await addTunnelRule(1913, 25, 18400, { tunnelId: null, forwardType: "realm" });
+      await assert.rejects(() => tunnelCaller.update({ id: 201, hopHostIds: [25, 31, 27] }), /site-1910.*18400/);
+      assert.equal((await runtime.queryRaw('SELECT "entryHostId" FROM "tunnels" WHERE "id" = 201'))[0].entryHostId, 24);
+      assert.deepEqual(await ruleRows(), original, "a port conflict rolls back the whole tunnel edit");
+      await tunnelCaller.update({ id: 201, hopHostIds: [26, 31, 27] });
+      assert.deepEqual(await runtime.queryRaw('SELECT "hostId", "listenPort" FROM "tunnel_hops" WHERE "tunnelId" = 201 AND "seq" = 0'), [{ hostId: 26, listenPort: 18402 }]);
+      const moved = original.map(row => row.pendingDelete ? row : { ...row, hostId: 26, isRunning: 0 });
+      assert.deepEqual(await ruleRows(), moved);
+      assert.equal((await deletion.prepareHostDeletion(24)).pendingCleanupCount, 1, "an actual pending deletion survives entry sync");
+      await rules.updateRuleRunningStatus(1912, false);
+      await deletion.deleteHostWithImpact(24);
+
+      // Reproduce the former panel behavior by changing only the tunnel's entry.
+      await runtime.executeRaw('UPDATE "tunnels" SET "entryHostId" = 28 WHERE "id" = 201');
+      await runtime.executeRaw('UPDATE "tunnel_hops" SET "hostId" = 28 WHERE "tunnelId" = 201 AND "seq" = 0');
+      await addTunnelRule(1914, 26, 18403, { tunnelId: null, forwardType: "realm", isEnabled: 0 });
+      await addTunnelRule(1915, 28, 18400, { tunnelId: null, forwardType: "realm" });
+      assert.equal((await deletion.getHostDeletionImpact(26)).rules.count, 3);
+      const partial = await deletion.prepareHostDeletion(26);
+      assert.deepEqual(partial.rules.items.map(row => row.id), [1910, 1914], "keep the conflicting rule until the new port is available");
+      await runtime.executeRaw('DELETE FROM "forward_rules" WHERE "id" = 1915');
+      const repaired = await deletion.prepareHostDeletion(26);
+      assert.deepEqual(repaired.rules.items.map(row => row.id), [1914], "protect the real local rule and repair only the tunnel references");
+      assert.deepEqual(await ruleRows(), moved.filter(row => !row.pendingDelete).map(row => ({ ...row, hostId: 28 })));
+      await assert.rejects(() => deletion.deleteHostWithImpact(26, true), /site-1914/);
+      await runtime.executeRaw('DELETE FROM "forward_rules" WHERE "id" = 1914');
+      await deletion.deleteHostWithImpact(26);
+      assert.equal((await ruleRows()).length, 2, "deleting old front nodes must preserve both tunnel rules");
+
       // Startup/periodic purge also heals old template tombstones, never a real listener.
       await insert("forward_rules", { id: 1900, hostId: 23, userId: 1, name: "old-template", sourcePort: 18015, targetIp: "203.0.113.50", targetPort: 443, isForwardGroupTemplate: 1, pendingDelete: 1, isRunning: 1 });
       await insert("forward_rules", { id: 1901, hostId: 23, userId: 1, name: "real-cleanup", sourcePort: 18016, targetIp: "203.0.113.50", targetPort: 443, pendingDelete: 1, isRunning: 1 });

@@ -112,6 +112,9 @@ test("shared dialogs scroll long forms within short viewports instead of clippin
   const source = readFileSync("client/src/components/ui/dialog.tsx", "utf8");
   const content = source.match(/className=\{cn\("(dialog-panel[^"]+)"/)?.[1];
   assert.ok(content);
+  assert.ok(content.split(" ").includes("relative"), "close button stays inside the dialog after its transform animation ends");
+  assert.match(source, /setProperty\("--forwardx-dialog-scroll-top", `\$\{event\.currentTarget\.scrollTop\}px`\)/);
+  assert.match(source, /top-\[calc\(1rem\+var\(--forwardx-dialog-scroll-top,0px\)\)\]/);
   assert.match(content, /overflow-y-auto/);
   assert.match(content, /overflow-x-hidden/);
   assert.doesNotMatch(content, /(?:^|\s)overflow-hidden(?:\s|$)/);

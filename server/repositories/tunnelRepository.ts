@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   tunnels,
   hosts,
   InsertTunnel,
   forwardRules,
+  type ForwardRule,
   userTunnelPermissions,
   tunnelHops,
   tunnelExitNodes,
@@ -14,12 +15,12 @@ import {
   forwardGroups,
   tunnelLatencyStats,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, withDatabaseTransaction } from "../dbRuntime";
+import { afterDatabaseTransactionSettled, executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, withDatabaseTransaction } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { releaseHostPortReservations, reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "../portReservations";
 import { getHostById } from "./hostRepository";
-import { getForwardRulesByTunnel } from "./forwardRuleRepository";
+import { getForwardRulesByTunnel, getForwardRulesForAgent, updateForwardRule } from "./forwardRuleRepository";
 import { sqlBool } from "./repositoryUtils";
 import { mapWithConcurrency } from "../asyncPool";
 import { withKeyedTaskLock } from "../keyedTaskLock";
@@ -33,6 +34,7 @@ import {
 import { resolveRuleProxyProtocolOptions } from "../gostProxyProtocol";
 import { HOST_ONLINE_TTL_MS } from "../hostHeartbeatPolicy";
 import { LINK_PROBE_FRESH_MS, LINK_PROBE_MAX_FUTURE_SKEW_MS } from "../../shared/linkProbePolicy";
+import { pushAgentRefresh } from "../agentEvents";
 
 function databaseBool(value: unknown, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -632,7 +634,88 @@ export async function deleteTunnel(id: number) {
 export async function resetForwardRulesByTunnel(tunnelId: number) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
+  await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(and(
+    eq(forwardRules.tunnelId, tunnelId), eq(forwardRules.pendingDelete, false),
+  ));
+}
+
+function directTunnelEntryRules() {
+  return and(
+    eq(forwardRules.forwardType, "gost"),
+    eq(forwardRules.pendingDelete, false),
+    eq(forwardRules.isForwardGroupTemplate, false),
+    isNull(forwardRules.forwardGroupId),
+    isNull(forwardRules.forwardGroupRuleId),
+    isNull(forwardRules.forwardGroupMemberId),
+    sql`NOT EXISTS (SELECT 1 FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} = ${forwardRules.id})`,
+  );
+}
+
+/** Preserve logical rules when their tunnel moves to a different entry Agent. */
+export async function syncTunnelRuleEntryHosts(tunnelId: number, formerHostId?: number) {
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    const tunnel = await getTunnelById(tunnelId);
+    if (!db || !tunnel) return [];
+    const entryHostId = Number(tunnel.entryHostId);
+    const rules = await db.select().from(forwardRules).where(and(
+      directTunnelEntryRules(),
+      eq(forwardRules.tunnelId, tunnelId),
+      ne(forwardRules.hostId, entryHostId),
+      formerHostId === undefined ? undefined : eq(forwardRules.hostId, formerHostId),
+      // An additional entry can still serve this tunnel through its entry group.
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${forwardGroupMembers}
+        INNER JOIN ${forwardGroups} ON ${forwardGroups.id} = ${forwardGroupMembers.groupId}
+        WHERE ${forwardGroups.id} = ${tunnel.entryGroupId ?? 0}
+          AND ${forwardGroups.groupMode} = 'entry'
+          AND ${forwardGroupMembers.memberType} = 'host'
+          AND ${forwardGroupMembers.hostId} = ${forwardRules.hostId}
+      )`,
+    )).orderBy(asc(forwardRules.id));
+    if (!rules.length) return [];
+    const entry = await getHostById(entryHostId);
+    if (!entry) return [];
+    const policy = portPolicyFrom(entry);
+    const entryRules: ForwardRule[] = await getForwardRulesForAgent(entryHostId);
+    const affectedHosts = new Set<number>();
+    for (const rule of rules) {
+      const port = Number(rule.sourcePort);
+      const enabled = databaseBool(rule.isEnabled);
+      const allowed = isPortAllowedByPolicy(port, policy);
+      const overlapsEntryRule = enabled && entryRules.some(candidate => Number(candidate.id) !== Number(rule.id)
+        && !databaseBool(candidate.pendingDelete) && databaseBool(candidate.isEnabled) && Number(candidate.sourcePort) === port);
+      const reservation = allowed && !overlapsEntryRule && enabled ? await reserveSpecificHostPort({
+        hostId: entryHostId,
+        port,
+        protocol: rule.protocol,
+        isUsed: (candidate) => isPortUsedOnHost(entryHostId, candidate, Number(rule.id), rule.protocol),
+      }) : null;
+      if (!allowed || (enabled && !reservation)) {
+        // A historical repair leaves conflicting rules visible in the deletion check.
+        if (formerHostId !== undefined) continue;
+        throw new Error(`无法迁移转发规则 ${rule.name} (#${rule.id})：新入口 ${entry.name} 的端口 ${port} 不可用`);
+      }
+      if (reservation) await afterDatabaseTransactionSettled(() => reservation.release());
+      await updateForwardRule(Number(rule.id), { hostId: entryHostId, isRunning: false });
+      affectedHosts.add(Number(rule.hostId));
+      affectedHosts.add(entryHostId);
+    }
+    return Array.from(affectedHosts);
+  });
+}
+
+export async function repairTunnelRuleEntryHostsForHost(hostId: number) {
+  const db = await getDb();
+  if (!db) return;
+  const rows = await db.selectDistinct({ id: tunnels.id }).from(forwardRules)
+    .innerJoin(tunnels, eq(tunnels.id, forwardRules.tunnelId))
+    .where(and(directTunnelEntryRules(), eq(forwardRules.hostId, hostId), ne(tunnels.entryHostId, hostId)));
+  for (const row of rows) {
+    const tunnelId = Number(row.id);
+    const affectedHosts = await withKeyedTaskLock(`tunnel:${tunnelId}`, () => syncTunnelRuleEntryHosts(tunnelId, hostId));
+    for (const affectedHostId of affectedHosts) pushAgentRefresh(affectedHostId, "tunnel-rule-entry-host-repaired", { urgent: true });
+  }
 }
 
 export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, data: Partial<InsertTunnel>) {
@@ -661,7 +744,7 @@ export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, 
       udpOverTcpPort: forwardRules.udpOverTcpPort,
     })
     .from(forwardRules)
-    .where(eq(forwardRules.tunnelId, tunnelId));
+    .where(and(eq(forwardRules.tunnelId, tunnelId), eq(forwardRules.pendingDelete, false)));
   let changedCount = 0;
   for (const rule of rules as any[]) {
     const protocol = String(rule.protocol || "both");

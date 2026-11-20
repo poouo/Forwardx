@@ -3,6 +3,8 @@ import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
+import { billingCycleLabel, PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
+import { planBillingCycles } from "@shared/planPurchase";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
@@ -93,7 +95,7 @@ function planBenefitItems(plan: any) {
     translateText("连接数按主机或隧道聚合；IP 数按用户、入口主机共享"),
     translateText("可用资源 {0}", [planResourceText(plan)]),
   ];
-  if (Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0) {
+  if (planBillingCycles(plan).some(cycle => cycle.durationDays > 30) && Number(plan.trafficLimit || 0) > 0) {
     items.splice(2, 0, translateText("购买日起按月重置套餐流量"));
   }
   return items;
@@ -111,6 +113,8 @@ export function StorePlanCard({
   const description = planDescription(plan);
   const benefits = planBenefitItems(plan);
   const soldOut = productStock(plan).soldOut && !plan.renewalSubscriptionId;
+  const cycles = planBillingCycles(plan);
+  const periodLabel = cycles.length > 1 ? translateText("多种付款周期") : durationLabel(plan.durationDays);
 
   return (
     <div className="pearl-hover-card pearl-store-plan flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 shadow-sm">
@@ -128,7 +132,7 @@ export function StorePlanCard({
             </p>}
           </div>
           <Badge variant="outline" className="shrink-0 border-primary/25 bg-primary/5 text-primary">
-            {durationLabel(plan.durationDays)}
+            {periodLabel}
           </Badge>
         </div>
 
@@ -141,7 +145,7 @@ export function StorePlanCard({
         <div className="grid grid-cols-2 gap-2 rounded-md border border-border/50 bg-muted/25 p-1">
           <div className="rounded-[6px] bg-background/80 px-3 py-2 shadow-sm">
             <div className="text-[11px] font-medium text-muted-foreground">{translateText("周期")}</div>
-            <div className="mt-1 truncate text-sm font-semibold text-foreground">{durationLabel(plan.durationDays)}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-foreground">{periodLabel}</div>
           </div>
           <div className="rounded-[6px] px-3 py-2">
             <div className="text-[11px] font-medium text-muted-foreground">{translateText("端口")}</div>
@@ -167,7 +171,7 @@ export function StorePlanCard({
         <div className="flex flex-col gap-3 border-t border-border/40 pt-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="break-words text-2xl font-semibold tracking-tight text-foreground">
-              {money(plan.priceCents, plan.currency)}
+              {money(cycles[0].priceCents, plan.currency)}
             </div>
             <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">
               / {durationLabel(plan.durationDays)}
@@ -203,6 +207,7 @@ export default function Store() {
   });
   const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
   const [planQuantity, setPlanQuantity] = useState("1");
+  const [billingCycleDays, setBillingCycleDays] = useState<number | undefined>();
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
@@ -264,6 +269,7 @@ export default function Store() {
     setDiscountCode("");
     setDiscountPreview(null);
     setPlanQuantity("1");
+    setBillingCycleDays(undefined);
     setSelectedPlan(plan);
   };
 
@@ -271,13 +277,14 @@ export default function Store() {
     if (!selectedPlan || !purchaseTotals) return;
     const current = plans.find((plan) => plan.id === selectedPlan.id);
     if (!current || (productStock(current).soldOut && !current.renewalSubscriptionId)) return toast.error(translateText("套餐库存不足或已售罄"));
-    if (payMode === "balance") {
-      buyWithBalance.mutate({ planId: selectedPlan.id, quantity: purchaseTotals.quantity, discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined });
+    if (payMode === "balance" || freePurchase) {
+      buyWithBalance.mutate({ planId: selectedPlan.id, quantity: purchaseTotals.quantity, billingCycleDays: selectedCycleDays, discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined });
       return;
     }
     createOrder.mutate({
       amount: Math.max(0.01, purchaseTotals.priceCents / 100),
       quantity: purchaseTotals.quantity,
+      billingCycleDays: selectedCycleDays,
       paymentType,
       planId: selectedPlan.id,
       discountCode: billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined,
@@ -285,9 +292,13 @@ export default function Store() {
     });
   };
 
-  const purchaseTotals = planPurchaseQuote(selectedPlan, planQuantity);
+  const selectedCycleDays = billingCycleDays ?? Number(selectedPlan?.durationDays || 0);
+  const purchaseCycles = selectedPlan ? planBillingCycles(selectedPlan) : [];
+  const permitsMultiple = purchaseCycles.length > 1;
+  const purchaseTotals = planPurchaseQuote(selectedPlan, permitsMultiple ? planQuantity : "1", selectedCycleDays);
   const appliedDiscount = billingFeatures?.discountEnabled && discountPreview?.quoteKey === discountQuoteKey(selectedPlan?.id, purchaseTotals?.priceCents, discountCode) ? discountPreview : null;
   const finalAmountCents = appliedDiscount?.finalAmountCents ?? purchaseTotals?.priceCents ?? 0;
+  const freePurchase = !!purchaseTotals && finalAmountCents === 0;
 
   return (
     <DashboardLayout>
@@ -407,14 +418,16 @@ export default function Store() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
-              <PlanPurchaseQuantity value={planQuantity} onChange={(value) => { setPlanQuantity(value); setDiscountPreview(null); }}
-                durationDays={Number(selectedPlan?.durationDays || 0)} valid={!!purchaseTotals} disabled={createOrder.isPending || buyWithBalance.isPending} />
+              {selectedPlan && <PlanBillingCycleSelect options={purchaseCycles} value={selectedCycleDays} currency={selectedPlan.currency}
+                onChange={(days) => { setBillingCycleDays(days); setDiscountPreview(null); }} disabled={createOrder.isPending || buyWithBalance.isPending} />}
+              {permitsMultiple && <PlanPurchaseQuantity value={planQuantity} onChange={(value) => { setPlanQuantity(value); setDiscountPreview(null); }}
+                durationDays={selectedCycleDays} valid={!!purchaseTotals} disabled={createOrder.isPending || buyWithBalance.isPending} />}
               {selectedPlan?.renewalSubscriptionId && (
                 <p className="text-sm text-muted-foreground">{translateText("已购买同款套餐，本次购买将延长原订阅的有效期。")}</p>
               )}
               <div className="rounded-lg border bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{translateText("原价")}</span>
+                  <span className="text-muted-foreground">{translateText("套餐金额")}</span>
                   <span>{purchaseTotals ? money(purchaseTotals.priceCents, selectedPlan?.currency) : "-"}</span>
                 </div>
                 {appliedDiscount && (
@@ -439,7 +452,7 @@ export default function Store() {
                   <TicketPercent className="mr-2 h-4 w-4" />{translateText(" 应用")}</Button>
               </div>
               )}
-              <div className="grid gap-2">
+              {!freePurchase && <div className="grid gap-2">
                 <button
                   type="button"
                   onClick={() => setPayMode("balance")}
@@ -478,13 +491,13 @@ export default function Store() {
                 {paymentMethods.length === 0 && (
                   <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{translateText("暂无在线支付方式。")}</div>
                 )}
-              </div>
+              </div>}
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setSelectedPlan(null)}>{translateText("取消")}</Button>
-              <Button onClick={confirmBuy} disabled={!purchaseTotals || !plans.some((plan) => plan.id === selectedPlan?.id && (!productStock(plan).soldOut || plan.renewalSubscriptionId)) || createOrder.isPending || buyWithBalance.isPending || previewDiscount.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
+              <Button onClick={confirmBuy} disabled={!purchaseTotals || !plans.some((plan) => plan.id === selectedPlan?.id && (!productStock(plan).soldOut || plan.renewalSubscriptionId)) || createOrder.isPending || buyWithBalance.isPending || previewDiscount.isPending || (!freePurchase && (payMode === "gateway" ? paymentMethods.length === 0 : walletLoading))}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {payMode === "balance" ? (walletLoading ? translateText("余额加载中") : translateText("余额购买")) : translateText("去支付")}
+                {freePurchase ? translateText("确认购买") : payMode === "balance" ? (walletLoading ? translateText("余额加载中") : translateText("余额购买")) : translateText("去支付")}
               </Button>
             </DialogFooter>
           </DialogContent>

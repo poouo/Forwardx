@@ -50,7 +50,7 @@ test("billing SQL pages retain all sources, stable ordering, diagnostics and use
       const keys = rows => rows.map(row => row.kind+"-"+(row.sourceId??row.id));
       const visible = (admin, userId, cancelled=true) => sorted(expected.filter(row =>
         (userId===undefined || row.userId===userId) && (row.kind!=="subscription" ||
-        (!row.adminDismissedAt && (admin || !row.userDismissedAt) && (cancelled || row.status!=="cancelled")))));
+        ((!row.adminDismissedAt || row.status==="expired") && (admin || !row.userDismissedAt) && (cancelled || row.status!=="cancelled")))));
       const adminExpected = visible(true);
       const seen = [];
       for (let page=1; page<=Math.ceil(adminExpected.length/20); page++) {

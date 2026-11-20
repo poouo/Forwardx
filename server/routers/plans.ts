@@ -7,11 +7,18 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reorderProducts } from "../repositories/productOrder";
 import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
 import { MAX_PRODUCT_STOCK } from "../../shared/productStock";
+import { MAX_PLAN_PURCHASE_AMOUNT_CENTS, PLAN_BILLING_CYCLE_DAYS, planBillingCycles, readPlanCyclePrices, type PlanCyclePriceRule } from "../../shared/planPurchase";
+
+const cycleDays = z.number().refine(days => PLAN_BILLING_CYCLE_DAYS.some(cycle => cycle === days));
 
 const planInput = z.object({
   name: z.string().min(1).max(80),
   description: z.string().max(PLAN_DESCRIPTION_MAX_LENGTH).nullable().optional(),
   priceCents: z.number().int().min(0).max(100_000_000),
+  cyclePrices: z.array(z.discriminatedUnion("kind", [
+    z.object({ durationDays: cycleDays.refine(days => days !== 30), kind: z.literal("fixed"), priceCents: z.number().int().min(0).max(MAX_PLAN_PURCHASE_AMOUNT_CENTS) }).strict(),
+    z.object({ durationDays: cycleDays, kind: z.literal("percent"), pricePercent: z.number().min(1).max(100) }).strict(),
+  ])).max(PLAN_BILLING_CYCLE_DAYS.length).optional(),
   stockLimit: z.number().int().min(0).max(MAX_PRODUCT_STOCK).optional(),
   currency: z.string().trim().min(3).max(8).default("CNY"),
   durationDays: z.union([
@@ -42,11 +49,27 @@ const planInput = z.object({
   })).max(20).default([]),
 });
 
+function serializeCyclePrices(durationDays: number, priceCents: number, cyclePrices: PlanCyclePriceRule[] = []) {
+  if (durationDays !== 30 && cyclePrices.length) throw new Error("只有月付套餐可配置多种付款周期");
+  const durations = new Set<number>();
+  for (const cycle of cyclePrices) {
+    if (durations.has(cycle.durationDays)) throw new Error("付款周期不能重复");
+    durations.add(cycle.durationDays);
+  }
+  const stored = cyclePrices.length ? JSON.stringify(cyclePrices) : null;
+  if (planBillingCycles({ durationDays, priceCents, cyclePrices: stored }).some(cycle => cycle.priceCents > MAX_PLAN_PURCHASE_AMOUNT_CENTS)) {
+    throw new Error("套餐金额或有效期超出有效范围");
+  }
+  return { cyclePrices: stored };
+}
+
 async function updatePlan(input: z.infer<typeof planInput> & { id: number; syncExistingSubscribers: boolean }, actorId: number) {
-  const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, ...data } = input;
+  const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, cyclePrices, ...data } = input;
+  const rules = cyclePrices ?? (data.durationDays === 30 ? readPlanCyclePrices((await db.getSubscriptionPlanById(id))?.cyclePrices) : []);
+  const pricing = serializeCyclePrices(data.durationDays, data.priceCents, rules);
   if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
   if (!syncExistingSubscribers) await db.freezePlanSubscriberSnapshots(id);
-  const result = await db.updateSubscriptionPlan(id, { ...data, description: data.description || null, currency: data.currency.toUpperCase() } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
+  const result = await db.updateSubscriptionPlan(id, { ...data, ...pricing, description: data.description || null, currency: data.currency.toUpperCase() } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
   if (syncExistingSubscribers) {
     const userIds = await db.syncPlanSubscribers(id);
     for (const userId of userIds) await refreshUserForwardEndpoints(userId, "plan-updated");
@@ -99,12 +122,13 @@ export const plansRouter = router({
   create: adminProcedure
     .input(planInput)
     .mutation(async ({ input }) => {
-      const { hostIds, tunnelIds, forwardGroupIds, trafficAddons, ...data } = input;
+      const { hostIds, tunnelIds, forwardGroupIds, trafficAddons, cyclePrices, ...data } = input;
       if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) {
         throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
       }
       return db.createSubscriptionPlan({
         ...data,
+        ...serializeCyclePrices(data.durationDays, data.priceCents, cyclePrices),
         description: data.description || null,
         currency: data.currency.toUpperCase(),
       } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
@@ -121,6 +145,7 @@ export const plansRouter = router({
       const existing = await db.getSubscriptionPlanById(input.id) as any;
       if (!existing) throw new Error("套餐不存在");
       const current = Object.fromEntries(Object.keys(planInput.shape).filter(key => existing[key] !== undefined && existing[key] !== null).map(key => [key, existing[key]]));
+      current.cyclePrices = Number(input.durationDays ?? existing.durationDays) === 30 ? readPlanCyclePrices(existing.cyclePrices) : [];
       const merged = planInput.parse({ ...current, ...input });
       return updatePlan({ ...merged, id: input.id, syncExistingSubscribers: input.syncExistingSubscribers }, ctx.user.id);
     })),
@@ -151,6 +176,7 @@ export const plansRouter = router({
   subscriptionsPage: adminProcedure
     .input(z.object({
       userId: z.number().optional(),
+      status: z.enum(["active", "expired"]).optional(),
       page: z.number().int().positive().default(1),
       pageSize: z.number().int().min(1).max(100).default(12),
     }))
@@ -207,6 +233,14 @@ export const plansRouter = router({
         isAdmin: ctx.user.role === "admin",
       });
       appendPanelLog("info", `[Plan] dismissed cancelled subscription=${result.id} user=${result.userId} operator=${ctx.user.id}`);
+      return { success: true };
+    }),
+  deleteExpiredSubscription: adminProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await db.expireUserSubscriptions();
+      await db.dismissExpiredUserSubscription(input.id);
+      appendPanelLog("info", `[Plan] dismissed expired subscription=${input.id} operator=${ctx.user.id}`);
       return { success: true };
     }),
   extendSubscription: adminProcedure

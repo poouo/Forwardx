@@ -10,6 +10,7 @@ export const HOST_TABLE_COLUMNS = [
   { id: "load", label: "负载", width: 140, min: 120, max: 400 },
   { id: "uptime", label: "运行时间", width: 120, min: 96, max: 400 },
   { id: "expiry", label: "到期时间", width: 110, min: 96, max: 400 },
+  { id: "renewalCost", label: "续费金额", width: 120, min: 96, max: 400 },
   { id: "cpu", label: "CPU", width: 110, min: 96, max: 400 },
   { id: "memory", label: "内存", width: 110, min: 96, max: 400 },
   { id: "disk", label: "磁盘", width: 110, min: 96, max: 400 },
@@ -41,7 +42,10 @@ export function normalizeHostTableLayout(input: unknown): HostTableLayout {
   }
   const parsed = hostTableLayoutSchema.safeParse(input);
   if (!parsed.success) return defaultHostTableLayout();
-  const order = [...new Set([...parsed.data.order, ...HOST_TABLE_COLUMNS.map(column => column.id)])];
+  const savedOrder = [...new Set(parsed.data.order)];
+  const expiryIndex = savedOrder.indexOf("expiry");
+  if (expiryIndex >= 0 && !savedOrder.includes("renewalCost")) savedOrder.splice(expiryIndex + 1, 0, "renewalCost");
+  const order = [...new Set([...savedOrder, ...HOST_TABLE_COLUMNS.map(column => column.id)])];
   const required = new Set<HostTableColumnId>(HOST_TABLE_COLUMNS.filter(column => "required" in column).map(column => column.id));
   const widths: HostTableLayout["widths"] = {};
   for (const column of HOST_TABLE_COLUMNS) {

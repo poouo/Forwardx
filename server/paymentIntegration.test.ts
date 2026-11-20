@@ -350,7 +350,7 @@ test("multi-period online purchases price the full order, snapshot validity and 
   globalThis.fetch = async (url, options) => {
     if (url === "https://easy.example.test/mapi.php") {
       const params = Object.fromEntries(options.body.entries());
-      assert.equal(params.money, checkoutCount++ === 0 ? "4.00" : "2.00", "server calculates total from unit price, quantity and discount");
+      assert.equal(params.money, checkoutCount++ === 0 ? "4.00" : "5.40", "server calculates total from the selected cycle, quantity and discount");
       return new Response(JSON.stringify({code:1,payurl:"/pay/period"}));
     }
     return originalFetch(url, options);
@@ -360,28 +360,34 @@ test("multi-period online purchases price the full order, snapshot validity and 
     const content = Object.keys(params).sort().map(key=>key+"="+params[key]).join("&")+"secret";
     return originalFetch(origin+"/api/payment/webhook/easypay", {method:"POST",body:new URLSearchParams({...params,sign:crypto.createHash("md5").update(content).digest("hex"),sign_type:"MD5"})});
   };
-  const first = await admin.createOrder({amount:0.01,paymentType:"alipay",planId:1,quantity:5,discountCode:"PERIOD"});
+  await assert.rejects(admin.createOrder({amount:1,paymentType:"alipay",planId:1,quantity:2}),/每次只能购买一份/);
+  const fixedPrice = JSON.stringify([{durationDays:90,kind:"fixed",priceCents:250}]);
+  await runtime.executeRaw("UPDATE subscription_plans SET cyclePrices = ? WHERE id = 1",[fixedPrice]);
+  const first = await admin.createOrder({amount:0.01,paymentType:"alipay",planId:1,quantity:2,billingCycleDays:90,discountCode:"PERIOD"});
   assert.equal(first.amountCents,400);
-  assert.equal(first.planQuantity,5);
-  assert.equal(first.planDurationDays,150);
+  assert.equal(first.planQuantity,2);
+  assert.equal(first.planDurationDays,180);
   assert.equal(first.discountAmountCents,100);
-  assert.match(first.subject,/5/);
-  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 90 WHERE id = 1");
+  assert.match(first.subject,/2/);
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 365 WHERE id = 1");
+  await assert.rejects(admin.createOrder({amount:1,paymentType:"alipay",planId:1,quantity:2}),/每次只能购买一份/);
+  await assert.rejects(admin.createOrder({amount:1,paymentType:"alipay",planId:1,billingCycleDays:90}),/所选付款周期不可购买/);
   assert.equal((await postEasy(first)).status,200);
   const completed = await db.getPaymentOrderByOutTradeNo(first.outTradeNo);
   assert.equal(completed.status,"completed");
   const initial = await db.getUserSubscriptionById(completed.subscriptionId);
-  assert.equal(new Date(initial.expiresAt)-new Date(initial.startedAt),150*86400000,"payment uses duration at checkout, not the edited plan");
+  assert.equal(new Date(initial.expiresAt)-new Date(initial.startedAt),180*86400000,"payment uses duration at checkout, not the edited plan");
   assert.ok(new Date(initial.nextTrafficResetAt)<new Date(initial.expiresAt));
   assert.equal((await postEasy(first)).status,200);
-  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 30 WHERE id = 1");
-  const renewal = await admin.createOrder({amount:999,paymentType:"alipay",planId:1,quantity:2,subscriptionId:initial.id});
-  assert.equal(renewal.amountCents,200);
+  const discounted = JSON.stringify([{durationDays:90,kind:"percent",pricePercent:90}]);
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 30, cyclePrices = ? WHERE id = 1",[discounted]);
+  const renewal = await admin.createOrder({amount:999,paymentType:"alipay",planId:1,quantity:2,billingCycleDays:90,subscriptionId:initial.id});
+  assert.equal(renewal.amountCents,540);
   assert.equal(renewal.planQuantity,2);
   assert.equal(renewal.stockReserved,false);
   assert.equal((await postEasy(renewal)).status,200);
   const latest = await db.getUserSubscriptionById(initial.id);
-  assert.equal(new Date(latest.expiresAt)-new Date(initial.expiresAt),60*86400000);
+  assert.equal(new Date(latest.expiresAt)-new Date(initial.expiresAt),180*86400000);
   assert.equal(latest.portRangeStart,initial.portRangeStart);
   assert.equal((await postEasy(renewal)).status,200);
   assert.equal(new Date((await db.getUserSubscriptionById(initial.id)).expiresAt).getTime(),new Date(latest.expiresAt).getTime());

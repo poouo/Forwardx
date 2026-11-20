@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { MAX_PLAN_PURCHASE_QUANTITY, planPurchaseTotals } from "../shared/planPurchase";
+import { MAX_PLAN_PURCHASE_QUANTITY, planCyclePurchaseTotals } from "../shared/planPurchase";
 import { accrueAffiliateCommission } from "./repositories/affiliateRepository";
 import express from "express";
 import { z } from "zod";
@@ -229,6 +229,7 @@ const createOrderInput = z.object({
   planId: z.number().int().positive().optional(),
   subscriptionId: z.number().int().positive().optional(),
   quantity: z.number().int().min(1).max(MAX_PLAN_PURCHASE_QUANTITY).default(1),
+  billingCycleDays: z.number().int().min(0).optional(),
   discountCode: z.string().trim().max(64).optional(),
   orderType: z.enum(["balance", "test"]).optional(),
   returnPath: z.enum(PAYMENT_RETURN_PATHS).optional(),
@@ -1187,7 +1188,7 @@ export const paymentRouter = router({
       let discountCodeId: number | null = null;
       let discountAmountCents = 0;
       let planDurationDays: number | null = null;
-      if (!input.planId && input.quantity !== 1) throw new Error("购买期数仅适用于套餐订单");
+      if (!input.planId && (input.quantity !== 1 || input.billingCycleDays !== undefined)) throw new Error("购买期数仅适用于套餐订单");
       if (input.subscriptionId && !input.planId) {
         throw new Error("renewal order requires a plan");
       }
@@ -1204,6 +1205,7 @@ export const paymentRouter = router({
           if (target.status === "cancelled") {
             throw new Error("cancelled subscriptions cannot be renewed");
           }
+          if (target.adminDismissedAt) throw new Error("该订阅已删除");
           adminSelfRenewal = target.source === "admin"
             && (target.allowSelfRenew === true || target.allowSelfRenew === 1);
           if (!db.isUserRenewableSubscriptionSource(target.source, adminSelfRenewal)) {
@@ -1214,7 +1216,7 @@ export const paymentRouter = router({
         if (!shopEnabled && !adminSelfRenewal) throw new Error("商店功能未开启");
         const plan = await db.getSubscriptionPlanById(input.planId);
         if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
-        const totals = planPurchaseTotals(Number(plan.priceCents || 0), Number(plan.durationDays), input.quantity);
+        const totals = planCyclePurchaseTotals(plan, input.quantity, input.billingCycleDays);
         planDurationDays = totals.durationDays;
         let amountCentsForPlan = totals.priceCents;
         if (input.discountCode) {

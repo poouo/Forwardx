@@ -41,6 +41,7 @@ import { resolveAgentAdvertisedPanelUrl } from "../agentPanelUrl";
 import { normalizeAgentPanelUrl } from "../../shared/agentPanelUrl";
 import { enqueueStreamUnlockAgentTask, getStreamUnlockAgentTaskStatus, latestStreamUnlockAgentTask } from "../streamUnlockAgentTasks";
 import { getDevStreamUnlockResult } from "../devStreamUnlock";
+import { hostRenewalCostSchema, type HostRenewalCost } from "../../shared/hostRenewalCost";
 
 const agentPanelUrlFields = {
   agentPanelUrlEnabled: z.boolean().optional(),
@@ -424,7 +425,7 @@ async function visibleHostQueryScope(user: { id: number; role: string }) {
   };
 }
 
-async function getVisibleHostsForUser(user: { id: number; role: string }, options: { scheduleGeoRefresh?: boolean } = {}) {
+async function getVisibleHostsForUser(user: { id: number; role: string }, options: { scheduleGeoRefresh?: boolean } = {}): Promise<any[]> {
   const shouldScheduleGeoRefresh = options.scheduleGeoRefresh !== false;
   const isAdmin = user.role === "admin";
   if (isAdmin) {
@@ -444,9 +445,17 @@ async function getVisibleHostsForUser(user: { id: number; role: string }, option
   return db.orderVisibleHostsForUser(visibleHosts, user.id);
 }
 
-function compactHostForList(host: any) {
-  const { agentToken, ...rest } = host || {};
-  return { ...rest, connectionStats: getAgentConnectionStats(Number(host?.id)) };
+function compactHostForList(host: any, includeRenewalCost = false) {
+  const { agentToken, renewalCostCents, renewalCurrency, ...rest } = host || {};
+  return {
+    ...rest,
+    ...(includeRenewalCost ? { renewalCostCents, renewalCurrency } : {}),
+    connectionStats: getAgentConnectionStats(Number(host?.id)),
+  };
+}
+
+function hostRenewalCostColumns(cost: HostRenewalCost | null) {
+  return { renewalCostCents: cost?.amountCents ?? null, renewalCurrency: cost?.currency ?? null };
 }
 
 function compactHostStatus(host: any) {
@@ -753,7 +762,7 @@ export const hostsRouter = router({
         scheduleOrphanedAgentHostCleanup();
       }
       const hosts = await getVisibleHostsForUser(ctx.user);
-      return hosts.map(compactHostForList);
+      return hosts.map(host => compactHostForList(host, ctx.user.role === "admin"));
     }),
     options: protectedProcedure.query(async ({ ctx }) => {
       const scope = await visibleHostQueryScope(ctx.user);
@@ -769,7 +778,7 @@ export const hostsRouter = router({
           error instanceof Error ? error.message : String(error),
         );
         const visible = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
-        hosts = visible.map(compactHostForList);
+        hosts = visible.map(host => compactHostForList(host));
       }
       scheduleHostGeoRefresh(hosts);
       return hosts;
@@ -805,7 +814,7 @@ export const hostsRouter = router({
         }
         return {
           ...pageData,
-          items: items.map(compactHostForList),
+          items: items.map(host => compactHostForList(host, ctx.user.role === "admin")),
           versionCounts: undefined,
           outdatedItems,
           onlineOutdatedItems,
@@ -1106,6 +1115,7 @@ export const hostsRouter = router({
         portAllowlist: z.string().max(2000).nullable().optional(),
         purchasedAt: optionalDateInputSchema,
         stoppedAt: optionalDateInputSchema,
+        renewalCost: hostRenewalCostSchema.nullable().optional(),
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
@@ -1155,8 +1165,10 @@ export const hostsRouter = router({
           ? normalizeHostDdnsPayload(input)
           : { ddnsEnabled: false, ddnsDomain: null, ddnsRecordType: "A", ddnsIpVersion: "ipv4" };
         if ((ddnsConfig as any).ddnsEnabled) await assertHostDdnsServiceConfigured();
+        const { renewalCost, ...hostInput } = input;
         const id = await db.createHost({
-          ...input,
+          ...hostInput,
+          ...hostRenewalCostColumns(renewalCost ?? null),
           ...trafficConfig,
           ...ddnsConfig,
           ...normalizeHostAgentPanelUrl(input),
@@ -1208,6 +1220,7 @@ export const hostsRouter = router({
         portAllowlist: z.string().max(2000).nullable().optional(),
         purchasedAt: optionalDateInputSchema,
         stoppedAt: optionalDateInputSchema,
+        renewalCost: hostRenewalCostSchema.nullable().optional(),
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         trafficFailoverEnabled: z.boolean().optional(),
@@ -1250,7 +1263,7 @@ export const hostsRouter = router({
         const nextPortAllowlist = input.portAllowlist !== undefined
           ? normalizePortAllowlist(input.portAllowlist)
           : String((host as any).portAllowlist || "");
-        const { id, ...data } = input;
+        const { id, renewalCost, ...data } = input;
         const hasAgentPanelUrlInput = input.agentPanelUrl !== undefined || input.agentPanelUrlEnabled !== undefined;
         const nextAgentPanelUrl = hasAgentPanelUrlInput ? normalizeHostAgentPanelUrl(input, host) : null;
         const agentPanelUrlChanged = !!nextAgentPanelUrl && (
@@ -1373,7 +1386,7 @@ export const hostsRouter = router({
             geoUpdatedAt: null,
           });
         }
-        await db.updateHost(id, data as any);
+        await db.updateHost(id, { ...data, ...(renewalCost !== undefined && hostRenewalCostColumns(renewalCost)) } as any);
         if (agentPanelUrlChanged) {
           appendPanelLog("info", `[AgentConnection] host=${id} customPanelUrl=${(data as any).agentPanelUrlEnabled ? "enabled" : "disabled"}; refresh requested`);
           pushAgentRefresh(id, "host-agent-panel-url-updated", { urgent: true });
