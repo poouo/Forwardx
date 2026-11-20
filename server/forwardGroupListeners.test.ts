@@ -56,12 +56,11 @@ test("forward group sync creates an enabled child listener for every enabled mem
       const beforeResync = await runtime.queryRaw(
         'SELECT "updatedAt" FROM "forward_rules" WHERE "id" = 101',
       );
-      await new Promise((resolve) => setTimeout(resolve, 1_100));
       await forwardGroups.syncForwardGroupRules(10, { preserveRuntime: true });
       const afterResync = await runtime.queryRaw(
         'SELECT "updatedAt" FROM "forward_rules" WHERE "id" = 101',
       );
-      assert.notEqual(afterResync[0]?.updatedAt, beforeResync[0]?.updatedAt, "a stopped child must be re-dispatched");
+      assert.equal(afterResync[0]?.updatedAt, beforeResync[0]?.updatedAt, "Agent reconciliation retries unchanged stopped children without a database rewrite");
     } finally {
       await runtime.closeDatabase();
     }
@@ -122,7 +121,7 @@ test("maintenance skips unchanged unavailable children without suppressing confi
       await runtime.executeRaw('CREATE TRIGGER audit_rule_update AFTER UPDATE ON forward_rules BEGIN INSERT INTO rule_updates VALUES (NEW.id); END');
       await sync();
       await sync();
-      assert.deepEqual(await changedHosts(), [1], 'only online stopped children should be re-dispatched');
+      assert.deepEqual(await changedHosts(), [], 'unchanged stopped children must not be rewritten, including online hosts');
 
       // Metadata is still synchronized, without clearing an unavailable child's diagnostic.
       await runtime.executeRaw("UPDATE forward_rules SET runtimeDiagnostic = 'keep diagnostic' WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0");
@@ -134,7 +133,7 @@ test("maintenance skips unchanged unavailable children without suppressing confi
       assert.ok(renamed.filter(row => row.hostId !== 1).every(row => row.runtimeDiagnostic === 'keep diagnostic'));
       await clear();
       await sync();
-      assert.deepEqual(await changedHosts(), [1], 'metadata must not be rewritten when unchanged');
+      assert.deepEqual(await changedHosts(), [], 'metadata must not be rewritten when unchanged');
 
       await runtime.executeRaw('UPDATE forward_rules SET targetPort = 81 WHERE isForwardGroupTemplate = 1');
       await clear();
@@ -146,7 +145,7 @@ test("maintenance skips unchanged unavailable children without suppressing confi
       await runtime.executeRaw('UPDATE hosts SET trafficFailoverExcluded = 0 WHERE id = 3');
       await clear();
       await sync();
-      assert.deepEqual(await changedHosts(), [1, 2, 3, 4], 'recovery must use a new host snapshot on the very next sync');
+      assert.deepEqual(await changedHosts(), [], 'returning online does not change the desired configuration or overwrite an ACK');
 
       // Running children are preserved, but previously omitted runtime fields must still be reconciled.
       await runtime.executeRaw('UPDATE forward_rules SET isRunning = 1 WHERE forwardGroupId = 10 AND isForwardGroupTemplate = 0');

@@ -6,6 +6,7 @@ import { refreshUserForwardEndpoints } from "./helpers";
 import { adjustUserBalanceCommand, setUserBalanceCommand } from "../services/userCommandService";
 import { clearForwardxAiSettingsCache } from "../ai/settings";
 import { MAX_TRAFFIC_ADDON_QUANTITY } from "../../shared/trafficAddonPurchase";
+import { MAX_PLAN_PURCHASE_QUANTITY, planPurchaseTotals } from "../../shared/planPurchase";
 
 const dateInput = z.string().trim().optional().nullable();
 const billingPageInput = z.object({
@@ -136,6 +137,7 @@ export const billingRouter = router({
     .input(z.object({
       planId: z.number().int().positive(),
       subscriptionId: z.number().int().positive().optional(),
+      quantity: z.number().int().min(1).max(MAX_PLAN_PURCHASE_QUANTITY).default(1),
       discountCode: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -151,13 +153,14 @@ export const billingRouter = router({
       }
       const plan = await db.getSubscriptionPlanById(input.planId);
       if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
+      const totals = planPurchaseTotals(Number(plan.priceCents || 0), Number(plan.durationDays), input.quantity);
       let discountCodeId: number | null = null;
       if (input.discountCode) {
         if ((await db.getSetting("discountEnabled")) === "false") throw new Error("折扣码功能已关闭");
-        const preview = await db.previewDiscount(input.discountCode, Number(plan.priceCents || 0), input.planId);
+        const preview = await db.previewDiscount(input.discountCode, totals.priceCents, input.planId);
         discountCodeId = preview.discountCodeId;
       }
-      const result = await db.purchasePlanWithBalance(ctx.user.id, input.planId, discountCodeId, input.subscriptionId);
+      const result = await db.purchasePlanWithBalance(ctx.user.id, input.planId, discountCodeId, input.subscriptionId, input.quantity);
       await refreshUserForwardEndpoints(ctx.user.id, "balance-plan-purchased");
       appendPanelLog("info", `[Plan] balance purchase user=${ctx.user.id} plan=${input.planId}`);
       return result;

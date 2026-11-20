@@ -3475,6 +3475,7 @@
   "余额支付（": "Pay with balance (",
   "语言": "Language",
   "预览": "Preview",
+  "说明预览": "Description Preview",
   "域名": "Domain Name",
   "阈值": "Threshold",
   "遇到冲突时报错": "Report an error on conflicts",
@@ -5475,5 +5476,13 @@
   "总流量": "Total traffic",
   "合计金额": "Total amount",
   "请选择有效数量": "Choose a valid quantity",
-  "已购买同款套餐，本次购买将延长原订阅的有效期。": "You already own this plan. This purchase will extend your existing subscription."
+  "已购买同款套餐，本次购买将延长原订阅的有效期。": "You already own this plan. This purchase will extend your existing subscription.",
+  "购买期数": "Billing periods",
+  "每期 {0} 天": "{0} days per period",
+  "减少购买期数": "Decrease billing periods",
+  "增加购买期数": "Increase billing periods",
+  "期": "periods",
+  "永久套餐只能购买一期": "Lifetime plans can only be purchased for one period",
+  "共 {0} 天，仅延长有效期，流量及其他额度不叠加。": "{0} days in total. Only validity is extended; traffic and other limits do not increase.",
+  "请输入有效购买期数（1–{0}）": "Enter a valid number of periods (1–{0})"
 }

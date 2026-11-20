@@ -34,11 +34,13 @@ function legacyMysql(missing: string[], failure?: { match: RegExp; code: string;
 test("MySQL adds missing legacy fields once without re-altering existing columns or indexes", async () => {
   const missing = ["hosts.hostStatusNotifyEnabled", "forward_rules.runtimeDiagnostic", "forward_group_members.syncDiagnostic",
     "tunnels.v3Transport", "tunnels.v3Host", "tunnels.v3Path", "tunnels.v3UserAgent", "tunnels.v3ServerName", "tunnels.v3Multiplex",
-    "payment_orders.merchantIdentity", "payment_orders.failureReason", "payment_orders.lastPaymentCheckAt"];
+    "payment_orders.merchantIdentity", "payment_orders.failureReason", "payment_orders.lastPaymentCheckAt",
+    "payment_orders.planQuantity", "payment_orders.planDurationDays"];
   const state = legacyMysql(missing);
   state.indexNames.get("payment_orders")!.delete("idx_payment_orders_status_lastPaymentCheckAt");
   await ensureDatabaseSchema(state.pool as any);
-  assert.equal(state.queries.filter(sql => /ALTER TABLE.*ADD COLUMN/.test(sql)).length, 12);
+  assert.equal(state.queries.filter(sql => /ALTER TABLE.*ADD COLUMN/.test(sql)).length, 14);
+  assert.ok(state.queries.some(sql => /ADD COLUMN `planQuantity`.*DEFAULT 1/.test(sql)));
   assert.equal(state.queries.filter(sql => /ALTER TABLE.*ADD INDEX/.test(sql)).length, 1);
   assert.equal(state.queries.some(sql => /MODIFY COLUMN/.test(sql)), false);
   state.indexNames.get("payment_orders")!.add("idx_payment_orders_status_lastPaymentCheckAt");

@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [2.3.303] - 2026-11-20
+
+- Buy multiple periods when purchasing or renewing a plan. Repurchasing the same plan extends the existing subscription, and traffic add-ons can be bought in multiples. Refined subscription cards, plan description previews, and the admin view of user traffic.
+- GOST tunnel forwarding can reuse a shared exit port. Fixed sync failures when the GOST control API was still starting, and restored Guard rate limits for existing rules after Agent upgrades.
+- Fixed failover groups rewriting unrelated rules and triggering false failovers after an individual rule change. The panel waits for the Agent to confirm the new configuration, avoids repeated writes, and promptly reconciles DDNS records left by removed members. Related [#25](https://github.com/poouo/Forwardx/issues/25).
+- Improved live host traffic updates when configuration sync is busy. Fixed database health indicators during panel migration.
+- Fixed encrypted media-check reporting and stale results briefly appearing when switching hosts. Improved region detection and checks for regional restrictions on AI services.
+- Long announcements can be expanded on the announcements page. Refined host filters and reduced flicker and blurry text during transitions.
+- Versions are panel `2.3.303`, Android / iOS `2.4.20`, Agent `2.2.215`, and ForwardX FXP runtime `2.2.123`. Upgrade the Agent for live host traffic, Guard recovery, and media-check improvements.
+
 ## [2.3.302] - 2026-11-18
 
 - Added media-unlock checks from host cards for Netflix, Disney+, YouTube, Spotify, Bilibili TV, Bahamut and AbemaTV, plus availability checks for TikTok, Gemini, Grok, ChatGPT and Claude. Regions and DNS-unlock hints are shown when detected.

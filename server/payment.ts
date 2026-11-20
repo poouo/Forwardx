@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { MAX_PLAN_PURCHASE_QUANTITY, planPurchaseTotals } from "../shared/planPurchase";
 import { accrueAffiliateCommission } from "./repositories/affiliateRepository";
 import express from "express";
 import { z } from "zod";
@@ -227,6 +228,7 @@ const createOrderInput = z.object({
   paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
   planId: z.number().int().positive().optional(),
   subscriptionId: z.number().int().positive().optional(),
+  quantity: z.number().int().min(1).max(MAX_PLAN_PURCHASE_QUANTITY).default(1),
   discountCode: z.string().trim().max(64).optional(),
   orderType: z.enum(["balance", "test"]).optional(),
   returnPath: z.enum(PAYMENT_RETURN_PATHS).optional(),
@@ -1184,6 +1186,8 @@ export const paymentRouter = router({
       let subjectSuffix = ctx.user.username;
       let discountCodeId: number | null = null;
       let discountAmountCents = 0;
+      let planDurationDays: number | null = null;
+      if (!input.planId && input.quantity !== 1) throw new Error("购买期数仅适用于套餐订单");
       if (input.subscriptionId && !input.planId) {
         throw new Error("renewal order requires a plan");
       }
@@ -1210,7 +1214,9 @@ export const paymentRouter = router({
         if (!shopEnabled && !adminSelfRenewal) throw new Error("商店功能未开启");
         const plan = await db.getSubscriptionPlanById(input.planId);
         if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
-        let amountCentsForPlan = Number(plan.priceCents || 0);
+        const totals = planPurchaseTotals(Number(plan.priceCents || 0), Number(plan.durationDays), input.quantity);
+        planDurationDays = totals.durationDays;
+        let amountCentsForPlan = totals.priceCents;
         if (input.discountCode) {
           if ((await db.getSetting("discountEnabled")) === "false") throw new Error("折扣码功能已关闭");
           const discount = await db.previewDiscount(input.discountCode, amountCentsForPlan, input.planId);
@@ -1219,7 +1225,7 @@ export const paymentRouter = router({
           amountCentsForPlan = discount.finalAmountCents;
         }
         amount = amountCentsForPlan / 100;
-        subjectSuffix = `${plan.name} - ${ctx.user.username}`;
+        subjectSuffix = `${plan.name}${input.quantity > 1 ? ` × ${input.quantity} 期` : ""} - ${ctx.user.username}`;
       }
       if (amount < config.minAmount) throw new Error(`最低支付金额为 ${config.minAmount}`);
       if (config.maxAmount > 0 && amount > config.maxAmount) throw new Error(`最高支付金额为 ${config.maxAmount}`);
@@ -1281,6 +1287,8 @@ export const paymentRouter = router({
           currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
           orderType: input.planId ? "plan" : input.orderType || "balance",
           planId: input.planId ?? null,
+          planQuantity: input.quantity,
+          planDurationDays,
           subscriptionId: input.subscriptionId ?? null,
           discountCodeId,
           discountConsumed: !!discountCodeId,

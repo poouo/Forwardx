@@ -42,6 +42,7 @@ import { pageResult, pageWindowForTotal, type PageRequest } from "../../shared/p
 import { withKeyedTaskLock, withTrafficBillingUserLock } from "../keyedTaskLock";
 import { normalizePlanTrafficMode, rulePlanTrafficMode, type PlanTrafficMode, type PlanTrafficEntitlement } from "../../shared/planTraffic";
 import { trafficAddonPurchaseTotals, validateTrafficAddonQuantity } from "../../shared/trafficAddonPurchase";
+import { planPurchaseTotals } from "../../shared/planPurchase";
 import {
   getUserForwardRuleIdsDisabledByAccess,
   scheduleUserForwardRulesAfterAccessRecovery,
@@ -103,11 +104,13 @@ export async function createPaymentOrder(order: InsertPaymentOrder) {
       // update holds one stable database row until this transaction commits.
       await setSetting(SUBSCRIPTION_PLAN_PAYMENT_MARKER, "1");
       const plan = await db
-        .select({ id: subscriptionPlans.id })
+        .select({ id: subscriptionPlans.id, priceCents: subscriptionPlans.priceCents, durationDays: subscriptionPlans.durationDays })
         .from(subscriptionPlans)
         .where(eq(subscriptionPlans.id, Number(order.planId)))
         .limit(1);
       if (!plan[0]) throw new Error("套餐已删除，无法创建支付订单");
+      const totals = planPurchaseTotals(Number(plan[0].priceCents), Number(plan[0].durationDays), order.planQuantity ?? 1);
+      order = { ...order, planQuantity: totals.quantity, planDurationDays: order.planDurationDays ?? totals.durationDays };
       if (!order.subscriptionId) {
         const target = await getStoreRenewalSubscription(Number(order.userId), Number(order.planId));
         if (target) order = { ...order, subscriptionId: target.id };
@@ -2493,9 +2496,11 @@ async function applySubscriptionToUserUnlocked(
   const forwardGroupIds = (plan as any).forwardGroupIds || [];
   if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐未绑定任何端口转发、隧道、转发链或转发组");
   const now = startsAt || new Date();
-  const durationDays = overrideDurationDays === null || overrideDurationDays === undefined
-    ? Number(plan.durationDays)
-    : Number(overrideDurationDays);
+  const durationDays = paymentOrder?.planDurationDays != null
+    ? Number(paymentOrder.planDurationDays)
+    : overrideDurationDays === null || overrideDurationDays === undefined
+      ? Number(plan.durationDays)
+      : Number(overrideDurationDays);
   const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const user = await getUserById(userId);
   const hadActiveSubscription = activeSubscriptions.length > 0;
@@ -3240,6 +3245,7 @@ export async function purchasePlanWithBalance(
   planId: number,
   discountCodeId?: number | null,
   subscriptionId?: number | null,
+  quantity = 1,
 ) {
   return withTrafficBillingUserLock(userId, () => withDatabaseTransaction(async () => {
   const plan = await getSubscriptionPlanById(planId);
@@ -3258,11 +3264,12 @@ export async function purchasePlanWithBalance(
       throw new Error("折扣码不适用于该套餐");
     }
   }
-  const amountCents = calculateDiscountedAmount(Number(plan.priceCents || 0), discount);
+  const totals = planPurchaseTotals(Number(plan.priceCents || 0), Number(plan.durationDays), quantity);
+  const amountCents = calculateDiscountedAmount(totals.priceCents, discount);
   if (amountCents > 0) {
     await addUserBalance(userId, -amountCents, {
       type: "purchase",
-      description: `购买套餐：${plan.name}`,
+      description: `购买套餐：${plan.name}${quantity > 1 ? ` × ${quantity} 期` : ""}`,
     } as any);
   }
   if (discount) await consumeDiscountCode(discount.id);
@@ -3272,7 +3279,7 @@ export async function purchasePlanWithBalance(
     "balance",
     null,
     undefined,
-    null,
+    totals.durationDays,
     subscriptionId || null,
   );
   return result;

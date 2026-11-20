@@ -70,9 +70,13 @@ test("member removal synchronizes templates, preserves healthy siblings and safe
       // Removing the first chain node changes the next listener, not the unchanged tail.
       await group(16, [member(13), member(14, 1), member(15, 2)], "chain");
       assert.equal((await deletion.getHostDeletionImpact(13)).groups.items.find(item => item.id === 16)?.groupMode, "chain");
+      // Pin the former relay listener to a different port from the public entry.
+      await runtime.executeRaw('UPDATE "hosts" SET "portRangeStart" = 18200, "portRangeEnd" = 18200 WHERE "id" = 14');
       await template(500, 16, 13, 18100);
-      const chainBefore = await runtime.queryRaw('SELECT "id", "hostId" FROM "forward_rules" WHERE "forwardGroupRuleId" = 500');
+      const chainBefore = await runtime.queryRaw('SELECT "id", "hostId", "sourcePort" FROM "forward_rules" WHERE "forwardGroupRuleId" = 500');
+      assert.equal(chainBefore.find(r => r.hostId === 14)?.sourcePort, 18200);
       const tail = chainBefore.find(r => r.hostId === 15);
+      await runtime.executeRaw('UPDATE "hosts" SET "portRangeStart" = 18100 WHERE "id" = 14');
       const service = await mod("server/services/forwardGroupService.ts");
       const chain = await groups.getForwardGroupById(16);
       await service.updateForwardGroupFromInput(16, { ...chain, members: [member(14), member(15, 1)] });

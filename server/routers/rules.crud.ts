@@ -738,17 +738,22 @@ export async function toggleForwardRuleForActor(
             isPortForwardGroup: isPortGroup,
             isAdmin: actor.role === "admin",
           });
-          await db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any);
-        } else {
-          await db.toggleForwardRule(ruleId, false);
         }
-        await db.syncForwardGroupRules(Number((rule as any).forwardGroupId));
-        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId));
+        await db.withForwardGroupSyncTransaction(
+          Number((rule as any).forwardGroupId),
+          () => isEnabled
+            ? db.updateForwardRule(ruleId, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, disabledByGroup: false, protocolBlockReason: null } as any)
+            : db.toggleForwardRule(ruleId, false),
+          { preserveRuntime: true, templateRuleId: ruleId },
+        );
         if (options.restartOnly) {
           const children = await db.getForwardGroupChildRulesForTemplate(ruleId);
-          await db.markForwardRulesNotRunning(children.filter((child: any) => dbBool(child.isEnabled) && !dbBool(child.pendingDelete)).map((child: any) => Number(child.id)));
+          const childIds = children.filter((child: any) => dbBool(child.isEnabled) && !dbBool(child.pendingDelete)).map((child: any) => Number(child.id));
+          await db.markForwardGroupRulesSyncPending(childIds);
+          await db.markForwardRulesNotRunning(childIds);
           await refreshPendingTemplateChildren(children, "forward-rule-restarted");
         }
+        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId), { skipRuleSync: true });
         return { success: true, rule };
       }
 
@@ -1198,18 +1203,15 @@ export const crudRulesRouter = router({
           isRunning: false,
           userId: ctx.user.id,
         } as any);
-        let id = 0;
-        if (isForwardChain || isPortGroup) {
-          // Adding a template must not re-dispatch unchanged, healthy listeners
-          // belonging to the resource. Runtime-field changes still apply.
-          id = await db.withForwardGroupSyncTransaction(forwardGroupId, createTemplateRule, { preserveRuntime: true });
-        } else {
-          id = await createTemplateRule();
-          await db.syncForwardGroupRules(forwardGroupId);
-        }
+        // Publish the template and its children together. Failover groups only
+        // reconcile this template; chain/port topology keeps its existing sync.
+        const id = await db.withForwardGroupSyncTransaction(
+          forwardGroupId, createTemplateRule,
+          (templateRuleId) => ({ preserveRuntime: true, templateRuleId }),
+        );
         await quotaReservation?.release();
         quotaReservation = null;
-        await db.runForwardGroupFailover(forwardGroupId);
+        await db.runForwardGroupFailover(forwardGroupId, { skipRuleSync: true });
         return { id, sourcePort };
         } finally {
           await quotaReservation?.release();
@@ -1729,22 +1731,22 @@ export const crudRulesRouter = router({
           data.protocolBlockReason = null;
         }
         if (keyFieldChanged || groupChanged || data.isEnabled !== undefined) data.isRunning = false;
-        if (!groupChanged && (isForwardChain || isPortGroup)) {
+        if (!groupChanged) {
           await db.withForwardGroupSyncTransaction(
             activeGroupId,
             () => db.updateForwardRule(input.id, data),
-            { preserveRuntime: true },
+            { preserveRuntime: true, templateRuleId: input.id },
           );
         } else {
           if (groupChanged) await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-route-changed");
           await db.updateForwardRule(input.id, data);
           if (groupChanged) {
-            await db.syncForwardGroupRules(groupId);
-            await db.runForwardGroupFailover(groupId);
+            await db.syncForwardGroupRules(groupId, { preserveRuntime: true });
+            await db.runForwardGroupFailover(groupId, { skipRuleSync: true });
           }
-          await db.syncForwardGroupRules(activeGroupId);
+          await db.syncForwardGroupTemplateRule(input.id);
         }
-        await db.runForwardGroupFailover(activeGroupId);
+        await db.runForwardGroupFailover(activeGroupId, { skipRuleSync: true });
         return { success: true, reset: keyFieldChanged || groupChanged };
       }
 
@@ -1857,8 +1859,8 @@ export const crudRulesRouter = router({
         } else if (Number((rule as any).hostId || 0) > 0) {
           pushAgentRefresh(Number((rule as any).hostId), "forward-rule-route-changed");
         }
-        await db.syncForwardGroupRules(groupId);
-        await db.runForwardGroupFailover(groupId);
+        await db.syncForwardGroupTemplateRule(input.id);
+        await db.runForwardGroupFailover(groupId, { skipRuleSync: true });
         return { success: true, reset: true };
       }
       // 如果修改了源端口，检查端口区间和占用

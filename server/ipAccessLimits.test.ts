@@ -44,11 +44,14 @@ test("plan/user/store labels and documentation describe IP count, not connection
   for (const name of ["Plans", "Users"]) {
     const source = readFileSync(new URL(`../client/src/pages/${name}.tsx`, import.meta.url), "utf8");
     assert.match(source, /translateText\("IP 限制"\)/);
-    assert.match(source, /同时在线来源 IP 数/);
     assert.doesNotMatch(source, /translateText\("单 IP 接入限制"\)/);
   }
+  const users = readFileSync(new URL("../client/src/pages/Users.tsx", import.meta.url), "utf8");
+  assert.match(users, /同时在线来源 IP 数/);
+  const store = readFileSync(new URL("../client/src/pages/Store.tsx", import.meta.url), "utf8");
+  assert.match(store, /IP 数按用户、入口主机共享/);
   const docs = readFileSync(new URL("../docs/guide/users-billing.md", import.meta.url), "utf8");
-  for (const text of ["5 秒", "512 字节", "不是跨机器", "CAP_NET_ADMIN", "2.2.210", "不能替代身份验证"]) assert.ok(docs.includes(text));
+  for (const text of ["不同来源 IP 数", "5 秒", "512 字节", "不是跨机器", "CAP_NET_ADMIN", "2.2.210", "不能替代身份验证"]) assert.ok(docs.includes(text));
 });
 
 test("missing tools and port failures are visible rather than silently disabling save", () => {

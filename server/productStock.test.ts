@@ -56,6 +56,68 @@ const order = (outTradeNo: string, userId = 2, subscriptionId?: number) => billi
 const rule = (overrides: Record<string, unknown> = {}) => rules.createForwardRule({ name: "stock", hostId: 1, userId: 2, forwardType: "realm", protocol: "both", sourcePort: 22000, targetIp: "127.0.0.1", targetPort: 80, ...overrides } as any);
 const config = (resourceType = "host", resourceId = 1, stockLimit = 1, maxRulesPerUser = 0) => runtime.insertAndGetId("traffic_billing_configs", { resourceType, resourceId, stockLimit, maxRulesPerUser, enabled: true });
 
+test("multi-period first balance purchase and renewal charge the total but allocate one entitlement", async () => {
+  await runtime.executeRaw("UPDATE subscription_plans SET stockLimit = 1, durationDays = 30, trafficLimit = 1000000 WHERE id = 1");
+  try {
+    const { billingRouter } = await import("./routers/billing");
+    const caller = billingRouter.createCaller({ user: { id: 2, role: "user", username: "stock-2" }, req: { headers: {}, socket: {} }, res: {} } as any);
+    const first = await caller.purchasePlanWithBalance({ planId: 1, quantity: 5 });
+    const previous = (await billing.getUserSubscriptionById(first.subscriptionId))!;
+    assert.equal(new Date(previous.expiresAt!).getTime() - new Date(previous.startedAt).getTime(), 150 * 86400000);
+    assert.ok(new Date(previous.nextTrafficResetAt!).getTime() < new Date(previous.expiresAt!).getTime(), "traffic resets before the full multi-period validity expires");
+    const second = await caller.purchasePlanWithBalance({ planId: 1, subscriptionId: first.subscriptionId, quantity: 2 });
+    const latest = (await billing.getUserSubscriptionById(second.subscriptionId))!;
+    assert.equal(second.subscriptionId, first.subscriptionId);
+    assert.equal(new Date(latest.expiresAt!).getTime(), new Date(previous.expiresAt!).getTime() + 60 * 86400000);
+    assert.equal(latest.portRangeStart, previous.portRangeStart);
+    assert.equal(latest.nextTrafficResetAt?.getTime(), previous.nextTrafficResetAt?.getTime());
+    assert.equal((await runtime.queryRaw<{ trafficLimit: number }>("SELECT trafficLimit FROM users WHERE id = 2"))[0].trafficLimit, 1000000);
+    assert.equal(await billing.getUserBalance(2), 300);
+    assert.equal((await planStock()).stockUsed, 1);
+    assert.equal((await runtime.queryRaw<{ n: number }>("SELECT COUNT(*) AS n FROM user_subscriptions"))[0].n, 1);
+    const expiresAt = new Date(latest.expiresAt!).getTime();
+    await assert.rejects(() => caller.purchasePlanWithBalance({ planId: 1, quantity: 5 }), /余额不足/);
+    assert.equal(await billing.getUserBalance(2), 300);
+    assert.equal(new Date((await billing.getUserSubscriptionById(first.subscriptionId))!.expiresAt!).getTime(), expiresAt);
+    for (const quantity of [0, 1.5, 101]) await assert.rejects(() => caller.purchasePlanWithBalance({ planId: 1, quantity }));
+    assert.equal((await planStock()).stockUsed, 1);
+  } finally {
+    await runtime.executeRaw("UPDATE subscription_plans SET trafficLimit = 0 WHERE id = 1");
+  }
+});
+
+test("multi-period balance discounts apply once to the whole purchase and roll back on failure", async () => {
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 30 WHERE id = 1");
+  const discount = (await billing.createDiscountCode({ code: "MULTIPERIOD", discountType: "amount", discountValue: 150, maxUses: 1 }))!.id;
+  try {
+    const first = await billing.purchasePlanWithBalance(2, 1, discount, null, 5);
+    assert.equal(await billing.getUserBalance(2), 650);
+    assert.equal((await billing.getDiscountCodeById(discount))!.usedCount, 1);
+    await assert.rejects(() => billing.purchasePlanWithBalance(2, 1, discount, first.subscriptionId, 2), /折扣码/);
+    assert.equal(await billing.getUserBalance(2), 650);
+    await assert.rejects(() => billing.purchasePlanWithBalance(3, 2, null, null, 5), /端口/);
+    assert.equal(await billing.getUserBalance(3), 1000);
+  } finally {
+    await runtime.executeRaw("DELETE FROM discount_codes WHERE id = ?", [discount]);
+  }
+});
+
+test("legacy SQLite payment orders migrate to one period without inventing a duration snapshot", async () => {
+  await runtime.insertAndGetId("payment_orders", { outTradeNo: "legacy-period", userId: 2, provider: "stripe", paymentType: "stripe", subject: "legacy", amountCents: 100, planId: 1, orderType: "plan" });
+  await runtime.executeRaw("ALTER TABLE payment_orders DROP COLUMN planQuantity");
+  await runtime.executeRaw("ALTER TABLE payment_orders DROP COLUMN planDurationDays");
+  await (await import("./dbSchema")).ensureDatabaseSchema();
+  await (await import("./dbSchema")).ensureDatabaseSchema();
+  const legacy = (await billing.getPaymentOrderByOutTradeNo("legacy-period"))!;
+  assert.equal(legacy.planQuantity, 1);
+  assert.equal(legacy.planDurationDays, null);
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 30 WHERE id = 1");
+  await billing.markPaymentOrderPaid("legacy-period", { tradeNo: "legacy" });
+  const result = await billing.applySubscriptionToUser(2, 1, "payment", "legacy-period");
+  const sub = (await billing.getUserSubscriptionById(result.subscriptionId))!;
+  assert.equal(new Date(sub.expiresAt!).getTime() - new Date(sub.startedAt).getTime(), 30 * 86400000);
+});
+
 test("store repurchases extend one subscription without consuming more stock or ports", async () => {
   await runtime.executeRaw("UPDATE subscription_plans SET stockLimit = 1, durationDays = 30 WHERE id = 1");
   const first = await billing.purchasePlanWithBalance(2, 1);

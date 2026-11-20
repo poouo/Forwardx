@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -29,7 +30,7 @@ import { planDescription, planDescriptionTemplate, planPortCountText } from "@/l
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
-import { CheckCircle2, Coins, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
+import { CheckCircle2, CircleHelp, Coins, Package, Pencil, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/lib/localizedToast";
 
@@ -72,6 +73,21 @@ type PlanDialogTab = "settings" | "resources";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
 type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 type PlanResourcePart = { label: string; count: number };
+
+function PlanFieldHint({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return <TooltipProvider delayDuration={200}>
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <button type="button" aria-label={text} className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}>
+          <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent collisionPadding={12} className="max-w-64 text-xs">{text}</TooltipContent>
+    </Tooltip>
+  </TooltipProvider>;
+}
+
 const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
 const PLAN_MANAGE_TAB_ITEMS = [
   { value: "plans", label: translateText("订阅套餐"), icon: Package },
@@ -1138,7 +1154,10 @@ export default function Plans() {
               <Input type="number" min={0} step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>{translateText("有效期")}</Label>
+              <div className="flex items-center gap-1">
+                <Label>{translateText("有效期")}</Label>
+                <PlanFieldHint text={translateText("超过一个月按月重置流量。")} />
+              </div>
               <Select value={form.durationDays} onValueChange={(durationDays) => setForm({ ...form, durationDays })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1147,7 +1166,6 @@ export default function Plans() {
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">{translateText("超过一个月按月重置流量。")}</p>
             </div>
             <div className="space-y-2">
               <Label>{translateText("连续端口数（0 为不限）")}</Label>
@@ -1167,15 +1185,15 @@ export default function Plans() {
               <Input type="number" min={0} value={form.maxRules} onChange={(e) => setForm({ ...form, maxRules: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>{translateText("最大连接数")}</Label>
+              <div className="flex items-center gap-1">
+                <Label>{translateText("最大连接数")}</Label>
+                <PlanFieldHint text={translateText("按主机或隧道聚合。")} />
+              </div>
               <Input type="number" min={0} value={form.maxConnections} onChange={(e) => setForm({ ...form, maxConnections: e.target.value })} />
-              <p className="text-xs text-muted-foreground">{translateText("按主机或隧道聚合。")}</p>
             </div>
             <div className="space-y-2">
               <Label>{translateText("IP 限制")}</Label>
               <Input type="number" min={0} value={form.maxIPs} onChange={(e) => setForm({ ...form, maxIPs: e.target.value })} />
-              <p className="text-xs text-muted-foreground">{translateText("同时在线来源 IP 数，0 为不限；同用户、同入口主机的规则共享。")}</p>
-              <p className="text-xs text-muted-foreground">{translateText("持续至少 5 秒且双向累计流量达到 512 字节后计入，短时扫描不占名额。")}</p>
             </div>
             <div className="space-y-2">
               <Label>{translateText("排序")}</Label>

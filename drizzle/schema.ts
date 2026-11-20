@@ -974,6 +974,8 @@ export const paymentOrders = table("payment_orders", {
   orderType: varchar("orderType", { length: 32 }).notNull().default("balance"), // balance | plan | test
   planId: int("planId"),
   subscriptionId: int("subscriptionId"),
+  planQuantity: int("planQuantity").notNull().default(1),
+  planDurationDays: int("planDurationDays"), // Purchased total duration; null for legacy orders.
   discountCodeId: int("discountCodeId"),
   discountConsumed: boolean("discountConsumed").notNull().default(false),
   stockReserved: boolean("stockReserved").notNull().default(false),

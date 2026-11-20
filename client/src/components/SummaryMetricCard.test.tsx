@@ -75,13 +75,16 @@ test("missing overview and product hover treatments are covered without moving s
     ["client/src/pages/SupportTickets.tsx", /pearl-hover-card min-w-0 rounded-xl/],
     ["client/src/pages/Plans.tsx", /pearl-hover-card rounded-lg border border-border/],
     ["client/src/pages/Store.tsx", /pearl-hover-card pearl-store-plan/],
-    ["client/src/pages/Subscriptions.tsx", /<Card key=\{sub.id\} hoverable/],
     ["client/src/components/LatencyStabilityStats.tsx", /pearl-hover-card latency-stat-card/],
   ] as const;
   for (const [file, pattern] of checks) {
     const source = readFileSync(file, "utf8");
     assert.match(source, pattern);
   }
+  const subscriptions = readFileSync("client/src/pages/Subscriptions.tsx", "utf8");
+  const subscriptionCard = subscriptions.match(/<Card\b[^>]*data-subscription-card="true"[^>]*>/)?.[0];
+  assert.ok(subscriptionCard);
+  assert.doesNotMatch(subscriptionCard, /\b(?:hoverable|interactive|enterIndex)\b/);
   for (const file of ["Billing", "Payments", "Hosts", "HostMonitor", "Users", "Rules"]) {
     assert.match(readFileSync(`client/src/pages/${file}.tsx`, "utf8"), /<Card hoverable(?: disableEnterAnimation)? className=/);
   }

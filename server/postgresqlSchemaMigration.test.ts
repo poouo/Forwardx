@@ -41,10 +41,11 @@ test("PostgreSQL normal restarts inspect in bulk without duplicate column/table/
 });
 
 test("PostgreSQL only adds missing fields/indexes and upgrades become no-ops on restart", async () => {
-  const state = postgresSchema(["hosts.hostStatusNotifyEnabled", "host_ip_switch_attempts.cooldownUntil"]);
+  const state = postgresSchema(["hosts.hostStatusNotifyEnabled", "host_ip_switch_attempts.cooldownUntil", "payment_orders.planQuantity", "payment_orders.planDurationDays"]);
   state.indexes.get("payment_orders")!.delete("idx_payment_orders_status_lastPaymentCheckAt");
   await ensureDatabaseSchema(state.pool as any);
-  assert.equal(state.queries.filter(sql => sql.startsWith("ALTER TABLE")).length, 2);
+  assert.equal(state.queries.filter(sql => sql.startsWith("ALTER TABLE")).length, 4);
+  assert.ok(state.queries.some(sql => /ADD COLUMN IF NOT EXISTS "planQuantity".*DEFAULT 1/.test(sql)));
   assert.equal(state.queries.filter(sql => sql.startsWith("CREATE INDEX")).length, 1);
   assert.ok(state.queries.some(sql => sql.includes('ADD COLUMN IF NOT EXISTS "cooldownUntil"')));
   state.queries.length = 0;

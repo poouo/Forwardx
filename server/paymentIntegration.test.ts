@@ -338,6 +338,62 @@ test("fast verified callbacks win races with both successful and failed create r
   assert.equal(await balance(),200);
 `));
 
+test("multi-period online purchases price the full order, snapshot validity and fulfill each payment once", () => scenario(String.raw`
+  const easy = {...base,enabled:true,maxPendingOrders:0,easypay:{...base.easypay,enabled:true,mode:"api",apiBase:"https://easy.example.test",pid:"pid-1",pkey:"secret"}};
+  await admin.updateConfig(easy);
+  await db.setSetting("storeEnabled", "true");
+  await runtime.insertAndGetId("hosts", {id:1,name:"period-host",ip:"127.0.0.1",userId:1,portRangeStart:20000,portRangeEnd:30000});
+  await runtime.insertAndGetId("subscription_plans", {id:1,name:"period-plan",priceCents:100,durationDays:30,stockLimit:1,portCount:2,trafficLimit:1000000});
+  await runtime.insertAndGetId("subscription_plan_hosts", {planId:1,hostId:1});
+  const discount = await db.createDiscountCode({code:"PERIOD",discountType:"amount",discountValue:100,maxUses:1});
+  let checkoutCount = 0;
+  globalThis.fetch = async (url, options) => {
+    if (url === "https://easy.example.test/mapi.php") {
+      const params = Object.fromEntries(options.body.entries());
+      assert.equal(params.money, checkoutCount++ === 0 ? "4.00" : "2.00", "server calculates total from unit price, quantity and discount");
+      return new Response(JSON.stringify({code:1,payurl:"/pay/period"}));
+    }
+    return originalFetch(url, options);
+  };
+  const postEasy = async order => {
+    const params = {pid:"pid-1",out_trade_no:order.outTradeNo,trade_no:"EP-"+order.outTradeNo,type:"alipay",trade_status:"TRADE_SUCCESS",money:(order.amountCents/100).toFixed(2)};
+    const content = Object.keys(params).sort().map(key=>key+"="+params[key]).join("&")+"secret";
+    return originalFetch(origin+"/api/payment/webhook/easypay", {method:"POST",body:new URLSearchParams({...params,sign:crypto.createHash("md5").update(content).digest("hex"),sign_type:"MD5"})});
+  };
+  const first = await admin.createOrder({amount:0.01,paymentType:"alipay",planId:1,quantity:5,discountCode:"PERIOD"});
+  assert.equal(first.amountCents,400);
+  assert.equal(first.planQuantity,5);
+  assert.equal(first.planDurationDays,150);
+  assert.equal(first.discountAmountCents,100);
+  assert.match(first.subject,/5/);
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 90 WHERE id = 1");
+  assert.equal((await postEasy(first)).status,200);
+  const completed = await db.getPaymentOrderByOutTradeNo(first.outTradeNo);
+  assert.equal(completed.status,"completed");
+  const initial = await db.getUserSubscriptionById(completed.subscriptionId);
+  assert.equal(new Date(initial.expiresAt)-new Date(initial.startedAt),150*86400000,"payment uses duration at checkout, not the edited plan");
+  assert.ok(new Date(initial.nextTrafficResetAt)<new Date(initial.expiresAt));
+  assert.equal((await postEasy(first)).status,200);
+  await runtime.executeRaw("UPDATE subscription_plans SET durationDays = 30 WHERE id = 1");
+  const renewal = await admin.createOrder({amount:999,paymentType:"alipay",planId:1,quantity:2,subscriptionId:initial.id});
+  assert.equal(renewal.amountCents,200);
+  assert.equal(renewal.planQuantity,2);
+  assert.equal(renewal.stockReserved,false);
+  assert.equal((await postEasy(renewal)).status,200);
+  const latest = await db.getUserSubscriptionById(initial.id);
+  assert.equal(new Date(latest.expiresAt)-new Date(initial.expiresAt),60*86400000);
+  assert.equal(latest.portRangeStart,initial.portRangeStart);
+  assert.equal((await postEasy(renewal)).status,200);
+  assert.equal(new Date((await db.getUserSubscriptionById(initial.id)).expiresAt).getTime(),new Date(latest.expiresAt).getTime());
+  assert.equal((await db.getDiscountCodeById(discount.id)).usedCount,1);
+  assert.equal((await runtime.queryRaw("SELECT stockUsed FROM subscription_plans WHERE id = 1"))[0].stockUsed,1);
+  assert.equal((await runtime.queryRaw("SELECT COUNT(*) AS n FROM user_subscriptions"))[0].n,1);
+  assert.equal((await runtime.queryRaw("SELECT trafficLimit FROM users WHERE id = 1"))[0].trafficLimit,1000000);
+  assert.equal(await balance(),0);
+  for (const quantity of [0,1.5,101]) await assert.rejects(admin.createOrder({amount:1,paymentType:"alipay",planId:1,quantity}));
+  await assert.rejects(admin.createOrder({amount:1,paymentType:"alipay",quantity:2}),/仅适用于套餐/);
+`));
+
 test("failed fulfillment retains confirmed payment and diagnostics until a safe retry completes", () => scenario(String.raw`
   await admin.updateConfig(config);
   await createLocal("ORPHAN-PLAN",{orderType:"plan",planId:null});

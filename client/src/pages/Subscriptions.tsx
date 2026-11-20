@@ -2,6 +2,7 @@ import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
@@ -104,6 +105,7 @@ export default function Subscriptions() {
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
   const [addonQuantity, setAddonQuantity] = useState("1");
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
+  const [renewQuantity, setRenewQuantity] = useState("1");
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
@@ -180,8 +182,8 @@ export default function Subscriptions() {
   });
 
   const previewDiscount = trpc.billing.previewDiscount.useMutation({
-    onSuccess: (data) => {
-      setDiscountPreview(data);
+    onSuccess: (data, variables) => {
+      setDiscountPreview({ ...data, quoteKey: discountQuoteKey(variables.planId, variables.amountCents, variables.code) });
       toast.success(translateText("折扣码已应用"));
     },
     onError: (error) => {
@@ -196,23 +198,26 @@ export default function Subscriptions() {
     setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
     setDiscountPreview(null);
+    setRenewQuantity("1");
     setRenewingSub(sub);
   };
 
   const confirmRenew = () => {
-    if (!renewingSub?.planId) return;
+    if (!renewingSub?.planId || !renewTotals) return;
     const planId = Number(renewingSub.planId);
     const code = billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined;
     if (payMode === "balance") {
       renewWithBalance.mutate({
         planId,
         subscriptionId: Number(renewingSub.id),
+        quantity: renewTotals.quantity,
         discountCode: code,
       });
       return;
     }
     createOrder.mutate({
-      amount: Number(renewingSub.priceCents || 0) / 100,
+      amount: Math.max(0.01, renewTotals.priceCents / 100),
+      quantity: renewTotals.quantity,
       paymentType,
       planId,
       subscriptionId: Number(renewingSub.id),
@@ -231,8 +236,10 @@ export default function Subscriptions() {
   const balanceReady = !walletLoading && balanceCents !== null;
   const balance = balanceCents ?? 0;
   const balanceEnough = balanceReady && !!addonTotals && balance >= addonTotals.priceCents;
-  const renewingPrice = Number(renewingSub?.priceCents || 0);
-  const renewFinalAmountCents = Number(discountPreview?.finalAmountCents ?? renewingPrice);
+  const renewTotals = planPurchaseQuote(renewingSub, renewQuantity);
+  const renewingPrice = renewTotals?.priceCents ?? 0;
+  const appliedDiscount = billingFeatures?.discountEnabled && discountPreview?.quoteKey === discountQuoteKey(Number(renewingSub?.planId), renewTotals?.priceCents, discountCode) ? discountPreview : null;
+  const renewFinalAmountCents = Number(appliedDiscount?.finalAmountCents ?? renewingPrice);
   const renewBalanceEnough = balanceReady && balance >= renewFinalAmountCents;
 
   return (
@@ -409,15 +416,17 @@ export default function Subscriptions() {
               <DialogDescription>{translateText("再次购买 ")}{renewingSub?.planName || translateText("当前套餐")}{translateText(" 会延长当前订阅有效期。")}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4">
+              <PlanPurchaseQuantity value={renewQuantity} onChange={(value) => { setRenewQuantity(value); setDiscountPreview(null); }}
+                durationDays={Number(renewingSub?.durationDays || 0)} valid={!!renewTotals} disabled={createOrder.isPending || renewWithBalance.isPending} />
               <div className="rounded-lg border bg-muted/20 p-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">{translateText("原价")}</span>
                   <span>{money(renewingPrice, renewingSub?.currency || "CNY")}</span>
                 </div>
-                {discountPreview && (
+                {appliedDiscount && (
                   <div className="mt-1 flex items-center justify-between text-emerald-600">
                     <span>{translateText("优惠")}</span>
-                    <span>-{money(discountPreview.discountAmountCents, renewingSub?.currency || "CNY")}</span>
+                    <span>-{money(appliedDiscount.discountAmountCents, renewingSub?.currency || "CNY")}</span>
                   </div>
                 )}
                 <div className="mt-2 flex items-center justify-between font-medium">
@@ -432,11 +441,11 @@ export default function Subscriptions() {
 
               {billingFeatures?.discountEnabled && (
                 <div className="flex gap-2">
-                  <Input value={discountCode} onChange={(e) => setDiscountCode(e.target.value.toUpperCase())} placeholder={translateText("折扣码（可选）")} />
+                  <Input value={discountCode} onChange={(e) => { setDiscountCode(e.target.value.toUpperCase()); setDiscountPreview(null); }} placeholder={translateText("折扣码（可选）")} />
                   <Button
                     variant="outline"
                     onClick={() => renewingSub && previewDiscount.mutate({ code: discountCode, amountCents: renewingPrice, planId: Number(renewingSub.planId) })}
-                    disabled={!discountCode.trim() || previewDiscount.isPending}
+                    disabled={!renewTotals || !discountCode.trim() || previewDiscount.isPending}
                   >
                     <TicketPercent className="mr-2 h-4 w-4" />{translateText(" 应用")}</Button>
                 </div>
@@ -488,7 +497,7 @@ export default function Subscriptions() {
               <Button
                 onClick={confirmRenew}
                 disabled={
-                  !renewingSub ||
+                  !renewingSub || !renewTotals || previewDiscount.isPending ||
                   createOrder.isPending ||
                   renewWithBalance.isPending ||
                   (payMode === "gateway" && paymentMethods.length === 0) ||

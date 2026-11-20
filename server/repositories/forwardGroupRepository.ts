@@ -86,6 +86,8 @@ import { sqlBool } from "./repositoryUtils";
 import { normalizeExitGroupStrategy } from "@shared/exitStrategy";
 import { MAX_FORWARD_GROUP_MEMBERS, forwardGroupRouteMembers } from "../../shared/forwardGroup";
 import { getLastAuthenticatedAgentActivity } from "../agentActivity";
+import { queryLatestHistoryRows } from "./latencyHistoryRepository";
+import { setBoundedMapValue } from "../boundedCache";
 import { assertNoDirectSelfForwardLoop } from "../directForwardLoop";
 import { hostTrafficExcluded } from "../../shared/hostTrafficPolicy";
 import { getTrafficExcludedHostIds } from "../hostTrafficPolicy";
@@ -134,6 +136,10 @@ type SyncForwardGroupRulesOptions = {
   createMissing?: boolean;
   preserveRuntime?: boolean;
   deferRefresh?: boolean;
+  // Scoped reconciliation is supported for failover templates. Topology edits
+  // still use a full group sync.
+  templateRuleId?: number;
+  preservePendingRuntime?: boolean;
 };
 
 // One sync only: never share host availability or port-policy snapshots across
@@ -141,6 +147,7 @@ type SyncForwardGroupRulesOptions = {
 type ForwardGroupSyncResources = {
   hosts: Map<number, Awaited<ReturnType<typeof getHostById>>>;
   tunnels: Map<number, any>;
+  childByMemberTemplate?: Map<string, any>;
 };
 
 async function loadForwardGroupSyncResources(members: any[]): Promise<ForwardGroupSyncResources> {
@@ -259,6 +266,10 @@ function childRuleRuntimeConfigEqual(existing: any, payload: any) {
 function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncForwardGroupRulesOptions, host?: any) {
   if (!options.preserveRuntime || dbBool(existing?.pendingDelete)
     || !childRuleRuntimeConfigEqual(existing, payload)) return false;
+  // Failover children already describe the desired configuration even before
+  // the first ACK. Agent reconciliation retries stopped listeners; rewriting
+  // the same config here races ACKs and starts a new dispatch on every sweep.
+  if (options.preservePendingRuntime) return true;
   // Disabled, stopped children are already converged. Enabled children on an
   // available host must still be re-dispatched if the Agent reports them stopped.
   if (!dbBool(payload.isEnabled)) return !dbBool(existing.isRunning);
@@ -382,6 +393,20 @@ function forwardGroupRecoverDelayMs(group: any) {
 }
 
 const forwardGroupRuleProbeFreshMs = FORWARD_GROUP_AGENT_HEALTH_FRESHNESS_TTL_MS;
+
+// Only an actual configuration dispatch starts a grace period, never a health
+// evaluation or an unchanged maintenance sync. This is deliberately bounded;
+// eviction/restart falls back to the usual health checks rather than hiding a
+// stopped rule indefinitely.
+const pendingRuleSync = new Map<number, number>();
+export async function markForwardGroupRulesSyncPending(ruleIds: number[]) {
+  await afterDatabaseCommit(() => {
+    const since = Math.floor(Date.now() / 1000) * 1000;
+    for (const id of ruleIds) {
+      setBoundedMapValue(pendingRuleSync, id, since, 20_000);
+    }
+  });
+}
 
 function freshForwardGroupRuleProbe(stat: any, now: Date) {
   const recordedAt = toDate(stat?.recordedAt);
@@ -2830,7 +2855,9 @@ async function preferredSharedTunnelListenPortForChild(tunnel: any, ruleId: numb
 }
 
 async function ensureMemberRuleForTemplate(group: any, templateRule: any, member: any, options: SyncForwardGroupRulesOptions = {}, resources?: ForwardGroupSyncResources) {
-  const existing = await existingChildRule(Number(templateRule.id), Number(member.id));
+  const existing = resources?.childByMemberTemplate
+    ? resources.childByMemberTemplate.get(`${Number(templateRule.id)}:${Number(member.id)}`)
+    : await existingChildRule(Number(templateRule.id), Number(member.id));
   const enabled = dbBool(group?.isEnabled) && dbBool(templateRule?.isEnabled) && dbBool(member?.isEnabled);
   if (!enabled) {
     if (existing && (dbBool(existing.isEnabled) || dbBool(existing.isRunning))) {
@@ -2843,7 +2870,10 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const hostId = await memberEntryHostId(member, resources);
   if (!hostId) throw new Error("Forward group member has no valid entry agent");
   await assertEntryPortAllowed(member, Number(templateRule.sourcePort), resources);
-  const used = await isPortUsedOnHostForGroupChild(
+  const sameListener = groupModeOf(group) === "failover" && existing && Number(existing.hostId) === hostId
+    && Number(existing.sourcePort) === Number(templateRule.sourcePort)
+    && String(existing.protocol) === String(templateRule.protocol);
+  const used = !sameListener && await isPortUsedOnHostForGroupChild(
     hostId,
     Number(templateRule.sourcePort),
     [Number(templateRule.id), Number(existing?.id || 0)].filter(Boolean),
@@ -3030,6 +3060,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
       return Number(existing.id);
     }
     await updateForwardRule(Number(existing.id), { ...payload, runtimeDiagnostic: null });
+    if (groupMode === "failover") await markForwardGroupRulesSyncPending([Number(existing.id)]);
     if (member.memberType === "tunnel") {
       const tunnel = await getTunnelById(Number(tunnelId || 0));
       tunnelExitPortReservation?.release();
@@ -3041,6 +3072,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   }
 
   const ruleId = await createForwardRule(payload);
+  if (groupMode === "failover") await markForwardGroupRulesSyncPending([ruleId]);
   if (member.memberType === "tunnel") {
     const tunnel = await getTunnelById(Number(tunnelId || 0));
     tunnelExitPortReservation?.release();
@@ -3310,6 +3342,9 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
   }
   const members = sortedMembers(group) as any[];
   const groupMode = groupModeOf(group);
+  if (groupMode === "failover" && options.preserveRuntime) {
+    options = { ...options, preservePendingRuntime: true };
+  }
   const preserveRuntime = !!options.preserveRuntime;
   const activeChainMembers = groupMode === "chain" ? members.filter((member: any) => dbBool(member?.isEnabled)) : members;
 
@@ -3320,7 +3355,12 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
     await repairPortForwardRuleHostReferences(groupId);
   }
 
-  const templates = await getForwardGroupTemplateRules(groupId);
+  const allTemplates = await getForwardGroupTemplateRules(groupId);
+  const scoped = groupMode === "failover" && Number(options.templateRuleId) > 0;
+  const templates = scoped
+    ? allTemplates.filter((rule: any) => Number(rule.id) === Number(options.templateRuleId))
+    : allTemplates;
+  if (scoped && templates.length === 0) return;
 
   if (isCollectionGroupMode(groupMode)) {
     const childRules = await getForwardGroupChildRules(groupId);
@@ -3338,12 +3378,15 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
   await syncTemplateHostReferences(group, templates as any[]);
 
   const runtimeDependenciesEnabled = await forwardGroupRuntimeDependenciesEnabled(group);
-  const hasEnabledTemplates = (templates as any[]).some((template) => dbBool(template?.isEnabled));
+  const hasEnabledTemplates = (allTemplates as any[]).some((template) => dbBool(template?.isEnabled));
   const activeChainEntryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
   // A disabled dependency still has configured members. Clean obsolete hosts
   // before returning, while retaining current listeners for later re-enabling.
   const topologyChainEntryMembers = groupMode === "chain" ? await chainEntryMembers(group, true) : [];
   const resources = await loadForwardGroupSyncResources([...members, ...topologyChainEntryMembers]);
+  const scopedChildren = groupMode === "failover"
+    ? scoped ? await getForwardGroupChildRulesForTemplate(Number(options.templateRuleId)) : await getForwardGroupChildRules(groupId)
+    : null;
   if (runtimeDependenciesEnabled && hasEnabledTemplates && groupMode === "chain" && activeChainEntryMembers.length > 0) {
     const chainHostIds = new Set(activeChainMembers.map((member: any) => Number(member.hostId || 0)));
     for (const entryMember of activeChainEntryMembers) {
@@ -3382,13 +3425,22 @@ async function syncForwardGroupRulesUnlocked(groupId: number, options: SyncForwa
     const expectedTunnels = new Map(members.map((member) => [
       Number(member.id), member.memberType === "tunnel" ? Number(member.tunnelId || 0) : 0,
     ]));
-    const childRules = await getForwardGroupChildRules(groupId);
+    const childRules = scopedChildren ?? await getForwardGroupChildRules(groupId);
     for (const child of childRules as any[]) {
       if (!liveMemberIds.has(Number(child.forwardGroupMemberId)) || !liveTemplateIds.has(Number(child.forwardGroupRuleId))
         || expectedHosts.get(Number(child.forwardGroupMemberId)) !== Number(child.hostId)
         || expectedTunnels.get(Number(child.forwardGroupMemberId)) !== Number(child.tunnelId || 0)) {
         await removeManagedRule(Number(child.id), options);
       }
+    }
+    if (scopedChildren) {
+      resources.childByMemberTemplate = new Map((scopedChildren as any[])
+        .filter((child) => !dbBool(child.pendingDelete)
+          && liveMemberIds.has(Number(child.forwardGroupMemberId))
+          && liveTemplateIds.has(Number(child.forwardGroupRuleId))
+          && expectedHosts.get(Number(child.forwardGroupMemberId)) === Number(child.hostId)
+          && expectedTunnels.get(Number(child.forwardGroupMemberId)) === Number(child.tunnelId || 0))
+        .map((child) => [`${Number(child.forwardGroupRuleId)}:${Number(child.forwardGroupMemberId)}`, child]));
     }
   }
 
@@ -3575,14 +3627,14 @@ async function syncForwardGroupRulesWithLockHeld(groupId: number, options: SyncF
 export async function withForwardGroupSyncTransaction<T>(
   groupId: number,
   work: () => Promise<T>,
-  options: SyncForwardGroupRulesOptions = {},
+  options: SyncForwardGroupRulesOptions | ((result: T) => SyncForwardGroupRulesOptions) = {},
 ): Promise<T> {
   if (isDatabaseTransactionActive()) {
     throw new Error("Forward group sync transaction must start before a database transaction");
   }
   return withKeyedTaskLock(`forward-group-sync:${groupId}`, () => withDatabaseTransaction(async () => {
     const result = await work();
-    await syncForwardGroupRulesWithLockHeld(groupId, options);
+    await syncForwardGroupRulesWithLockHeld(groupId, typeof options === "function" ? options(result) : options);
     return result;
   }));
 }
@@ -3633,7 +3685,7 @@ const portEntryRetryLogs = new Map<number, number>();
 export async function syncForwardGroupTemplateRule(templateRuleId: number) {
   const template = await getForwardRuleById(templateRuleId);
   if (!template || !(template as any).forwardGroupId) return;
-  await syncForwardGroupRules(Number((template as any).forwardGroupId));
+  await syncForwardGroupRules(Number((template as any).forwardGroupId), { preserveRuntime: true, templateRuleId });
 }
 
 export async function createForwardGroup(data: InsertForwardGroup, members: ForwardGroupMemberInput[]) {
@@ -3979,20 +4031,17 @@ export async function scheduleForwardGroupsForHostHealthChange(hostId: number) {
   return activeGroupIds.length;
 }
 
-async function latestTcping(ruleId: number) {
-  const table = quoteIdentifier("tcping_stats");
-  const result = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${quoteIdentifier("ruleId")} = ? ORDER BY ${quoteIdentifier("recordedAt")} DESC LIMIT 1`,
-    [ruleId],
-  );
-  return result[0];
-}
+type ForwardGroupRuleHealthSnapshot = {
+  children: any[];
+  enabledTemplateIds: Set<number>;
+  probes: Map<number, any>;
+};
 
-async function evaluateMemberHealth(member: any, group: any) {
+async function evaluateMemberHealth(member: any, group: any, snapshot: ForwardGroupRuleHealthSnapshot) {
   const db = await getDb();
   const now = nowDate();
   const agentLiveness = await resolveMemberAgentLiveness(member, now.getTime());
-  const childRules = await getForwardGroupChildRulesForMember(Number(member.id));
+  const childRules = snapshot.children.filter((rule) => Number(rule.forwardGroupMemberId) === Number(member.id) && !dbBool(rule.pendingDelete));
   let healthy = false;
   let chinaHealthPending = false;
   let latencyMs: number | null = null;
@@ -4002,6 +4051,7 @@ async function evaluateMemberHealth(member: any, group: any) {
   let agentFailureFinal = false;
   let allRuleHealthAgentFinal = false;
   let nextProbeExpiryAt: number | null = null;
+  let ruleFailure = false;
 
   if (agentLiveness.trafficExcluded) {
     message = "主机流量达到故障转移阈值，已暂停组调度";
@@ -4012,25 +4062,8 @@ async function evaluateMemberHealth(member: any, group: any) {
   } else if (childRules.length === 0) {
     message = "No forwarding rule is using this group yet";
   } else {
-    const templateRuleIds = Array.from(new Set((childRules as any[])
-      .map((rule: any) => Number(rule.forwardGroupRuleId || 0))
-      .filter((id: number) => Number.isInteger(id) && id > 0)));
-    const templateRows = templateRuleIds.length > 0
-      ? await db
-        .select({
-          id: forwardRules.id,
-          isEnabled: forwardRules.isEnabled,
-          pendingDelete: forwardRules.pendingDelete,
-        })
-        .from(forwardRules)
-        .where(inArray(forwardRules.id, templateRuleIds))
-      : [];
-    const enabledTemplateIds = new Set((templateRows as any[])
-      .filter((rule: any) => dbBool(rule.isEnabled) && !dbBool(rule.pendingDelete))
-      .map((rule: any) => Number(rule.id || 0))
-      .filter((id: number) => id > 0));
     const activeChildRules = (childRules as any[])
-      .filter((rule: any) => enabledTemplateIds.has(Number(rule.forwardGroupRuleId || 0)));
+      .filter((rule: any) => snapshot.enabledTemplateIds.has(Number(rule.forwardGroupRuleId || 0)));
 
     if (activeChildRules.length === 0) {
       message = "No enabled forwarding rule is using this group member";
@@ -4044,21 +4077,45 @@ async function evaluateMemberHealth(member: any, group: any) {
       for (const rule of activeChildRules as any[]) {
         if (!dbBool(rule.isEnabled) || dbBool(rule.pendingDelete)) {
           healthy = false;
+          ruleFailure = true;
           message = "Member rule disabled";
           break;
         }
+        const latestStat = snapshot.probes.get(Number(rule.id));
+        const syncSince = pendingRuleSync.get(Number(rule.id));
+        if (syncSince !== undefined) {
+          const probeIsNew = (toDate(latestStat?.recordedAt)?.getTime() ?? 0) >= syncSince;
+          const reportedFailure = !!rule.runtimeDiagnostic
+            || (probeIsNew && String(latestStat?.healthStatus) === "unhealthy");
+          if ((!dbBool(rule.isRunning) || !probeIsNew) && !reportedFailure) {
+            healthy = false;
+            allRuleHealthAgentFinal = false;
+            const expiresAt = syncSince + forwardGroupRuleProbeFreshMs;
+            if (now.getTime() < expiresAt) {
+              agentHealthPending = true;
+              nextProbeExpiryAt = nextProbeExpiryAt === null ? expiresAt : Math.min(nextProbeExpiryAt, expiresAt);
+              message = "Waiting for Agent rule sync and health result";
+              continue;
+            }
+            ruleFailure = true;
+            observedFailureSince = new Date(expiresAt);
+            message = "Agent rule sync confirmation expired";
+            break;
+          }
+          pendingRuleSync.delete(Number(rule.id));
+        }
         if (!dbBool(rule.isRunning)) {
           healthy = false;
+          ruleFailure = true;
           message = "Member rule not running yet";
           break;
         }
-        const latestStat = await latestTcping(Number(rule.id));
         if (!agentHealthSampleIsCurrent(agentLiveness, latestStat?.recordedAt)) {
           healthy = false;
           allRuleHealthAgentFinal = false;
           agentHealthPending = true;
           message = "Waiting for Agent health result after reconnect";
-          break;
+          continue;
         }
         const stat = freshForwardGroupRuleProbe(latestStat, now);
         if (!stat) {
@@ -4067,6 +4124,7 @@ async function evaluateMemberHealth(member: any, group: any) {
           const recordedAt = toDate(latestStat?.recordedAt);
           if (recordedAt) {
             agentFailureFinal = true;
+            ruleFailure = true;
             observedFailureSince = new Date(recordedAt.getTime() + forwardGroupRuleProbeFreshMs);
             message = "Agent health result expired";
           } else {
@@ -4074,15 +4132,17 @@ async function evaluateMemberHealth(member: any, group: any) {
             const expiresAt = waitingSince.getTime() + forwardGroupRuleProbeFreshMs;
             if (now.getTime() >= expiresAt) {
               agentFailureFinal = true;
+              ruleFailure = true;
               observedFailureSince = new Date(expiresAt);
               message = "Agent health result missing for 5 minutes";
             } else {
               agentHealthPending = true;
-              nextProbeExpiryAt = expiresAt;
+              nextProbeExpiryAt = nextProbeExpiryAt === null ? expiresAt : Math.min(nextProbeExpiryAt, expiresAt);
               message = "Waiting for Agent health result";
             }
           }
-          break;
+          if (ruleFailure) break;
+          continue;
         }
         const recordedAt = toDate(stat.recordedAt);
         if (recordedAt) {
@@ -4095,17 +4155,19 @@ async function evaluateMemberHealth(member: any, group: any) {
           allRuleHealthAgentFinal = false;
           agentHealthPending = true;
           message = "Waiting for Agent health decision";
-          break;
+          continue;
         }
         if (agentHealthStatus === "unhealthy") {
           healthy = false;
           agentFailureFinal = true;
+          ruleFailure = true;
           message = "Agent health check failed";
           break;
         }
         if (agentHealthStatus !== "healthy") allRuleHealthAgentFinal = false;
         if (agentHealthStatus !== "healthy" && dbBool(stat.isTimeout)) {
           healthy = false;
+          ruleFailure = true;
           message = "Latency probe timeout";
           break;
         }
@@ -4140,7 +4202,7 @@ async function evaluateMemberHealth(member: any, group: any) {
     }
   }
 
-  const healthPending = agentHealthPending || chinaHealthPending;
+  const healthPending = !ruleFailure && (agentHealthPending || chinaHealthPending);
   const prevFailure = toDate(member.failureSince);
   const prevHealthy = toDate(member.healthySince);
   let failureSince = healthy || healthPending ? null : (prevFailure || observedFailureSince || now);
@@ -4870,8 +4932,20 @@ async function runForwardGroupFailoverForGroups(
     }
 
     if (!options.skipRuleSync) await syncForwardGroupRules(Number(group.id), { preserveRuntime: true });
-    const evaluated = [];
-    for (const member of members) evaluated.push(await evaluateMemberHealth(member, group));
+    // Do not evaluate a half-published template or consume its pending marker
+    // using a snapshot taken before the edit. Release before any DDNS I/O.
+    const evaluated = await withKeyedTaskLock(`forward-group-sync:${Number(group.id)}`, async () => {
+      const currentTemplates = await getForwardGroupTemplateRules(Number(group.id));
+      const children = (await getForwardGroupChildRules(Number(group.id)) as any[])
+        .filter((rule) => !dbBool(rule.pendingDelete));
+      const enabledTemplateIds = new Set((currentTemplates as any[]).filter((rule) => dbBool(rule.isEnabled)).map((rule) => Number(rule.id)));
+      const probeRuleIds = children.filter((rule) => enabledTemplateIds.has(Number(rule.forwardGroupRuleId))).map((rule) => Number(rule.id));
+      const probes = new Map((await queryLatestHistoryRows("tcping_stats", "ruleId", probeRuleIds, { orderByTime: true }))
+        .map((row) => [Number(row.ruleId), row]));
+      const results = [];
+      for (const member of members) results.push(await evaluateMemberHealth(member, group, { children, enabledTemplateIds, probes }));
+      return results;
+    });
 
     const healthWindowRecheckAt = nextForwardGroupHealthRecheckAt({
       members: evaluated,
@@ -4914,7 +4988,14 @@ async function runForwardGroupFailoverForGroups(
       });
     const firstHealthy = healthyMembers[0];
     const anyPending = evaluated.some((member) => member.healthPending);
-    if ((active?.healthPending && String(group.lastDdnsValue || "").trim()) || (!active && !firstHealthy && anyPending)) {
+    const publishedAddress = String(group.lastDdnsValue || "").trim();
+    if ((active?.healthPending && publishedAddress) || (!active && !firstHealthy && anyPending)) {
+      // A pending probe can delay selection, but an address retired by a
+      // topology or IP change must be reconciled immediately.
+      if (publishedAddress && await forwardGroupDdnsFallbackValue(group, recordType) !== publishedAddress) {
+        await preserveForwardGroupDdns(group, ddnsSettings, { ...options, forceSync: true }, "等待成员健康确认，旧解析地址已失效");
+        continue;
+      }
       await updateForwardGroupRuntimeIfChanged(db, group, {
         lastStatus: "unknown",
         lastMessage: "等待国内健康度检测结果；暂不变更现有 DDNS 解析",
