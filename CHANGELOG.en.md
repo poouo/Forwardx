@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [2.3.304] - 2026-11-23
+
+- MCP `subscriptions.list` now returns active purchased traffic, administrator-granted traffic and their combined total in bytes. Query by user ID to get totals across all matching subscriptions, excluding expired add-ons and subscriptions.
+- Monthly plans can offer quarterly, semiannual, annual and biennial billing at a fixed price or a percentage of the monthly base price for the period. Customers can select a cycle and quantity when buying or renewing a plan with multiple cycles, with support for wallet and online payments. Single-cycle plans allow one period per order.
+- Administrators can record each host's renewal cost and currency per billing cycle and view them on host cards and in the host list.
+- Direct GOST tunnel rules now follow changes to the primary entry host and keep their original ports. Port conflicts block the change. The deletion check can also repair stale rule references to the former entry host.
+- Agent installation and upgrades use a dedicated ForwardX Nginx. The installer skips system package installation when it detects an existing Nginx or OpenResty instance to avoid updating or reloading the existing service.
+- Switch between active and expired subscriptions under My Subscriptions and in the administrator's user details. The close button stays visible while scrolling long dialogs, and the sidebar account area shows notification account binding status.
+- Versions are panel `2.3.304`, Android / iOS `2.4.21`, Agent `2.2.215`, and ForwardX FXP runtime `2.2.123`.
+
 ## [2.3.303] - 2026-11-20
 
 - Buy multiple periods when purchasing or renewing a plan. Repurchasing the same plan extends the existing subscription, and traffic add-ons can be bought in multiples. Refined subscription cards, plan description previews, and the admin view of user traffic.

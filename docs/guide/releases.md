@@ -4,12 +4,12 @@
 
 | 组件 | 版本 |
 | --- | --- |
-| 面板 | 2.3.303 |
-| Android / iOS | 2.4.20 |
+| 面板 | 2.3.304 |
+| Android / iOS | 2.4.21 |
 | Agent | 2.2.215 |
 | FXP 运行时 | 2.2.123 |
 
-`2.3.303` 于 2026-11-20 启动发布，支持套餐多期购买和 GOST 隧道复用出口端口，修复故障转移组误切换、主机实时速率延迟和 Agent 升级后 Guard 限速恢复问题。完整记录见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+`2.3.304` 于 2026-11-23 启动发布，新增 MCP 有效加购流量汇总、套餐多周期定价和主机续费金额，修复 GOST 隧道更换入口后规则仍引用旧主机的问题。完整记录见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 表中是仓库源码里的版本号。各平台安装包由 GitHub Actions 分别构建，完成时间有先后，升级前请确认 [GitHub Releases](https://github.com/poouo/Forwardx/releases) 里已经有对应附件。Android 和 iOS 共用一个 App 版本号，与面板、Agent、FXP 的版本号各自独立；iOS 包需要 [自行签名](./mobile-app.md)。
 

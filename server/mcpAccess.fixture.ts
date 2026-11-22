@@ -72,6 +72,38 @@ try {
     const tools = await call(created.token, "tools/list");
     assert.equal(tools.status, 200);
     assert.ok((await tools.json()).result.tools.some((tool: any) => tool.name === "traffic.rank"));
+
+    const now = Math.floor(Date.now() / 1000);
+    const planId = await runtime.insertAndGetId("subscription_plans", { name: "Test plan", trafficLimit: 1000 });
+    const latestSubscription = await runtime.insertAndGetId("user_subscriptions", { userId: 2, planId, createdAt: now });
+    const olderSubscription = await runtime.insertAndGetId("user_subscriptions", { userId: 2, planId, createdAt: now - 1 });
+    const expiredSubscription = await runtime.insertAndGetId("user_subscriptions", { userId: 2, planId, createdAt: now - 2, expiresAt: now - 1 });
+    const anotherUserSubscription = await runtime.insertAndGetId("user_subscriptions", { userId: 3, planId });
+    for (const addon of [
+      { subscriptionId: latestSubscription, trafficBytes: 100, source: "user" },
+      { subscriptionId: latestSubscription, trafficBytes: 50, source: "admin" },
+      { subscriptionId: olderSubscription, trafficBytes: 200, source: "user" },
+      { subscriptionId: olderSubscription, trafficBytes: 400, source: "user", expiresAt: now - 1 },
+      { subscriptionId: expiredSubscription, trafficBytes: 800, source: "user" },
+      { subscriptionId: anotherUserSubscription, userId: 3, trafficBytes: 1600, source: "user" },
+    ]) {
+      await runtime.insertAndGetId("user_traffic_addons", { userId: 2, planId, ...addon });
+    }
+    const subscriptions = await call(created.token, "tools/call", { name: "subscriptions.list", arguments: { userId: 2, limit: 1 } });
+    const subscriptionReply = (await subscriptions.json()).result;
+    assert.ok(!subscriptionReply.isError, JSON.stringify(subscriptionReply));
+    const result = JSON.parse(subscriptionReply.content[0].text);
+    assert.equal(result.total, 3);
+    assert.equal(result.items.length, 1);
+    assert.equal(result.activeTrafficAddonBytes, 350);
+    assert.equal(result.purchasedTrafficAddonBytes, 300);
+    assert.equal(result.grantedTrafficAddonBytes, 50);
+    assert.equal(result.items[0].id, latestSubscription);
+    assert.equal(result.items[0].trafficLimit, 1000);
+    assert.equal(result.items[0].activeTrafficAddonBytes, 150);
+    assert.equal(result.items[0].purchasedTrafficAddonBytes, 100);
+    assert.equal(result.items[0].grantedTrafficAddonBytes, 50);
+
     assert.equal((await call(row.prefix, "ping")).status, 401);
     await runtime.executeRaw("UPDATE users SET role = 'user' WHERE id = 1");
     assert.equal((await call(created.token, "ping")).status, 403);

@@ -122,7 +122,7 @@ export const PANEL_TOOLS = {
   "expiry.list": { label: "到期查询", mode: "read", schema: filters.extend({ resource: z.enum(["rules", "users", "hosts", "subscriptions"]), scope: z.enum(["self", "visible"]).optional(), days: z.number().int().min(1).max(3650).optional(), includeExpired: z.boolean().optional() }).strict() },
   "dashboard.read": { label: "仪表盘概览", mode: "read", schema: empty, route: "dashboard.stats" },
   "plans.list": { label: "套餐查询", mode: "read", schema: filters },
-  "subscriptions.list": { label: "订阅查询", mode: "read", schema: filters.extend({ userId: id.optional(), scope: z.enum(["self", "visible"]).optional() }).strict() },
+  "subscriptions.list": { label: "订阅查询（套餐基础流量、有效加购和赠送额度）", mode: "read", schema: filters.extend({ userId: id.optional(), scope: z.enum(["self", "visible"]).optional() }).strict() },
   "billing.summary": { label: "账单概览", mode: "read", admin: true, schema: empty, route: "billing.summary" },
   "traffic_billing.list": { label: "按量计费配置", mode: "read", admin: true, schema: empty, route: "trafficBilling.configs" },
   "announcements.list": { label: "公告查询", mode: "read", schema: filters, route: "announcements.list" },
@@ -373,6 +373,7 @@ export function projectPanelResult(value: any, depth = 0): any {
 for (const field of ["rateLimitMbps", "trafficMode", "quotaUsedIn", "quotaUsedOut", "ruleLimitReason", "expirySource", "ruleExpiresAt", "accountExpiresAt"]) SAFE_FIELDS.add(field);
 for (const field of ["disabled", "admins", "users", "expired", "sampledAt", "offset", "hasMore", "displayRemark", "entity", "from", "to", "timezone", "direction", "order", "coverageSince", "note", "totalBytes"]) SAFE_FIELDS.add(field);
 for (const field of ["resourceName", "checks"]) SAFE_FIELDS.add(field);
+for (const field of ["activeTrafficAddonBytes", "purchasedTrafficAddonBytes", "grantedTrafficAddonBytes"]) SAFE_FIELDS.add(field);
 for (const field of ["active", "events", "resources", "security", "hostName", "metric", "phase", "since", "lastSeen", "peak", "value", "cpu", "memory", "disk", "stale", "page"]) SAFE_FIELDS.add(field);
 SAFE_FIELDS.add("adminManaged");
 function display(v: unknown): string { return v === true ? "开启" : v === false ? "关闭" : v == null ? "不限/未设置" : typeof v === "object" ? JSON.stringify(v) : String(v); }
@@ -380,6 +381,9 @@ const FIELD_LABELS: Record<string, string> = {
   disabled: "停用账户", admins: "管理员数", users: "普通用户数", expired: "已到期账户", sampledAt: "查询时间", offset: "分页偏移", hasMore: "还有更多", displayRemark: "用户备注", entity: "排行对象", from: "开始日期", to: "结束日期", timezone: "时区", direction: "统计方向", order: "排序", coverageSince: "现存历史起始时间", note: "统计口径", totalBytes: "双向合计(字节)",
   adminManaged: "管理员自定义（用户只读）",
   trafficMode: "流量计量方式", quotaUsedIn: "额度累计入向(字节)", quotaUsedOut: "额度累计出向(字节)",
+  activeTrafficAddonBytes: "有效附加流量合计(字节)",
+  purchasedTrafficAddonBytes: "有效加购流量(字节)",
+  grantedTrafficAddonBytes: "有效赠送流量(字节)",
   ruleLimitReason: "规则暂停原因", expirySource: "生效到期来源", ruleExpiresAt: "规则到期时间", accountExpiresAt: "账户到期时间",
   label: "查询内容", id: "ID", name: "名称", title: "标题", username: "用户名", value: "当前值", userId: "用户ID", hostId: "主机ID", tunnelId: "隧道ID", groupId: "转发组ID", forwardGroupId: "转发链/组ID", planId: "套餐ID", planName: "套餐", resourceId: "资源ID", resourceType: "资源类型", resourceIds: "资源ID列表", resource: "资源类型", operation: "操作", total: "匹配总数", count: "数量", items: "查询结果", result: "执行结果", configs: "计费配置", list: "列表", success: "成功", enabled: "启用", isEnabled: "启用", isActive: "有效", isStoreVisible: "商店展示", isOnline: "在线", status: "状态", type: "类型", message: "说明", createdAt: "创建时间", updatedAt: "更新时间", recordedAt: "采样时间", expiresAt: "到期时间", stoppedAt: "主机到期时间", bytesIn: "入向流量(字节)", bytesOut: "出向流量(字节)", trafficLimit: "流量额度(字节,0=不限)", trafficUsed: "已用流量(字节)", totalIn: "总入向(字节)", totalOut: "总出向(字节)", totalTrafficIn: "总入向(字节)", totalTrafficOut: "总出向(字节)", cpuUsage: "CPU使用率", memoryUsage: "内存使用率", diskUsage: "磁盘使用率", memoryUsed: "内存已用(字节)", memoryTotal: "内存总量(字节)", diskUsed: "磁盘已用(字节)", diskTotal: "磁盘总量(字节)", connections: "连接数", balanceCents: "余额(分)", priceCents: "价格(分)", pricePerGbMilliCents: "每GB价格(千分之一分)", durationDays: "期限(天)", maxRules: "规则上限", maxPorts: "端口上限", maxConnections: "连接上限", maxIPs: "IP上限", sourcePort: "入口端口", targetIp: "目标地址", targetPort: "目标端口", forwardType: "转发工具", protocol: "协议", listenPort: "隧道监听端口", portRangeStart: "起始端口", portRangeEnd: "结束端口", proxyProtocolSend: "发送PROXY", proxyProtocolReceive: "接收PROXY", proxyProtocolExitSend: "出口发送PROXY", proxyProtocolExitReceive: "出口接收PROXY", proxyProtocolVersion: "PROXY版本", tcpFastOpen: "TCP Fast Open", zeroCopy: "零拷贝", udpOverTcp: "UDP Over TCP", telegramErrorNotifyEnabled: "规则异常通知", blockHttp: "阻止HTTP", blockSocks: "阻止SOCKS", blockTls: "阻止TLS", rateLimitMbps: "限速(Mbps)", trafficMultiplier: "流量倍率(100=1倍)", members: "成员列表", hostIds: "主机授权", tunnelIds: "隧道授权", forwardGroupIds: "转发组授权", renewalReminderDays: "续费提前提醒(天)", telegramRenewalReminderEnabled: "续费提醒", trafficFailoverEnabled: "达量剔除", trafficFailoverThresholdPercent: "达量剔除阈值(%)", trafficAutoReset: "流量自动重置", trafficResetDay: "重置日", syncExistingSubscribers: "同步已有订阅", userCount: "用户数", activeRedemptionCodes: "有效兑换码", activeDiscountCodes: "有效折扣码", totalBalanceCents: "总余额(分)", totalHosts: "主机总数", onlineHosts: "在线主机", totalRules: "规则总数", runningRules: "运行规则", totalTunnels: "隧道总数", totalUsers: "用户总数", totalPlans: "套餐总数", remark: "备注", description: "说明", role: "角色", accountEnabled: "账号启用", currency: "币种",
 };
@@ -413,7 +417,23 @@ export async function queryPanelCall(actorId: number, tool: unknown, input: unkn
     result = await callRoute(caller, user.role === "admin" ? "plans.list" : "plans.storeList", undefined);
   } else if (call.tool === "subscriptions.list") {
     if (user.role !== "admin" && call.input.userId && call.input.userId !== user.id) throw new Error("无权查看其他用户的订阅");
-    result = await db.listUserSubscriptions(user.role === "admin" && call.input.scope !== "self" ? call.input.userId as number | undefined : user.id, { visibility: user.role === "admin" ? "admin" : "user" });
+    const subscriptions = await db.listUserSubscriptions(
+      user.role === "admin" && call.input.scope !== "self" ? call.input.userId as number | undefined : user.id,
+      { visibility: user.role === "admin" ? "admin" : "user" },
+    );
+    const matching = subscriptions.filter(matches);
+    const addonTotals = { activeTrafficAddonBytes: 0, purchasedTrafficAddonBytes: 0, grantedTrafficAddonBytes: 0 };
+    for (const subscription of matching) {
+      addonTotals.activeTrafficAddonBytes += subscription.activeTrafficAddonBytes;
+      addonTotals.purchasedTrafficAddonBytes += subscription.purchasedTrafficAddonBytes;
+      addonTotals.grantedTrafficAddonBytes += subscription.grantedTrafficAddonBytes;
+    }
+    return {
+      label: def.label,
+      total: matching.length,
+      ...addonTotals,
+      items: projectPanelResult(matching.slice(0, Number(call.input.limit ?? 15))),
+    };
   } else if (call.tool === "users.permissions") {
     result = { userId: call.input.userId, hostIds: await db.getUserAllowedHostIds(Number(call.input.userId)), tunnelIds: await db.getUserAllowedTunnelIds(Number(call.input.userId)), forwardGroupIds: await db.getUserManualAllowedForwardGroupIds(Number(call.input.userId)) };
   } else if (call.tool === "expiry.list") {
