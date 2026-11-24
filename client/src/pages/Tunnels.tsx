@@ -70,6 +70,7 @@ import { hasQuerySnapshotAfter } from "@/lib/manualTestCache";
 import { getTunnelCardRouteSummary, getTunnelExitNames, getTunnelHopIds, getTunnelRouteText, tunnelHopHostName, tunnelTestIndicatesTimeout } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { MAX_FORWARD_GROUP_MEMBERS } from "@shared/forwardGroup";
+import { isReverseTunnel, supportsReverseTunnel } from "@shared/tunnelDirection";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -155,6 +156,9 @@ type TunnelForm = {
   mode: TunnelProtocol;
   relayMode: TunnelRelayMode;
   forwardxVersion: "v1" | "v2" | "v3";
+  connectionDirection: "forward" | "reverse";
+  reverseConnectHost: string;
+  reverseListenPort: number;
   v3Transport: "http" | "ws" | "tls";
   v3Host: string;
   v3Path: string;
@@ -319,6 +323,9 @@ const defaultForm: TunnelForm = {
   mode: "forwardx",
   relayMode: "chain",
   forwardxVersion: "v1",
+  connectionDirection: "forward",
+  reverseConnectHost: "",
+  reverseListenPort: 0,
   v3Transport: "ws",
   v3Host: "",
   v3Path: "",
@@ -2658,6 +2665,21 @@ function TunnelsContent() {
     if (state?.status === "unavailable") return <span title={state.message} className="h-2.5 w-2.5 rounded-full bg-destructive/70 shadow-sm shadow-destructive/40" />;
     return <span title={state?.message || translateText("隧道已停用")} className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
+  const renderReverseTunnelStatus = (tunnel: any, supported: boolean) => {
+    if (!isReverseTunnel(tunnel)) return null;
+    const status = tunnel.reverseConnectionStatus;
+    const statusLabel = status === "connected" ? "已连接" : status === "reconnecting" ? "重连中" : "等待出口连接";
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        <Badge variant="outline" className="h-5 px-1.5 text-[11px]">{translateText("反向")}</Badge>
+        {supported && tunnel.isEnabled && (
+          <span className={cn("text-xs", status === "connected" ? "text-chart-2" : "text-muted-foreground")}>
+            {translateText(statusLabel)}
+          </span>
+        )}
+      </div>
+    );
+  };
   const renderTunnelRoute = (tunnel: any) => {
     const hopIds = getTunnelHopIds(tunnel);
     const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
@@ -2762,6 +2784,9 @@ function TunnelsContent() {
       mode,
       relayMode: tunnelRelayFailoverSupported(mode) ? normalizeTunnelRelayMode(tunnel.relayMode) : "chain",
       forwardxVersion: normalizeForwardXVersion(tunnel.forwardxVersion),
+      connectionDirection: isReverseTunnel(tunnel) ? "reverse" : "forward",
+      reverseConnectHost: String(tunnel.reverseConnectHost || ""),
+      reverseListenPort: Number(tunnel.reverseListenPort || 0),
       v3Transport: normalizeForwardXV3TransportForForm(tunnel.v3Transport),
       v3Host: String(tunnel.v3Host || ""),
       v3Path: String(tunnel.v3Path || ""),
@@ -2771,7 +2796,7 @@ function TunnelsContent() {
       certDomain: String(tunnel.certDomain || ""),
       certPem: String(tunnel.certPem || ""),
       certKeyPem: String(tunnel.certKeyPem || ""),
-      listenPort: tunnel.listenPort,
+      listenPort: isReverseTunnel(tunnel) ? 0 : tunnel.listenPort,
       mimicPort: Number(tunnel.mimicPort || 0),
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
@@ -2992,6 +3017,7 @@ function TunnelsContent() {
     }
     const orderedHopHostIds = [...actualRoute.hopHostIds];
     const orderedHopConnectHosts = [...actualRoute.hopConnectHosts];
+    const reverse = isReverseTunnel(submitForm);
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
@@ -3002,7 +3028,16 @@ function TunnelsContent() {
       toast.error(translateText("主机链路中的主机不能重复"));
       return;
     }
-    if (!isValidPort(submitForm.listenPort, true)) {
+    if (reverse && (submitForm.entryGroupId || submitForm.exitGroupId || orderedHopHostIds.length !== 2 || submitForm.loadBalanceEnabled)) {
+      toast.error(translateText("反向隧道仅支持单入口和单出口"));
+      return;
+    }
+    if (reverse && (!isValidPort(submitForm.reverseListenPort, true)
+      || (submitForm.reverseConnectHost.trim() && !isValidConnectHost(submitForm.reverseConnectHost.trim())))) {
+      toast.error(translateText("请检查入口连接地址和隧道端口"));
+      return;
+    }
+    if (!reverse && !isValidPort(submitForm.listenPort, true)) {
       toast.error(translateText("出口监听端口必须为 0 或 1-65535，0 表示自动分配"));
       return;
     }
@@ -3151,21 +3186,25 @@ function TunnelsContent() {
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
-      listenPort: submitForm.listenPort,
-      mimicPort: transportTuningSupported && (submitForm.udpOverTcp || submitForm.forwardxVersion === "v2") ? submitForm.mimicPort : 0,
+      connectionDirection: submitForm.connectionDirection,
+      ...(reverse ? {
+        reverseConnectHost: submitForm.reverseConnectHost.trim() || null,
+        reverseListenPort: submitForm.reverseListenPort,
+      } : { listenPort: submitForm.listenPort }),
+      mimicPort: !reverse && transportTuningSupported && (submitForm.udpOverTcp || submitForm.forwardxVersion === "v2") ? submitForm.mimicPort : 0,
       rateLimitMbps,
       trafficMultiplier,
-      networkType: isMultiHopTunnel
+      networkType: reverse ? "public" : isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
-      connectHost: isMultiHopTunnel ? null : (regularPrivateConnectHost || regularIpv6ConnectHost),
+      connectHost: reverse || isMultiHopTunnel ? null : (regularPrivateConnectHost || regularIpv6ConnectHost),
       proxyProtocolReceive: proxySupported && submitForm.proxyProtocolReceive,
       proxyProtocolSend: proxySupported && submitForm.proxyProtocolSend,
       proxyProtocolExitReceive: proxySupported && submitForm.proxyProtocolExitReceive,
       proxyProtocolExitSend: proxySupported && submitForm.proxyProtocolExitSend,
       proxyProtocolVersion: proxyAnyEnabled ? submitForm.proxyProtocolVersion : 1,
       tcpFastOpen: transportTuningSupported && submitForm.tcpFastOpen,
-      udpOverTcp: transportTuningSupported && submitForm.udpOverTcp,
+      udpOverTcp: !reverse && transportTuningSupported && submitForm.udpOverTcp,
       entryGroupId: submitForm.entryGroupId || null,
       exitGroupId: submitForm.exitGroupId || null,
       entryHostId,
@@ -3183,7 +3222,7 @@ function TunnelsContent() {
           connectHost: exit.connectHost || null,
         }))
         : [],
-      listenPortExplicit: editingId ? listenPortExplicit : true,
+      listenPortExplicit: !reverse && (editingId ? listenPortExplicit : true),
     };
     if (editingId) updateMutation.mutate({ id: editingId, ...payload });
     else createMutation.mutate(payload);
@@ -3271,6 +3310,7 @@ function TunnelsContent() {
     setForm((prev) => ({
       ...prev,
       mode: nextMode,
+      connectionDirection: supportsReverseTunnel(nextMode, prev.forwardxVersion) ? prev.connectionDirection : "forward",
       relayMode: tunnelRelayFailoverSupported(nextMode) ? prev.relayMode : "chain",
       proxyProtocolReceive: proxySupported ? prev.proxyProtocolReceive : false,
       proxyProtocolSend: proxySupported ? prev.proxyProtocolSend : false,
@@ -3473,6 +3513,59 @@ function TunnelsContent() {
       </div>
     );
   };
+  const renderTunnelDirection = () => {
+    if (user?.role !== "admin" || !supportsReverseTunnel(form.mode, form.forwardxVersion)) return null;
+    const incompatibleTopology = !!(form.entryGroupId || form.exitGroupId || form.hopHostIds.length > 2 || form.loadBalanceEnabled);
+    const entry = hosts?.find((host: any) => Number(host.id) === Number(form.entryHostId));
+    return (
+      <div className="space-y-2">
+        <Label>{translateText("连接方向")}</Label>
+        <Select value={form.connectionDirection} onValueChange={(value: "forward" | "reverse") => {
+          setForm((prev) => ({
+            ...prev,
+            connectionDirection: value,
+            udpOverTcp: value === "reverse" ? false : prev.udpOverTcp,
+          }));
+        }}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="forward">{translateText("正向 · 入口主动连接出口")}</SelectItem>
+            <SelectItem value="reverse" disabled={incompatibleTopology}>{translateText("反向 · 出口主动连接入口")}</SelectItem>
+          </SelectContent>
+        </Select>
+        {incompatibleTopology && <p className="text-xs text-muted-foreground">{translateText("反向隧道仅支持单入口和单出口")}</p>}
+        {isReverseTunnel(form) && (
+          <>
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
+              <label className="space-y-2">
+                <Label asChild><span>{translateText("入口连接地址")}</span></Label>
+                <Input
+                  value={form.reverseConnectHost}
+                  onChange={(event) => setForm((prev) => ({ ...prev, reverseConnectHost: event.target.value }))}
+                  placeholder={String(entry?.entryIp || entry?.ipv4 || entry?.ipv6 || entry?.ip || translateText("默认连接地址"))}
+                />
+              </label>
+              <label className="space-y-2">
+                <Label asChild><span>{translateText("入口隧道端口")}</span></Label>
+                <Input
+                  type="number" min={0} max={65535} step={1}
+                  value={form.reverseListenPort || ""}
+                  onChange={(event) => setForm((prev) => ({ ...prev, reverseListenPort: Number(event.target.value) || 0 }))}
+                  placeholder={translateText("自动分配")}
+                />
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground">{translateText("出口 Agent 会主动连接入口。用户仍访问入口的业务端口")}</p>
+            <p className="text-xs text-muted-foreground">
+              {form.mode === "tls"
+                ? translateText("在入口放行隧道 TCP 端口")
+                : translateText("在入口放行隧道 UDP 端口")}
+            </p>
+          </>
+        )}
+      </div>
+    );
+  };
   const renderForwardXVersionOptions = () => {
     if (form.mode !== "forwardx") return null;
     return (
@@ -3491,6 +3584,7 @@ function TunnelsContent() {
               onClick={() => setForm((prev) => ({
                 ...prev,
                 forwardxVersion: "v1",
+                connectionDirection: "forward",
                 mimicPort: prev.udpOverTcp ? prev.mimicPort : 0,
               }))}
             >
@@ -3530,6 +3624,7 @@ function TunnelsContent() {
               onClick={() => setForm((prev) => ({
                 ...prev,
                 forwardxVersion: "v3",
+                connectionDirection: "forward",
               }))}
             >
               <Globe className={segmentedIconClassName(form.forwardxVersion === "v3", "mt-0.5")} />
@@ -3540,7 +3635,8 @@ function TunnelsContent() {
             </button>
           </div>
         </div>
-        {form.forwardxVersion === "v2" && (
+        {renderTunnelDirection()}
+        {form.forwardxVersion === "v2" && !isReverseTunnel(form) && (
           <div className="space-y-2">
             <Label>{translateText("WireGuard UDP 端口")}</Label>
             <Input
@@ -3734,7 +3830,7 @@ function TunnelsContent() {
             form.tcpFastOpen,
             (tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen })),
           )}
-          {renderTransportSwitch(
+          {!isReverseTunnel(form) && renderTransportSwitch(
             translateText("mimic UDP 混淆"),
             translateText("ForwardX UDP 外观混淆"),
             form.udpOverTcp,
@@ -4107,6 +4203,7 @@ function TunnelsContent() {
                         </div>
                         <div className="min-w-0">
                           <p className="truncate font-medium">{tunnel.name}</p>
+                          {renderReverseTunnelStatus(tunnel, supported)}
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
                               {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</p>
@@ -4137,7 +4234,9 @@ function TunnelsContent() {
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
-                          <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                          {(!isReverseTunnel(tunnel) || tunnel.mode !== "tls") && (
+                            <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                          )}
                           <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
@@ -4196,6 +4295,7 @@ function TunnelsContent() {
                         </div>
                         <div className="min-w-0">
                           <p className="truncate font-medium">{tunnel.name}</p>
+                          {renderReverseTunnelStatus(tunnel, supported)}
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
                               {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</p>
@@ -4226,7 +4326,9 @@ function TunnelsContent() {
                     <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
-                          <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                          {(!isReverseTunnel(tunnel) || tunnel.mode !== "tls") && (
+                            <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                          )}
                           <Button variant="ghost" size="icon" className="h-8 w-8" title={translateText("查看延迟")} onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
@@ -4306,6 +4408,7 @@ function TunnelsContent() {
                       </TableCell>
                       <TableCell className="max-w-[11rem] py-3">
                         <span className="line-clamp-2 font-medium leading-snug">{tunnel.name}</span>
+                        {renderReverseTunnelStatus(tunnel, supported)}
                         {!supported && (
                           <span className="mt-1 block text-[11px] text-destructive">
                             {tunnelProtocolLabel(protocolKey)}{translateText(" 当前不支持")}</span>
@@ -4338,7 +4441,9 @@ function TunnelsContent() {
                         <div className="flex items-center justify-end gap-1">
                           {supported && (
                             <>
-                              <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                              {(!isReverseTunnel(tunnel) || tunnel.mode !== "tls") && (
+                                <LinkSpeedTestButton resourceType="tunnel" resourceId={tunnel.id} name={tunnel.name} />
+                              )}
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -4581,6 +4686,7 @@ function TunnelsContent() {
                       <Label>{translateText("入口组")}</Label>
                       <Select
                         value={form.entryGroupId ? String(form.entryGroupId) : "none"}
+                        disabled={isReverseTunnel(form)}
                         onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
@@ -4610,7 +4716,8 @@ function TunnelsContent() {
                         headerLabel={translateText("主机链路")}
                         initialHopIds={form.hopHostIds}
                         initialHopConnectHosts={form.hopConnectHosts}
-                        maxHops={MAX_TUNNEL_HOPS}
+                        maxHops={isReverseTunnel(form) ? 2 : MAX_TUNNEL_HOPS}
+                        hideConnectOptions={isReverseTunnel(form)}
                         externalEntry={!!form.entryGroupId}
                         externalExit={!!form.exitGroupId}
                         relayMode={form.relayMode}
@@ -4656,6 +4763,7 @@ function TunnelsContent() {
                       <Label>{translateText("出口组")}</Label>
                       <Select
                         value={form.exitGroupId ? String(form.exitGroupId) : "none"}
+                        disabled={isReverseTunnel(form)}
                         onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
@@ -4740,13 +4848,14 @@ function TunnelsContent() {
                       </div>
                     )}
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
-                    {renderTunnelRuntimeOptions()}
+                    {form.mode !== "forwardx" && renderTunnelDirection()}
                     {renderForwardXVersionOptions()}
+                    {renderTunnelRuntimeOptions()}
                     <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
-                      <div className="space-y-2">
+                      {!isReverseTunnel(form) && <div className="space-y-2">
                         <Label>{translateText("出口监听端口")}</Label>
                         <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />
-                      </div>
+                      </div>}
                       <div className="space-y-2">
                         <Label>{translateText("隧道限速 (Mbps)")}</Label>
                         <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder={translateText("不限速")} />
@@ -4888,6 +4997,7 @@ function TunnelsContent() {
               <Label>{translateText("入口组")}</Label>
               <Select
                 value={form.entryGroupId ? String(form.entryGroupId) : "none"}
+                disabled={isReverseTunnel(form)}
                 onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
               >
                 <SelectTrigger>
@@ -4917,7 +5027,8 @@ function TunnelsContent() {
                 headerLabel={translateText("主机链路")}
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
-                maxHops={MAX_TUNNEL_HOPS}
+                maxHops={isReverseTunnel(form) ? 2 : MAX_TUNNEL_HOPS}
+                hideConnectOptions={isReverseTunnel(form)}
                 externalEntry={!!form.entryGroupId}
                 externalExit={!!form.exitGroupId}
                 relayMode={form.relayMode}
@@ -4963,6 +5074,7 @@ function TunnelsContent() {
               <Label>{translateText("出口组")}</Label>
               <Select
                 value={form.exitGroupId ? String(form.exitGroupId) : "none"}
+                disabled={isReverseTunnel(form)}
                 onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
               >
                 <SelectTrigger>
@@ -5047,13 +5159,14 @@ function TunnelsContent() {
               </div>
             )}
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
-            {renderTunnelRuntimeOptions()}
+            {form.mode !== "forwardx" && renderTunnelDirection()}
             {renderForwardXVersionOptions()}
+            {renderTunnelRuntimeOptions()}
             <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
-              <div className="space-y-2">
+              {!isReverseTunnel(form) && <div className="space-y-2">
                 <Label>{translateText("出口监听端口")}</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => { setListenPortExplicit(true); setForm({ ...form, listenPort: Number(e.target.value) || 0 }); }} placeholder={translateText("自动分配")} />
-              </div>
+              </div>}
               <div className="space-y-2">
                 <Label>{translateText("隧道限速 (Mbps)")}</Label>
                 <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder={translateText("不限速")} />

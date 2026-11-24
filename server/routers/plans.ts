@@ -7,6 +7,7 @@ import { withKeyedTaskLock } from "../keyedTaskLock";
 import { reorderProducts } from "../repositories/productOrder";
 import { PLAN_DESCRIPTION_MAX_LENGTH } from "../../shared/planDescription";
 import { MAX_PRODUCT_STOCK } from "../../shared/productStock";
+import { PLAN_TRAFFIC_MODES } from "../../shared/planTraffic";
 import { MAX_PLAN_PURCHASE_AMOUNT_CENTS, PLAN_BILLING_CYCLE_DAYS, planBillingCycles, readPlanCyclePrices, type PlanCyclePriceRule } from "../../shared/planPurchase";
 
 const cycleDays = z.number().refine(days => PLAN_BILLING_CYCLE_DAYS.some(cycle => cycle === days));
@@ -30,7 +31,7 @@ const planInput = z.object({
   ]).default(30),
   portCount: z.number().int().min(0).max(65535).default(20),
   trafficLimit: z.number().int().min(0).default(0),
-  trafficMode: z.enum(["both", "outbound"]).default("both"),
+  trafficMode: z.enum(PLAN_TRAFFIC_MODES).default("both"),
   rateLimitMbps: z.number().int().min(0).max(1_000_000).default(0),
   maxRules: z.number().int().min(0).default(20),
   maxConnections: z.number().int().min(0).max(1_000_000).default(2000),

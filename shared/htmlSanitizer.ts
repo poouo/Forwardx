@@ -16,6 +16,7 @@ const ALLOWED_TAGS = new Set([
   "hr",
   "i",
   "li",
+  "img",
   "ol",
   "p",
   "pre",
@@ -31,9 +32,8 @@ const ALLOWED_TAGS = new Set([
   "ul",
 ]);
 
-const VOID_TAGS = new Set(["br", "hr"]);
-const ALLOWED_ATTRS = new Set(["class", "href", "rel", "target", "title"]);
-const URL_ATTRS = new Set(["href"]);
+const VOID_TAGS = new Set(["br", "hr", "img"]);
+const ALLOWED_ATTRS = new Set(["alt", "class", "href", "rel", "src", "target", "title"]);
 
 export function escapeHtml(content: string) {
   return String(content || "")
@@ -73,9 +73,13 @@ function sanitizeAttributes(rawAttrs: string, tagName: string) {
   while ((match = attrPattern.exec(rawAttrs))) {
     const name = match[1].toLowerCase();
     if (name.startsWith("on") || !ALLOWED_ATTRS.has(name)) continue;
-    if ((name === "class" && tagName !== "code") || (name === "target" && tagName !== "a") || (name === "rel" && tagName !== "a")) continue;
+    if ((name === "class" && tagName !== "code") ||
+      ((name === "target" || name === "rel" || name === "href") && tagName !== "a") ||
+      (name === "alt" && tagName !== "img") ||
+      (name === "src" && tagName !== "img") ||
+      (name === "src" && !/^https?:\/\//i.test(decodeBasicEntities(match[2] ?? match[3] ?? match[4] ?? "").trim()))) continue;
     const value = match[2] ?? match[3] ?? match[4] ?? "";
-    if (URL_ATTRS.has(name) && !isSafeUrl(value)) continue;
+    if (name === "href" && !isSafeUrl(value)) continue;
     const safeValue = escapeHtml(value).replace(/\r?\n/g, " ");
     attrs.push(`${name}="${safeValue}"`);
   }
@@ -85,6 +89,7 @@ function sanitizeAttributes(rawAttrs: string, tagName: string) {
     if (!hasTarget) attrs.push('target="_blank"');
     if (!hasRel) attrs.push('rel="noopener noreferrer"');
   }
+  if (tagName === "img") attrs.push('loading="lazy"', 'decoding="async"', 'referrerpolicy="no-referrer"');
   return attrs.length ? ` ${attrs.join(" ")}` : "";
 }
 
@@ -98,6 +103,7 @@ export function sanitizeHtml(input: string) {
     if (!ALLOWED_TAGS.has(tagName)) return "";
     if (closing) return VOID_TAGS.has(tagName) ? "" : `</${tagName}>`;
     const attrs = sanitizeAttributes(rawAttrs || "", tagName);
+    if (tagName === "img" && !/\ssrc="/i.test(attrs)) return "";
     return VOID_TAGS.has(tagName) ? `<${tagName}${attrs}>` : `<${tagName}${attrs}>`;
   });
 }

@@ -131,7 +131,7 @@ function defaultPanelSslCertDir() {
   return path.join(path.dirname(ENV.sqlitePath || "/data/forwardx.db"), "certs");
 }
 
-function runOpenSsl(args: string[]) {
+export function runOpenSsl(args: string[]) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn("openssl", args, { stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];

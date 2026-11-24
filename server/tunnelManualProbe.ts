@@ -9,6 +9,7 @@ import { structuredLinkTestMessage } from "./linkTestMessages";
 import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
 import { normalizeExitGroupStrategy } from "../shared/exitStrategy";
+import { isReverseTunnel } from "../shared/tunnelDirection";
 import { isForwardXWireGuardV2 } from "./forwardXWireGuard";
 import { selfTestSweepActivity, SELF_TEST_MAX_LIFETIME_SECONDS } from "./selfTestTiming";
 import { appendPanelLog } from "./_core/panelLogger";
@@ -24,6 +25,18 @@ export function planManualTunnelProbes(input: {
   tunnel: any; hops: any[]; exits: any[]; entryHostIds: number[]; hosts: Map<number, any>;
 }) {
   const { tunnel, hosts } = input;
+  if (isReverseTunnel(tunnel)) {
+    const fromHostId = Number(tunnel.entryHostId);
+    const toHostId = Number(tunnel.exitHostId);
+    const targetPort = Number(tunnel.mode === "tls" ? tunnel.reverseListenPort : tunnel.listenPort);
+    return [{
+      fromHostId, toHostId, targetIp: "127.0.0.1", targetPort,
+      hopIndex: 0, hopCount: 1,
+      hopLabel: `1/1 ${fromHostId}->${toHostId}`,
+      routeLabel: `${hosts.get(fromHostId)?.name || fromHostId} -> ${hosts.get(toHostId)?.name || toHostId}`,
+      pathKeys: ["reverse"],
+    }];
+  }
   const hops = input.hops.length >= 2 ? input.hops : [
     { hostId: tunnel.entryHostId }, { hostId: tunnel.exitHostId, listenPort: tunnel.listenPort },
   ];

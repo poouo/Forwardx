@@ -25,7 +25,7 @@ import {
   tryReserveHostPort,
   type HostPortReservation,
 } from "../portReservations";
-import { ensureTunnelListenerPortPolicy, reserveTunnelExitPort, usesSharedTunnelPrimaryListener, usesSharedGostTunnelListener } from "../repositories/tunnelRepository";
+import { ensureTunnelListenerPortPolicy, reserveTunnelExitPort, tunnelRuleNeedsExitPort, usesSharedTunnelPrimaryListener, usesSharedGostTunnelListener } from "../repositories/tunnelRepository";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "../keyedTaskLock";
 import { mapWithConcurrency } from "../asyncPool";
 import { reserveRuleCreateQuota, type RuleQuotaReservation } from "../ruleQuotaReservations";
@@ -911,7 +911,7 @@ export async function createDirectForwardRuleForActor(
       const tunnel = selectedTunnelForRule;
       if (!dbBool(tunnel.isEnabled)) throw new Error("所选隧道已停用");
       if (Number(tunnel.entryHostId) !== hostId) throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
-      if (String(tunnel.mode || "").toLowerCase() !== "forwardx") {
+      if (tunnelRuleNeedsExitPort(tunnel)) {
         const exit = await db.getHostById(tunnel.exitHostId);
         // The primary managed GOST rule must point at the same listener that the
         // tunnel service binds. Legacy rows may contain a high/unrestricted port
@@ -1492,7 +1492,7 @@ export const crudRulesRouter = router({
           }
 
           let tunnelExitPort: number | null = null;
-          if (nextTunnelId && String(selectedTunnelForRule?.mode || "").toLowerCase() !== "forwardx") {
+          if (nextTunnelId && tunnelRuleNeedsExitPort(selectedTunnelForRule)) {
             const tunnel = selectedTunnelForRule;
             const exit = await db.getHostById(tunnel.exitHostId);
             const existingExitPort = Number((rule as any).tunnelExitPort || 0);
@@ -2086,10 +2086,7 @@ export const crudRulesRouter = router({
           }
           const sameTunnel = Number(nextTunnelId) === Number((rule as any).tunnelId || 0);
           const existingExitPort = Number((rule as any).tunnelExitPort || 0);
-          if (String(tunnel.mode || "").toLowerCase() === "forwardx") {
-            // ForwardX carries the rule inside its own tunnel transport and
-            // does not bind a per-rule public exit listener.  Never preserve
-            // or allocate the legacy tunnelExitPort bookkeeping value.
+          if (!tunnelRuleNeedsExitPort(tunnel)) {
             (data as any).tunnelExitPort = null;
             await db.clearForwardRuleTunnelExits(id);
           } else {

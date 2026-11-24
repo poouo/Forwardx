@@ -93,6 +93,7 @@ type PaymentConfigForm = {
     network: "tron" | "ethereum" | "bsc" | "polygon" | "solana" | "aptos" | "plasma";
     signatureAlgorithm: "md5" | "hmac-sha256";
   };
+  fees: Record<"alipay" | "wxpay" | "stripe" | "usdt", { enabled: boolean; rateBps: number; fixedCents: number }>;
 };
 
 type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "gmpay" | "test";
@@ -163,6 +164,12 @@ const emptyForm: PaymentConfigForm = {
     secretKey: "",
     network: "tron",
     signatureAlgorithm: "md5",
+  },
+  fees: {
+    alipay: { enabled: false, rateBps: 0, fixedCents: 0 },
+    wxpay: { enabled: false, rateBps: 0, fixedCents: 0 },
+    stripe: { enabled: false, rateBps: 0, fixedCents: 0 },
+    usdt: { enabled: false, rateBps: 0, fixedCents: 0 },
   },
 };
 
@@ -314,6 +321,12 @@ export default function Payments() {
         secretKey: "",
         network: config.gmpay?.network || "tron",
         signatureAlgorithm: config.gmpay?.signatureAlgorithm || "md5",
+      },
+      fees: {
+        alipay: { enabled: !!config.fees?.alipay?.enabled, rateBps: Number(config.fees?.alipay?.rateBps || 0), fixedCents: Number(config.fees?.alipay?.fixedCents || 0) },
+        wxpay: { enabled: !!config.fees?.wxpay?.enabled, rateBps: Number(config.fees?.wxpay?.rateBps || 0), fixedCents: Number(config.fees?.wxpay?.fixedCents || 0) },
+        stripe: { enabled: !!config.fees?.stripe?.enabled, rateBps: Number(config.fees?.stripe?.rateBps || 0), fixedCents: Number(config.fees?.stripe?.fixedCents || 0) },
+        usdt: { enabled: !!config.fees?.usdt?.enabled, rateBps: Number(config.fees?.usdt?.rateBps || 0), fixedCents: Number(config.fees?.usdt?.fixedCents || 0) },
       },
     });
   }, [config]);
@@ -481,6 +494,37 @@ export default function Payments() {
                     </SelectContent>
                   </Select>
                 </Field>
+              </CardContent>
+            </Card>
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle>{translateText("支付通道费用")}</CardTitle>
+                <CardDescription>{translateText("开启后，用户支付时会在商品金额上加收对应通道费用。费率单位为百分比，固定费用单位为分。")}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {([
+                  ["alipay", translateText("支付宝")],
+                  ["wxpay", translateText("微信支付")],
+                  ["stripe", "Stripe"],
+                  ["usdt", "USDT"],
+                ] as const).map(([key, label]) => {
+                  const fee = form.fees[key];
+                  return (
+                    <div key={key} className="grid gap-3 rounded-lg border bg-background/70 p-3 md:grid-cols-[minmax(0,1fr)_auto_160px_160px] md:items-center">
+                      <div>
+                        <div className="font-medium">{label}</div>
+                        <div className="text-xs text-muted-foreground">{translateText("用户侧选择此方式时生效")}</div>
+                      </div>
+                      <Switch checked={fee.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, fees: { ...prev.fees, [key]: { ...prev.fees[key], enabled } } }))} aria-label={translateText("启用 {0} 通道费用", [label])} />
+                      <Field label={translateText("费率 (%)")}>
+                        <Input type="number" min={0} max={100} step="0.01" value={fee.rateBps / 100} onChange={(event) => setForm((prev) => ({ ...prev, fees: { ...prev.fees, [key]: { ...prev.fees[key], rateBps: Math.round(Number(event.target.value || 0) * 100) } } }))} />
+                      </Field>
+                      <Field label={translateText("固定费用（分）")}>
+                        <Input type="number" min={0} step="1" value={fee.fixedCents} onChange={(event) => setForm((prev) => ({ ...prev, fees: { ...prev.fees, [key]: { ...prev.fees[key], fixedCents: Math.round(Number(event.target.value || 0)) } } }))} />
+                      </Field>
+                    </div>
+                  );
+                })}
               </CardContent>
             </Card>
           </TabsContent>

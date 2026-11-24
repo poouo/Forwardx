@@ -15,6 +15,7 @@ export function looksLikeMarkdown(content: string) {
     /`[^`\n]+`/.test(value) ||
     /\*\*[^*\n]+\*\*/.test(value) ||
     /__[^_\n]+__/.test(value) ||
+    /!\[[^\]\n]*\]\([^)]+\)/.test(value) ||
     /\[[^\]\n]+\]\([^)]+\)/.test(value);
 }
 
@@ -43,6 +44,15 @@ function renderInlineMarkdown(content: string, allowLinks = true) {
   };
 
   html = html.replace(/`([^`\n]+)`/g, (_match, code: string) => protect(`<code>${code}</code>`));
+  if (allowLinks) {
+    html = html.replace(/!\[([^\]\n]*)\]\(([^)\s]+)(?:\s+(?:"([^"]*)"|&quot;([^&]*?)&quot;))?\)/g, (_match, alt: string, url: string, quotedTitle: string | undefined, escapedTitle: string | undefined) => {
+      const decodedUrl = url.replace(/&amp;/g, "&");
+      if (!/^https?:\/\//i.test(decodedUrl.trim())) return protect(escapeHtml(_match));
+      const title = quotedTitle ?? escapedTitle;
+      const titleAttr = title ? ` title="${escapeAttribute(title)}"` : "";
+      return protect(`<img src="${escapeAttribute(decodedUrl)}" alt="${escapeHtml(alt)}"${titleAttr}>`);
+    });
+  }
   if (allowLinks) {
     html = html.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_match, label: string, url: string) => {
       const renderedLabel = renderInlineMarkdown(label, false);

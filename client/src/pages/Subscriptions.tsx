@@ -2,6 +2,7 @@ import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
 import { PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
 import { planBillingCycles } from "@shared/planPurchase";
@@ -444,9 +445,10 @@ export default function Subscriptions() {
                   </div>
                 )}
                 <div className="mt-2 flex items-center justify-between font-medium">
-                  <span>{translateText("应付")}</span>
+                  <span>{payMode === "gateway" ? translateText("商品应付") : translateText("应付")}</span>
                   <span>{money(renewFinalAmountCents, renewingSub?.currency || "CNY")}</span>
                 </div>
+                {payMode === "gateway" && <PaymentFeeBreakdown amountCents={renewFinalAmountCents} paymentType={paymentType} currency={renewingSub?.currency || "CNY"} enabled={!freeRenewal} />}
                 <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
                   <span>{translateText("当前到期")}</span>
                   <span>{dateTime(renewingSub?.expiresAt)}</span>

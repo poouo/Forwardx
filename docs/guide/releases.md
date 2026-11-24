@@ -4,16 +4,18 @@
 
 | 组件 | 版本 |
 | --- | --- |
-| 面板 | 2.3.304 |
-| Android / iOS | 2.4.21 |
-| Agent | 2.2.215 |
+| 面板 | 2.3.305 |
+| Android / iOS | 2.4.22 |
+| Agent | 2.2.216 |
 | FXP 运行时 | 2.2.123 |
 
-`2.3.304` 于 2026-11-23 启动发布，新增 MCP 有效加购流量汇总、套餐多周期定价和主机续费金额，修复 GOST 隧道更换入口后规则仍引用旧主机的问题。完整记录见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
+`2.3.305` 于 2026-11-24 发布，新增 GOST TLS 和 ForwardX V2 反向隧道、支付渠道手续费、用户搜索和套餐单向计量，并改进流媒体地区及开放状态判定。完整记录见 [中文 changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.md) / [English changelog](https://github.com/poouo/Forwardx/blob/main/CHANGELOG.en.md)。
 
 表中是仓库源码里的版本号。各平台安装包由 GitHub Actions 分别构建，完成时间有先后，升级前请确认 [GitHub Releases](https://github.com/poouo/Forwardx/releases) 里已经有对应附件。Android 和 iOS 共用一个 App 版本号，与面板、Agent、FXP 的版本号各自独立；iOS 包需要 [自行签名](./mobile-app.md)。
 
 ## 需要升级 Agent 的功能
+
+- GOST TLS 反向隧道需要入口和出口都使用 Agent `2.2.216` 或更高版本。新版流媒体检测也需要 Agent `2.2.216`。
 
 - 主机实时速率上报、Guard 限速恢复、GOST 控制接口同步和流媒体地区判定的改进需要 Agent `2.2.215`。
 - 基础流媒体检测需要 Agent `2.2.214`。FXP 规则局部更新还需要 FXP 运行时 `2.2.123`，随 Agent 升级一并更新。

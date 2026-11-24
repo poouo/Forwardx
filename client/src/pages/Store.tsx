@@ -2,6 +2,7 @@ import { getFormatLocale } from "@/i18n";
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
 import { billingCycleLabel, PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
 import { planBillingCycles } from "@shared/planPurchase";
@@ -437,9 +438,10 @@ export default function Store() {
                   </div>
                 )}
                 <div className="mt-2 flex items-center justify-between font-medium">
-                  <span>{translateText("应付")}</span>
+                  <span>{payMode === "gateway" ? translateText("商品应付") : translateText("应付")}</span>
                   <span>{money(finalAmountCents, selectedPlan?.currency)}</span>
                 </div>
+                {payMode === "gateway" && <PaymentFeeBreakdown amountCents={finalAmountCents} paymentType={paymentType} currency={selectedPlan?.currency || "CNY"} enabled={!freePurchase} />}
               </div>
               {billingFeatures?.discountEnabled && (
               <div className="flex gap-2">

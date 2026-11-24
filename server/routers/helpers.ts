@@ -104,6 +104,9 @@ export async function requireHostUseAccess(ctx: { user: { id: number; role: stri
 export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: number; role: string } }, tunnelId: number) {
   const tunnel = await db.getTunnelById(tunnelId);
   if (!tunnel) throw new Error("隧道不存在");
+  if (ctx.user.role !== "admin" && tunnel.connectionDirection === "reverse") {
+    throw new Error("反向隧道仅管理员可用");
+  }
   const isTrafficBillingResource = await requireTrafficBillingAccessIfConfigured(ctx, "tunnel", tunnel.id);
   if (ctx.user.role !== "admin" && !isTrafficBillingResource && tunnel.userId !== ctx.user.id) {
     const hasPermission = await db.checkUserTunnelPermission(ctx.user.id, tunnel.id);

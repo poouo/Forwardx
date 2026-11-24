@@ -2028,6 +2028,7 @@ async function targetHostIdForMember(member: ForwardGroupMemberInput) {
   if (!member.tunnelId) throw new Error("Forward group member tunnel is required");
   const tunnel = await getTunnelById(Number(member.tunnelId));
   if (!tunnel) throw new Error("Tunnel does not exist");
+  if (tunnel.connectionDirection === "reverse") throw new Error("反向隧道暂不支持加入转发组");
   return Number(tunnel.entryHostId);
 }
 

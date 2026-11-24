@@ -37,7 +37,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var Version = "2.2.215"
+var Version = "2.2.216"
 var agentProcessStartedAt = time.Now()
 var agentBootID = readAgentBootID()
 var runtimeAgentToken atomic.Value
@@ -2434,17 +2434,18 @@ type failoverSpec struct {
 }
 
 type tunnelProbe struct {
-	TunnelID        int    `json:"tunnelId"`
-	TargetIP        string `json:"targetIp"`
-	TargetPort      int    `json:"targetPort"`
-	Protocol        string `json:"protocol"`
-	HopIndex        int    `json:"hopIndex"`
-	HopCount        int    `json:"hopCount"`
-	SeriesKey       string `json:"seriesKey"`
-	SeriesLabel     string `json:"seriesLabel"`
-	WireGuardPeerID string `json:"wireGuardPeerId,omitempty"`
-	ProbeKey        string `json:"probeKey,omitempty"`
-	TopologyKey     string `json:"topologyKey,omitempty"`
+	TunnelID        int               `json:"tunnelId"`
+	TargetIP        string            `json:"targetIp"`
+	TargetPort      int               `json:"targetPort"`
+	Protocol        string            `json:"protocol"`
+	HopIndex        int               `json:"hopIndex"`
+	HopCount        int               `json:"hopCount"`
+	SeriesKey       string            `json:"seriesKey"`
+	SeriesLabel     string            `json:"seriesLabel"`
+	WireGuardPeerID string            `json:"wireGuardPeerId,omitempty"`
+	ReverseGost     *reverseGostProbe `json:"reverseGost,omitempty"`
+	ProbeKey        string            `json:"probeKey,omitempty"`
+	TopologyKey     string            `json:"topologyKey,omitempty"`
 }
 
 type ruleLatencyProbe struct {
@@ -2607,17 +2608,18 @@ func (e migratedPanelError) Error() string {
 }
 
 type selfTest struct {
-	TestID               int    `json:"testId"`
-	Kind                 string `json:"kind,omitempty"`
-	RuleID               int    `json:"ruleId"`
-	ForwardType          string `json:"forwardType"`
-	SourcePort           int    `json:"sourcePort"`
-	Protocol             string `json:"protocol"`
-	Method               string `json:"method"`
-	TargetIP             string `json:"targetIp"`
-	TargetPort           int    `json:"targetPort"`
-	TunnelID             int    `json:"tunnelId,omitempty"`
-	WireGuardPeerID      string `json:"wireGuardPeerId,omitempty"`
+	TestID               int               `json:"testId"`
+	Kind                 string            `json:"kind,omitempty"`
+	RuleID               int               `json:"ruleId"`
+	ForwardType          string            `json:"forwardType"`
+	SourcePort           int               `json:"sourcePort"`
+	Protocol             string            `json:"protocol"`
+	Method               string            `json:"method"`
+	TargetIP             string            `json:"targetIp"`
+	TargetPort           int               `json:"targetPort"`
+	TunnelID             int               `json:"tunnelId,omitempty"`
+	WireGuardPeerID      string            `json:"wireGuardPeerId,omitempty"`
+	ReverseGost          *reverseGostProbe `json:"reverseGost,omitempty"`
 	runtimeActionsWaited bool
 }
 
@@ -5908,6 +5910,11 @@ func managedRuntimeSyncReady(a action) bool {
 			needles = []string{"nginx"}
 		}
 		for _, listen := range listens {
+			// GOST reverse registrations bind at the remote end of a chain.
+			// The runtime process must be active, but they have no local socket.
+			if listen.Protocol == "rtcp" || listen.Protocol == "rudp" {
+				continue
+			}
 			port := addrPort(listen.Addr)
 			if port <= 0 || !runtimeListenPortReady(snapshot, port, listen.Protocol, needles) {
 				return false

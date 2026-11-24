@@ -64,6 +64,23 @@ func streamUnlockJSONCountry(body string, paths ...[]string) string {
 	return ""
 }
 
+type streamUnlockDisneyConfig struct {
+	Location         string   `json:"location"`
+	AvailableLocales []string `json:"availableLocales"`
+}
+
+func streamUnlockDisneyVisitor(body string) streamUnlockDisneyConfig {
+	script := strings.TrimSpace(streamUnlockScript(body, "langRegionRedirect"))
+	if key, value, ok := strings.Cut(script, "="); ok && strings.TrimSpace(key) == "window.langRegionRedirectProps" {
+		script = strings.TrimSpace(value)
+	}
+	var config streamUnlockDisneyConfig
+	if json.NewDecoder(strings.NewReader(script)).Decode(&config) != nil {
+		return streamUnlockDisneyConfig{}
+	}
+	return config
+}
+
 // Read the visitor's platform-specific fields, not arbitrary country names in
 // language selectors, content metadata, CDN settings or a generic IP database.
 func streamUnlockProviderRegion(providerID, body string) string {
@@ -76,11 +93,13 @@ func streamUnlockProviderRegion(providerID, body string) string {
 	case "netflix":
 		region = streamUnlockRegex(text, `"requestCountry"\s*:\s*\{[^{}]{0,1000}?"id"\s*:\s*"([A-Za-z]{2})"`)
 	case "youtube":
-		region = streamUnlockRegex(text, `"INNERTUBE_CONTEXT_GL"\s*:\s*"([A-Za-z]{2})"`)
+		region = streamUnlockCountry(streamUnlockRegex(text, `"contentRegion"\s*:\s*"([A-Za-z]{2})"`))
+		if region == "" {
+			region = streamUnlockRegex(text, `"INNERTUBE_CONTEXT_GL"\s*:\s*"([A-Za-z]{2})"`)
+		}
 	case "disney-plus":
 		// urlRegion describes the selected storefront; location is the visitor.
-		config := streamUnlockPageText(streamUnlockScript(body, "langRegionRedirect"))
-		region = streamUnlockRegex(config, `"location"\s*:\s*"([A-Za-z]{2})"`)
+		region = streamUnlockCountry(streamUnlockDisneyVisitor(body).Location)
 		if region == "" {
 			region = streamUnlockJSONCountry(streamUnlockScript(body, "__NEXT_DATA__"), []string{"props", "pageProps", "location"})
 		}
@@ -94,8 +113,8 @@ func streamUnlockProviderRegion(providerID, body string) string {
 		region = streamUnlockRegex(body, `(?is)<html\b[^>]*\bdata-geo\s*=\s*["']([A-Za-z]{2})["']`)
 	case "tiktok":
 		region = streamUnlockJSONCountry(streamUnlockScript(body, "__UNIVERSAL_DATA_FOR_REHYDRATION__"),
-			[]string{"__DEFAULT_SCOPE__", "webapp.app-context", "region"},
-			[]string{"__DEFAULT_SCOPE__", "webapp.app-context", "userRegion"})
+			[]string{"__DEFAULT_SCOPE__", "webapp.app-context", "userRegion"},
+			[]string{"__DEFAULT_SCOPE__", "webapp.app-context", "region"})
 		if region == "" {
 			region = streamUnlockJSONCountry(streamUnlockScript(body, "SIGI_STATE"),
 				[]string{"AppContext", "appContext", "region"}, []string{"AppContext", "region"})

@@ -124,9 +124,11 @@ Agent 完整心跳领取 `streamUnlockTests`，通过 `/api/agent/stream-unlock-
 
 主题应按协议分别展示结果，使用主机有效地址判断 IPv4 / IPv6 选项是否可用；无结果时保留平台行，执行中的未返回项目显示检测中。查询缓存必须按 `hostId` 隔离，切换主机不能用上一台主机的快照作为占位数据。
 
-`region` 为平台可识别的地区代码，统一为 ISO 两字母格式，例如 `HK`、`US`；Netflix 读取请求地区，YouTube 读取访问者 GL，Disney+ 读取访问者 location，Spotify 读取服务端 market，动画疯读取页面 data-geo，TikTok 只读取用户上下文中的地区，Gemini 的三字母地区转为两字母。ChatGPT、Claude、Grok 可补充读取各自站点边缘接口返回的访问者国家；该字段仅表示请求被识别的地区，不代表账号或服务权限。不能识别时省略，不使用主机归属地或 CDN 节点位置推测。
+`region` 为平台识别的地区代码，统一为 ISO 两字母格式，例如 `HK`、`US`。Netflix 读取请求地区，YouTube 优先读取内容地区并以访问者 GL 作为回退，Disney+ 读取访客 `location`，Spotify 读取服务端 `market`，动画疯读取页面 `data-geo`，TikTok 读取用户上下文中的地区，Gemini 的三字母地区转为两字母。ChatGPT、Claude、Grok 可补充读取各自站点边缘接口返回的访问者国家。无法从平台响应识别时省略 `region`。
 
-AI 检测优先识别页面可见的地区限制提示、地区不可用重定向，以及服务接口的地区错误。HTTP 200 或地区代码本身不能判定 `available`；只有有效的服务接口响应或明确开放标记才显示服务开放，反爬、登录页或信息不足保留 `unknown`。例如 Claude 的地区不可用页面可能返回 200，ChatGPT 的地区限制可能只在服务接口中返回。检测不代表实际账号可登录、订阅有效或对话一定成功。DNS 解锁基于解析差异和可访问结果推断，可能受 CDN 或分流影响。
+AI 检测优先识别页面可见的地区限制提示、地区不可用重定向，以及服务接口的地区错误。HTTP 200 或地区代码本身不能判定 `available`；只有有效的服务接口响应或明确开放标记才显示服务开放，反爬、登录页或信息不足保留 `unknown`。例如 Claude 的地区不可用页面可能返回 200，ChatGPT 的地区限制可能只在服务接口中返回。检测不代表实际账号可登录、订阅有效或对话一定成功。
+
+Netflix 分别测试自制片和第三方片目，YouTube 检查 Premium 订阅入口，Disney+ 区分本地站点和预览页。Agent 按协议对比实际访问域名的系统解析与公共 DoH。当结果不重合时，非公网映射和随机子域名解析可作为智能 DNS 的线索。系统解析可访问的平台经公共解析复测后出现明确限制时，记录为 `dns_unlocked`。两次均可访问且存在智能 DNS 线索时，平台地区变化记为 `dns_region_override`。单纯地址差异记为 `mismatch`。片目对照和随机子域名的思路参考 [IPQuality](https://github.com/xykt/IPQuality)。
 
 ## 链路测速接口
 

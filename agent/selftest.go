@@ -184,7 +184,10 @@ func handleSelfTest(cfg Config, t selfTest) {
 				attemptTimeout = remaining
 			}
 		}
-		if t.WireGuardPeerID != "" && t.TunnelID > 0 {
+		if t.ReverseGost != nil {
+			measurement := probeReverseGost(t.TargetPort, *t.ReverseGost, attemptTimeout)
+			latency, reachable = measurement.LatencyMs, measurement.Reachable
+		} else if t.WireGuardPeerID != "" && t.TunnelID > 0 {
 			latency, reachable = wireGuardTCPLatency(t.TunnelID, t.WireGuardPeerID, t.TargetPort, attemptTimeout)
 		} else {
 			latency, reachable, resolvedTarget = tcpLatencyResolved(t.TargetIP, t.TargetPort, attemptTimeout)

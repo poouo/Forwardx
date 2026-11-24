@@ -7,6 +7,10 @@ import { paymentCheckoutState, paymentPageUrl, paymentQrContent, type CheckoutOr
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
+function money(amountCents?: number | null, currency = "CNY") {
+  return `${(Number(amountCents || 0) / 100).toFixed(2)} ${currency.toUpperCase()}`;
+}
+
 export default function PaymentCheckoutDialog({ order, onClose }: { order: CheckoutOrder | null; onClose: () => void }) {
   const utils = trpc.useUtils();
   const handled = useRef<string | null>(null);
@@ -55,6 +59,15 @@ export default function PaymentCheckoutDialog({ order, onClose }: { order: Check
         <DialogDescription>{order?.subject || t("请使用支付宝或微信扫码完成支付")}</DialogDescription>
       </DialogHeader>
       <div className="flex flex-col items-center gap-3 py-2">
+        {order && order.amountCents != null && (
+          <div className="w-full space-y-1 rounded-md border bg-muted/20 p-3 text-sm">
+            {order.feeAmountCents ? <>
+              <div className="flex items-center justify-between text-muted-foreground"><span>{t("商品金额")}</span><span>{money(order.baseAmountCents ?? Number(order.amountCents) - Number(order.feeAmountCents), order.currency || "CNY")}</span></div>
+              <div className="flex items-center justify-between text-muted-foreground"><span>{t("支付通道费用")}</span><span>{money(order.feeAmountCents, order.currency || "CNY")}</span></div>
+            </> : null}
+            <div className="flex items-center justify-between font-medium"><span>{t("实付金额")}</span><span>{money(order.amountCents, order.currency || "CNY")}</span></div>
+          </div>
+        )}
         {content && state === "pending" && (qr?.content === content && qr.data
           ? <div className="rounded-lg border bg-white p-3"><img src={qr.data} alt={t("支付二维码")} width={240} height={240} /></div>
           : <p className="text-sm text-muted-foreground">{qr?.content === content && qr.failed ? t("支付二维码生成失败，请重新下单或联系管理员") : t("正在生成支付二维码")}</p>)}

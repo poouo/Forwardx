@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,7 +13,7 @@ import (
 	"time"
 )
 
-const streamUnlockProbeVersion = "1"
+const streamUnlockProbeVersion = "2"
 const streamUnlockRequestTimeout = 8 * time.Second
 
 // Region bootstrap data can occur near the end of large platform pages.
@@ -72,22 +70,6 @@ type streamUnlockProvider struct {
 	domain string
 	url    string
 	parse  func(status int, body, effectiveURL string) (state, region, detail, evidence string)
-}
-
-func streamUnlockState(status int, body string) (state, detail string) {
-	if status <= 0 {
-		return "error", "网络连接失败或超时"
-	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return "blocked", fmt.Sprintf("HTTP %d", status)
-	}
-	if status >= 500 {
-		return "error", fmt.Sprintf("HTTP %d", status)
-	}
-	if status < 200 || status >= 400 {
-		return "unknown", fmt.Sprintf("HTTP %d", status)
-	}
-	return "available", "公开接口可访问"
 }
 
 func streamUnlockAvailabilityState(status int, body, effectiveURL string) (state, detail, evidence string) {
@@ -151,33 +133,8 @@ func streamUnlockAvailabilityState(status int, body, effectiveURL string) (state
 func streamUnlockProviders() map[string]streamUnlockProvider {
 	parseGeneric := func(providerID string) func(int, string, string) (string, string, string, string) {
 		return func(status int, body, effectiveURL string) (string, string, string, string) {
-			state, detail := streamUnlockState(status, body)
-			return state, streamUnlockProviderRegion(providerID, body), detail, "HTTP status; platform visitor region"
+			return streamUnlockMediaPageState(providerID, status, body, effectiveURL)
 		}
-	}
-	parseNetflix := func(status int, body, effectiveURL string) (string, string, string, string) {
-		state, detail := streamUnlockState(status, body)
-		region := streamUnlockProviderRegion("netflix", body)
-		if state == "available" && strings.Contains(strings.ToLower(body), "oh no!") {
-			return "partial", region, "仅检测到 Netflix Original 或地区内容受限", "页面包含 Oh no!"
-		}
-		return state, strings.ToUpper(region), detail, "Netflix title page"
-	}
-	parseBahamut := func(status int, body, effectiveURL string) (string, string, string, string) {
-		state, detail := streamUnlockState(status, body)
-		region := streamUnlockProviderRegion("bahamut", body)
-		if state == "available" && region == "" {
-			return "unknown", "", "接口可访问但未返回地区字段", "Bahamut page"
-		}
-		return state, region, detail, "Bahamut data-geo"
-	}
-	parseAbema := func(status int, body, effectiveURL string) (string, string, string, string) {
-		state, detail := streamUnlockState(status, body)
-		region := streamUnlockProviderRegion("abema", body)
-		if state == "available" && region == "" {
-			return "unknown", "", "接口可访问但未返回地区字段", "Abema ip/check"
-		}
-		return state, region, detail, "Abema isoCountryCode"
 	}
 	parseAvailability := func(providerID string) func(int, string, string) (string, string, string, string) {
 		return func(status int, body, effectiveURL string) (string, string, string, string) {
@@ -186,14 +143,14 @@ func streamUnlockProviders() map[string]streamUnlockProvider {
 		}
 	}
 	return map[string]streamUnlockProvider{
-		"netflix":     {"netflix", "Netflix", "netflix.com", "https://www.netflix.com/title/81280792", parseNetflix},
+		"netflix":     {"netflix", "Netflix", "netflix.com", "https://www.netflix.com/title/81280792", parseGeneric("netflix")},
 		"disney-plus": {"disney-plus", "Disney+", "disneyplus.com", "https://www.disneyplus.com/", parseGeneric("disney-plus")},
 		"youtube":     {"youtube", "YouTube", "youtube.com", "https://www.youtube.com/premium", parseGeneric("youtube")},
 		"spotify":     {"spotify", "Spotify", "spotify.com", "https://open.spotify.com/", parseGeneric("spotify")},
 		"bilibili-tv": {"bilibili-tv", "Bilibili TV", "bilibili.tv", "https://www.bilibili.tv/", parseGeneric("bilibili-tv")},
-		"bahamut":     {"bahamut", "巴哈姆特动画疯", "ani.gamer.com.tw", "https://ani.gamer.com.tw/", parseBahamut},
-		"abema":       {"abema", "AbemaTV", "api.abema.io", "https://api.abema.io/v1/ip/check?device=android", parseAbema},
-		"tiktok":      {"tiktok", "TikTok", "", "https://www.tiktok.com/", parseAvailability("tiktok")},
+		"bahamut":     {"bahamut", "巴哈姆特动画疯", "ani.gamer.com.tw", "https://ani.gamer.com.tw/", parseGeneric("bahamut")},
+		"abema":       {"abema", "AbemaTV", "api.abema.io", "https://api.abema.io/v1/ip/check?device=android", parseGeneric("abema")},
+		"tiktok":      {"tiktok", "TikTok", "tiktok.com", "https://www.tiktok.com/", parseGeneric("tiktok")},
 		"gemini":      {"gemini", "Gemini", "", "https://gemini.google.com/app", parseAvailability("gemini")},
 		"grok":        {"grok", "Grok", "", "https://grok.com/", parseAvailability("grok")},
 		"chatgpt":     {"chatgpt", "ChatGPT", "", "https://chatgpt.com/auth/login", parseAvailability("chatgpt")},
@@ -210,6 +167,11 @@ func streamUnlockRegex(value, pattern string) string {
 }
 
 func streamUnlockHTTPClient(family string) *http.Client {
+	dialer := &net.Dialer{Timeout: streamUnlockRequestTimeout}
+	return streamUnlockHTTPClientWithDial(family, dialer.DialContext)
+}
+
+func streamUnlockHTTPClientWithDial(family string, dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
 	network := "tcp"
 	if family == "ipv4" {
 		network = "tcp4"
@@ -220,7 +182,7 @@ func streamUnlockHTTPClient(family string) *http.Client {
 		Proxy:             nil,
 		ForceAttemptHTTP2: true,
 		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: streamUnlockRequestTimeout}).DialContext(ctx, network, address)
+			return dial(ctx, network, address)
 		},
 	}
 	return &http.Client{Transport: transport, Timeout: streamUnlockRequestTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -232,12 +194,21 @@ func streamUnlockHTTPClient(family string) *http.Client {
 }
 
 func streamUnlockHTTPGet(ctx context.Context, client *http.Client, rawURL string) (int, string, string, int64, error) {
+	return streamUnlockHTTPGetPage(ctx, client, rawURL, false)
+}
+
+func streamUnlockHTTPGetPage(ctx context.Context, client *http.Client, rawURL string, browser bool) (int, string, string, int64, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, "", "", 0, err
 	}
 	request.Header.Set("User-Agent", "ForwardX-Agent-StreamUnlock/"+streamUnlockProbeVersion)
 	request.Header.Set("Accept", "application/json, text/html;q=0.8, */*;q=0.5")
+	if browser {
+		request.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		request.Header.Set("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8")
+		request.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	}
 	started := time.Now()
 	response, err := client.Do(request)
 	latency := time.Since(started).Milliseconds()
@@ -261,15 +232,26 @@ func streamUnlockProbeProvider(ctx context.Context, provider streamUnlockProvide
 }
 
 func streamUnlockProbeProviderWithClient(ctx context.Context, client *http.Client, provider streamUnlockProvider, family string) streamUnlockProviderResult {
-	result := streamUnlockProviderResult{ProviderID: provider.id, ProviderName: provider.name, Family: family, Status: "error", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	status, body, effectiveURL, latency, err := streamUnlockHTTPGet(ctx, client, provider.url)
-	result.HTTPStatus = status
-	result.LatencyMs = latency
-	if err != nil {
-		result.Detail = err.Error()
+	if provider.id == "netflix" {
+		return streamUnlockProbeNetflix(ctx, client, provider, family)
+	}
+	result := streamUnlockProbePage(ctx, client, provider, family)
+	if provider.id == "tiktok" && result.Status == "unknown" {
+		provider.url = strings.TrimRight(provider.url, "/") + "/explore"
+		fallback := streamUnlockProbePage(ctx, client, provider, family)
+		if fallback.Status == "available" || fallback.Status == "blocked" {
+			if fallback.Region == "" {
+				fallback.Region = result.Region
+			}
+			return fallback
+		}
+		if result.Region == "" {
+			result.Region = fallback.Region
+		}
+	}
+	if !streamUnlockIsAI(provider.id) || result.Status == "error" {
 		return result
 	}
-	result.Status, result.Region, result.Detail, result.Evidence = provider.parse(status, body, effectiveURL)
 	streamUnlockProbeAIAvailability(ctx, client, provider.id, &result)
 	if result.Region == "" {
 		if region := streamUnlockAIRegion(ctx, client, provider.id, family); region != "" {
@@ -277,6 +259,19 @@ func streamUnlockProbeProviderWithClient(ctx context.Context, client *http.Clien
 			result.Evidence += "; platform edge request country (not account entitlement)"
 		}
 	}
+	return result
+}
+
+func streamUnlockProbePage(ctx context.Context, client *http.Client, provider streamUnlockProvider, family string) streamUnlockProviderResult {
+	result := streamUnlockProviderResult{ProviderID: provider.id, ProviderName: provider.name, Family: family, Status: "error", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	status, body, effectiveURL, latency, err := streamUnlockHTTPGetPage(ctx, client, provider.url, provider.domain != "" && provider.id != "abema")
+	result.HTTPStatus = status
+	result.LatencyMs = latency
+	if err != nil {
+		result.Detail = err.Error()
+		return result
+	}
+	result.Status, result.Region, result.Detail, result.Evidence = provider.parse(status, body, effectiveURL)
 	return result
 }
 
@@ -296,7 +291,9 @@ func streamUnlockPublicIP(ctx context.Context, family string) string {
 	if family == "ipv6" {
 		endpoint = "https://api6.ipify.org"
 	}
-	status, body, _, _, err := streamUnlockHTTPGet(ctx, streamUnlockHTTPClient(family), endpoint)
+	client := streamUnlockHTTPClient(family)
+	defer client.CloseIdleConnections()
+	status, body, _, _, err := streamUnlockHTTPGet(ctx, client, endpoint)
 	if err != nil || status < 200 || status >= 300 {
 		return ""
 	}
@@ -306,95 +303,6 @@ func streamUnlockPublicIP(ctx context.Context, family string) string {
 		return ""
 	}
 	return address
-}
-
-type streamUnlockDoHResponse struct {
-	Answer []struct {
-		Type int    `json:"type"`
-		Data string `json:"data"`
-	} `json:"Answer"`
-}
-
-func streamUnlockDNS(ctx context.Context, domain, family string) streamUnlockDNSResult {
-	ctx, cancel := context.WithTimeout(ctx, streamUnlockRequestTimeout)
-	defer cancel()
-	result := streamUnlockDNSResult{Domain: domain, Family: family, Mode: "unknown", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	resolver := net.DefaultResolver
-	systemAddresses, systemErr := resolver.LookupHost(ctx, domain)
-	for _, address := range systemAddresses {
-		parsed := net.ParseIP(address)
-		if parsed == nil || (family == "ipv4" && parsed.To4() == nil) || (family == "ipv6" && parsed.To4() != nil) {
-			continue
-		}
-		result.SystemAddresses = append(result.SystemAddresses, address)
-	}
-	if cname, err := resolver.LookupCNAME(ctx, domain); err == nil && cname != "" && !strings.EqualFold(cname, domain+".") {
-		result.SystemCnames = []string{strings.TrimSuffix(cname, ".")}
-	}
-	dohURL := "https://cloudflare-dns.com/dns-query?name=" + url.QueryEscape(domain) + "&type="
-	if family == "ipv6" {
-		dohURL += "AAAA"
-	} else {
-		dohURL += "A"
-	}
-	status, body, _, _, dohErr := streamUnlockHTTPGet(ctx, streamUnlockHTTPClient(family), dohURL)
-	if dohErr == nil && status >= 200 && status < 300 {
-		var response streamUnlockDoHResponse
-		if json.Unmarshal([]byte(body), &response) == nil {
-			for _, answer := range response.Answer {
-				parsed := net.ParseIP(strings.TrimSpace(answer.Data))
-				if parsed == nil || (family == "ipv4" && parsed.To4() == nil) || (family == "ipv6" && parsed.To4() != nil) {
-					continue
-				}
-				result.PublicAddresses = append(result.PublicAddresses, parsed.String())
-			}
-		}
-	}
-	result.SystemAddresses = uniqueSortedIPs(result.SystemAddresses)
-	result.PublicAddresses = uniqueSortedIPs(result.PublicAddresses)
-	if systemErr != nil && len(result.SystemAddresses) == 0 {
-		result.Detail = "系统 DNS 查询失败"
-		return result
-	}
-	if dohErr != nil || len(result.PublicAddresses) == 0 {
-		result.Detail = "公共 DNS 对比查询失败"
-		return result
-	}
-	if sameStringSet(result.SystemAddresses, result.PublicAddresses) {
-		result.Mode = "public_dns"
-		result.Detail = "系统 DNS 与公共 DNS 结果一致，未发现智能 DNS 特征"
-	} else {
-		result.Mode = "smart_dns_suspected"
-		result.Detail = "系统 DNS 与公共 DNS 结果不同，可能存在智能 DNS 或解析分流"
-	}
-	return result
-}
-
-func uniqueSortedIPs(values []string) []string {
-	set := map[string]bool{}
-	for _, value := range values {
-		if parsed := net.ParseIP(value); parsed != nil {
-			set[parsed.String()] = true
-		}
-	}
-	result := make([]string, 0, len(set))
-	for value := range set {
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func sameStringSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }
 
 func streamUnlockResultCopy(result streamUnlockResult) streamUnlockResult {
@@ -484,6 +392,7 @@ func runStreamUnlockTask(cfg Config, task streamUnlockTask) streamUnlockResult {
 			go func() {
 				defer wg.Done()
 				sem <- struct{}{}
+				defer func() { <-sem }()
 				probe := streamUnlockProbeProvider(context.Background(), provider, family)
 				probe.Evidence = family + ":" + probe.Evidence
 				var progress streamUnlockResult
@@ -492,24 +401,16 @@ func runStreamUnlockTask(cfg Config, task streamUnlockTask) streamUnlockResult {
 				progress = streamUnlockResultCopy(result)
 				outputMu.Unlock()
 				reportStreamUnlockProgress(cfg, progress)
-				<-sem
+				if provider.domain == "" {
+					return
+				}
+				dns := streamUnlockDNS(context.Background(), provider, probe)
+				outputMu.Lock()
+				result.DNS = append(result.DNS, dns)
+				progress = streamUnlockResultCopy(result)
+				outputMu.Unlock()
+				reportStreamUnlockProgress(cfg, progress)
 			}()
-		}
-		for _, providerID := range providerIDs {
-			if provider, ok := providers[providerID]; ok && provider.domain != "" {
-				wg.Add(1)
-				go func(provider streamUnlockProvider, family string) {
-					defer wg.Done()
-					sem <- struct{}{}
-					dns := streamUnlockDNS(context.Background(), provider.domain, family)
-					outputMu.Lock()
-					result.DNS = append(result.DNS, dns)
-					progress := streamUnlockResultCopy(result)
-					outputMu.Unlock()
-					reportStreamUnlockProgress(cfg, progress)
-					<-sem
-				}(provider, family)
-			}
 		}
 	}
 	wg.Wait()

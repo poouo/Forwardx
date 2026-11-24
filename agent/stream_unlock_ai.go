@@ -46,7 +46,7 @@ func streamUnlockRestrictionText(body, effectiveURL string) string {
 	var object map[string]json.RawMessage
 	var parts []string
 	if json.Unmarshal([]byte(body), &object) == nil {
-		for _, key := range []string{"error", "errors", "message", "detail", "error_code", "code", "reason"} {
+		for _, key := range []string{"error", "errors", "message", "detail", "error_code", "code", "reason", "statusMsg", "status_msg"} {
 			if value := object[key]; len(value) > 0 {
 				parts = append(parts, streamUnlockJSONErrorText(value))
 			}

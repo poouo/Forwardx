@@ -238,6 +238,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     ...subscriptionTunnelIds, ...billingResourceIds.tunnelIds,
   ].map(positiveId).filter(Boolean));
   const seenGroups = new Set<number>(), seenTunnels = new Set<number>();
+  const reverseTunnelIds = new Set<number>();
   const topologyGroups: any[] = [], topologyMembers: any[] = [], topologyTunnels: any[] = [];
   const topologyGroupsResult = { ok: true }, topologyMembersResult = { ok: true };
   const inBatches = async (ids: number[], load: (batch: number[]) => PromiseLike<any[]>) => {
@@ -254,11 +255,19 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
     const [groupsResult, membersResult, tunnelRows] = await Promise.all([
       tracked(inBatches(groupIds, (batch) => db.select({ id: forwardGroups.id, entryGroupId: forwardGroups.entryGroupId }).from(forwardGroups).where(inArray(forwardGroups.id, batch))), []),
       tracked(inBatches(groupIds, (batch) => db.select({ groupId: forwardGroupMembers.groupId, memberType: forwardGroupMembers.memberType, hostId: forwardGroupMembers.hostId, tunnelId: forwardGroupMembers.tunnelId, isEnabled: forwardGroupMembers.isEnabled }).from(forwardGroupMembers).where(inArray(forwardGroupMembers.groupId, batch))), []),
-      safe(inBatches(tunnelIds, (batch) => db.select({ id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId, entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId }).from(tunnels).where(inArray(tunnels.id, batch))), []),
+      safe(inBatches(tunnelIds, (batch) => db.select({
+        id: tunnels.id, entryHostId: tunnels.entryHostId, exitHostId: tunnels.exitHostId,
+        entryGroupId: tunnels.entryGroupId, exitGroupId: tunnels.exitGroupId, connectionDirection: tunnels.connectionDirection,
+      }).from(tunnels).where(inArray(tunnels.id, batch))), []),
     ]);
+    const forwardTunnels = tunnelRows.filter((row) => {
+      if (row.connectionDirection !== "reverse") return true;
+      reverseTunnelIds.add(Number(row.id));
+      return false;
+    });
     topologyGroupsResult.ok &&= groupsResult.ok;
     topologyMembersResult.ok &&= membersResult.ok;
-    topologyGroups.push(...groupsResult.value); topologyMembers.push(...membersResult.value); topologyTunnels.push(...tunnelRows);
+    topologyGroups.push(...groupsResult.value); topologyMembers.push(...membersResult.value); topologyTunnels.push(...forwardTunnels);
     for (const row of groupsResult.value) {
       const id = positiveId(row.entryGroupId);
       if (id && !seenGroups.has(id)) pendingGroups.add(id);
@@ -267,7 +276,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
       const id = row.memberType === "tunnel" && dbBool(row.isEnabled, true) ? positiveId(row.tunnelId) : 0;
       if (id && !seenTunnels.has(id)) pendingTunnels.add(id);
     }
-    for (const row of tunnelRows) for (const value of [row.entryGroupId, row.exitGroupId]) {
+    for (const row of forwardTunnels) for (const value of [row.entryGroupId, row.exitGroupId]) {
       const id = positiveId(value);
       if (id && !seenGroups.has(id)) pendingGroups.add(id);
     }
@@ -288,7 +297,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
       ...tunnelPermissions.map((row: any) => row.id),
       ...subscriptionTunnelIds,
       ...billingResourceIds.tunnelIds,
-    ],
+    ].filter((id) => !reverseTunnelIds.has(Number(id))),
     groupIds: [
       ...(ownedForwardGroups as any[]).map((group) => group.id),
       ...groupPermissions.map((row: any) => row.id),
@@ -303,7 +312,7 @@ async function loadLinkAccessScope(userId: number): Promise<LinkAccessScope> {
   });
   const usableBillingIds = {
     host: new Set(billingResourceIds.hostIds.map(Number)),
-    tunnel: new Set(billingResourceIds.tunnelIds.map(Number)),
+    tunnel: new Set(billingResourceIds.tunnelIds.map(Number).filter((id) => !reverseTunnelIds.has(id))),
     forward_group: new Set(billingResourceIds.forwardGroupIds.map(Number)),
   };
   const activeBillingIds = {
@@ -496,6 +505,8 @@ export function filterTunnelFieldsForUser(tunnel: any, scope: LinkAccessScope) {
     certPem,
     certKeyPem,
     secret,
+    reverseCertPem,
+    reverseKeyPem,
     entryGroup,
     exitGroup,
     // Probe diagnostics can contain route labels, hostnames, addresses, and ports.

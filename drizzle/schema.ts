@@ -555,6 +555,11 @@ export const tunnels = table("tunnels", {
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // forwardx | tls | wss | tcp | mtls | mwss | mtcp | nginx_stream
   relayMode: varchar("relayMode", { length: 16 }).notNull().default("chain"), // chain | failover
   forwardxVersion: varchar("forwardxVersion", { length: 8 }).notNull().default("v1"),
+  connectionDirection: varchar("connectionDirection", { length: 8 }).notNull().default("forward"),
+  reverseConnectHost: text("reverseConnectHost"),
+  reverseListenPort: int("reverseListenPort").notNull().default(0),
+  reverseCertPem: text("reverseCertPem"),
+  reverseKeyPem: text("reverseKeyPem"),
   // V3 outer-transport options (null for v1/v2 tunnels).
   v3Transport: varchar("v3Transport", { length: 8 }),
   v3Host: text("v3Host"),
@@ -969,6 +974,8 @@ export const paymentOrders = table("payment_orders", {
   status: varchar("status", { length: 32 }).notNull().default("pending"), // pending | paid | completed | expired | cancelled | failed
   subject: text("subject").notNull(),
   amountCents: bigint("amountCents", { mode: "number" }).notNull(),
+  baseAmountCents: bigint("baseAmountCents", { mode: "number" }).notNull().default(0),
+  feeAmountCents: bigint("feeAmountCents", { mode: "number" }).notNull().default(0),
   currency: varchar("currency", { length: 16 }).notNull().default("CNY"),
   tradeNo: text("tradeNo"),
   payUrl: text("payUrl"),

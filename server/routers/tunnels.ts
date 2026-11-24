@@ -25,6 +25,9 @@ import {
 } from "../portReservations";
 import { withKeyedTaskLock } from "../keyedTaskLock";
 import { normalizeForwardXVersion } from "../../shared/forwardTypes";
+import { AGENT_REVERSE_GOST_VERSION, isReverseTunnel, supportsReverseTunnel } from "../../shared/tunnelDirection";
+import { reverseGostCertificate } from "../reverseGostTunnel";
+import { clearReverseTunnelConnection, getReverseTunnelConnectionStatus } from "../reverseTunnelStatus";
 import { AGENT_FORWARDX_WIREGUARD_VERSION, isForwardXWireGuardV2 } from "../forwardXWireGuard";
 import { normalizeForwardXV3Transport } from "../forwardXTransport";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
@@ -55,6 +58,81 @@ import {
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"]);
 const forwardXVersionSchema = z.enum(["v1", "v2", "v3"]);
+const tunnelDirectionInputFields = {
+  connectionDirection: z.enum(["forward", "reverse"]).optional(),
+  reverseConnectHost: z.string().trim().max(253).nullable().optional(),
+  reverseListenPort: z.number().int().min(0).max(65535).optional(),
+};
+
+async function configureReverseTunnel(options: {
+  current?: any;
+  next: any;
+  entry: any;
+  exit: any;
+  rules?: any[];
+  reservations: HostPortReservation[];
+}) {
+  const { current, next, entry, exit, rules = [], reservations } = options;
+  if (!isReverseTunnel(next)) {
+    return { connectionDirection: "forward", reverseConnectHost: null, reverseListenPort: 0, reverseCertPem: null, reverseKeyPem: null };
+  }
+  if (!supportsReverseTunnel(next.mode, next.forwardxVersion)) {
+    throw new Error("反向隧道仅支持 GOST TLS 和 ForwardX V2");
+  }
+  if (next.entryGroupId || next.exitGroupId || next.hopHostIds?.length >= 3 || dbBool(next.loadBalanceEnabled)) {
+    throw new Error("反向隧道仅支持单入口和单出口");
+  }
+  if (dbBool(next.udpOverTcp)) throw new Error("反向隧道暂不支持 UDP 混淆");
+  const peerChanged = current && (Number(current.entryHostId) !== Number(entry.id) || Number(current.exitHostId) !== Number(exit.id));
+  if (next.mode === "tls" && (!isReverseTunnel(current) || current.mode !== "tls" || peerChanged || next.isEnabled !== false)
+    && [entry, exit].some((host) => !isAgentVersionAtLeast(host.agentVersion, AGENT_REVERSE_GOST_VERSION))) {
+    throw new Error(`GOST TLS 反向隧道需要将入口和出口 Agent 升级到 ${AGENT_REVERSE_GOST_VERSION} 或更高版本`);
+  }
+  if (!isReverseTunnel(current)) {
+    if (current && await hopRepo.tunnelBelongsToForwardGroup(Number(current.id))) {
+      throw new Error("请先从转发组移除此隧道，再切换到反向模式");
+    }
+    const userIds = [...new Set(rules.filter((rule) => !dbBool(rule.pendingDelete)).map((rule) => Number(rule.userId)))];
+    const owners = await Promise.all(userIds.map((userId) => db.getUserById(userId)));
+    if (owners.some((user) => user?.role !== "admin")) {
+      throw new Error("请先迁移此隧道上的普通用户规则，再切换到反向模式");
+    }
+  }
+  const address = String(next.reverseConnectHost || "").trim().replace(/^\[|\]$/g, "");
+  if (!isValidHostOrIp(address || defaultTunnelHostAddress(entry))) throw new Error("入口连接地址无效");
+  const hostId = Number(entry.id);
+  const port = Number(next.reverseListenPort || 0);
+  const previousPort = isReverseTunnel(current) && Number(current.entryHostId) === hostId
+    ? Number(current.reverseListenPort || 0) : 0;
+  const movingPorts = Number(current?.entryHostId) !== hostId
+    ? rules.filter((rule) => dbBool(rule.isEnabled) && !dbBool(rule.pendingDelete)).map((rule) => Number(rule.sourcePort))
+    : [];
+  const policy = portPolicyFrom(entry);
+  let reservation: HostPortReservation | null;
+  if (port > 0) {
+    if (!isPortAllowedByPolicy(port, policy)) throw new Error(portPolicyErrorMessage(policy, "入口隧道端口"));
+    reservation = await reserveSpecificHostPort({
+      hostId, port, protocol: "both",
+      isUsed: (candidate) => movingPorts.includes(candidate) ? Promise.resolve(true)
+        : db.isPortUsedOnHost(hostId, candidate, undefined, "both", candidate === previousPort ? current.id : undefined),
+    });
+  } else {
+    reservation = await hopRepo.reserveTunnelExitPort({ hostId, protocol: "both", reservedPorts: movingPorts });
+  }
+  if (!reservation) throw new Error(port ? `入口 Agent 端口 ${port} 已被占用或正在分配` : "入口 Agent 已无可用隧道端口");
+  reservations.push(reservation);
+  const certificate = next.mode === "tls"
+    ? await reverseGostCertificate(peerChanged ? undefined : current)
+    : { reverseCertPem: null, reverseKeyPem: null };
+  return {
+    connectionDirection: "reverse",
+    reverseConnectHost: address || null,
+    reverseListenPort: reservation.port,
+    ...(current && (!isReverseTunnel(current) || !current.secret || peerChanged)
+      ? { secret: crypto.randomBytes(32).toString("hex") } : {}),
+    ...certificate,
+  };
+}
 const forwardXV3TransportSchema = z.enum(["http", "ws", "tls"]);
 const FORWARDX_V3_OPTION_KEYS = ["v3Transport", "v3Host", "v3Path", "v3UserAgent", "v3ServerName", "v3Multiplex"] as const;
 const forwardXV3InputFields = {
@@ -289,6 +367,7 @@ function normalizeNginxCertInput(input: { certPem?: unknown; certKeyPem?: unknow
 
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string, options?: { urgent?: boolean }) {
   clearTunnelRuntimeStatus(tunnelId);
+  clearReverseTunnelConnection(tunnelId);
   const uniqueHostIds = Array.from(new Set(hostIds.map((hostId) => Number(hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
   for (const hostId of uniqueHostIds) {
     pushAgentRefresh(hostId, reason, { urgent: options?.urgent === true });
@@ -712,7 +791,9 @@ function visibleTunnelQueryScope(
 }
 
 async function canAccessTunnelRecord(tunnel: any, user: { id: number; role: string }) {
-  if (user.role === "admin" || Number(tunnel?.userId) === Number(user.id)) return true;
+  if (user.role === "admin") return true;
+  if (isReverseTunnel(tunnel)) return false;
+  if (Number(tunnel?.userId) === Number(user.id)) return true;
   const accessScope = await getLinkAccessScope(user);
   return !!accessScope?.tunnelIds.has(Number(tunnel?.id));
 }
@@ -722,8 +803,9 @@ function compactTunnelForUse(tunnel: any) {
 }
 
 function attachTunnelAvailability(tunnels: any[], availabilityIndex: LinkAvailabilitySummaryIndex) {
-  return tunnels.map((tunnel) => ({
+  return tunnels.map(({ reverseCertPem, reverseKeyPem, ...tunnel }) => ({
     ...tunnel,
+    reverseConnectionStatus: getReverseTunnelConnectionStatus(tunnel),
     availability: publicLinkAvailabilitySummary(
       availabilityIndex.tunnelAvailabilityById.get(Number(tunnel.id)),
     ),
@@ -937,6 +1019,7 @@ export const tunnelsRouter = router({
         mode: tunnelModeSchema.default("forwardx"),
         relayMode: tunnelRelayModeSchema.optional().default("chain"),
         forwardxVersion: forwardXVersionSchema.optional().default("v1"),
+        ...tunnelDirectionInputFields,
         ...forwardXV3InputFields,
         listenPort: z.number().int().min(0).max(65535).optional().default(0),
         mimicPort: z.number().int().min(0).max(65535).optional().default(0),
@@ -1002,10 +1085,24 @@ export const tunnelsRouter = router({
         // Determine entry/exit host IDs
         const entryHostId = hopHostIds ? hopHostIds[0] : input.entryHostId;
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : input.exitHostId;
+        const reverseOptions = await configureReverseTunnel({
+          next: { ...input, mode: normalizedMode, forwardxVersion },
+          entry: await db.getHostById(entryHostId),
+          exit: await db.getHostById(exitHostId),
+          reservations: heldReservations,
+        });
 
         const requestedListenPort = Number(input.listenPort) || 0;
         let listenPort = requestedListenPort;
-        {
+        if (isReverseTunnel(reverseOptions)) {
+          listenPort = 0;
+          if (forwardxVersion === "v2") {
+            const reservation = await hopRepo.reserveLocalTunnelExitPort(exitHostId);
+            if (!reservation) throw new Error("出口 Agent 已无可用本地端口");
+            heldReservations.push(reservation);
+            listenPort = reservation.port;
+          }
+        } else {
           const exit = await db.getHostById(exitHostId) as any;
           if (listenPort > 0) {
             const policy = portPolicyFrom(exit);
@@ -1083,7 +1180,8 @@ export const tunnelsRouter = router({
             ...extraExitNodes.map((node) => node.hostId),
           ]);
         }
-        const mimicPort = (runtimeOptions.udpOverTcp || forwardxVersion === "v2")
+        const dedicatedExitUdpPort = !isReverseTunnel(reverseOptions) && (runtimeOptions.udpOverTcp || forwardxVersion === "v2");
+        const mimicPort = dedicatedExitUdpPort
           ? await validateMimicUdpPort({
             port: input.mimicPort,
             exitHostId,
@@ -1109,6 +1207,7 @@ export const tunnelsRouter = router({
           mode: normalizedMode,
           relayMode,
           forwardxVersion,
+          ...reverseOptions,
           certDomain,
           certPem: nginxCert.certPem,
           certKeyPem: nginxCert.certKeyPem,
@@ -1159,7 +1258,7 @@ export const tunnelsRouter = router({
           }
           await hopRepo.createTunnelHops(id, hops);
         }
-        const ensuredMimic = (runtimeOptions.udpOverTcp || forwardxVersion === "v2") ? await ensureConfiguredMimicPorts(id) : null;
+        const ensuredMimic = dedicatedExitUdpPort ? await ensureConfiguredMimicPorts(id) : null;
         const createdTunnel = await db.getTunnelById(id);
         await pushTunnelEndpointRefresh(createdTunnel || {
           id,
@@ -1170,7 +1269,7 @@ export const tunnelsRouter = router({
           exitHostId,
           loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
         }, "tunnel-created", { urgent: true });
-        return { id, listenPort, mimicPort: Number(ensuredMimic?.tunnel?.mimicPort || mimicPort || 0) };
+        return { id, listenPort, reverseListenPort: reverseOptions.reverseListenPort, mimicPort: Number(ensuredMimic?.tunnel?.mimicPort || mimicPort || 0) };
         } finally {
           releaseHostPortReservations(heldReservations);
         }
@@ -1188,6 +1287,7 @@ export const tunnelsRouter = router({
         forwardxVersion: forwardXVersionSchema.optional(),
         ...forwardXV3InputFields,
         listenPort: z.number().int().min(0).max(65535).optional(),
+        ...tunnelDirectionInputFields,
         // Non-persistent client hint: false means the value is merely the
         // form's persisted value and may be repaired after a route change.
         // When omitted, retain the legacy changed-value heuristic.
@@ -1286,7 +1386,7 @@ export const tunnelsRouter = router({
         const entryHostId = hopHostIds ? hopHostIds[0] : (input.entryHostId ?? tunnel.entryHostId);
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : (input.exitHostId ?? tunnel.exitHostId);
         if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
-        await requireHostAccess(ctx, entryHostId);
+        const entry = await requireHostAccess(ctx, entryHostId);
         const exit = await requireHostAccess(ctx, exitHostId);
         const {
           id,
@@ -1354,7 +1454,23 @@ export const tunnelsRouter = router({
           : dbBool((tunnel as any).udpOverTcp);
         const nextMimicEnabled = nextModeForRuntime === "forwardx" && nextUdpOverTcp;
         const nextWireGuardEnabled = nextModeForRuntime === "forwardx" && nextForwardXVersion === "v2";
-        const nextDedicatedUdpPortEnabled = nextMimicEnabled || nextWireGuardEnabled;
+        const reverseOptions = await configureReverseTunnel({
+          current: tunnel,
+          next: {
+            ...tunnel,
+            ...data,
+            mode: nextModeForRuntime,
+            forwardxVersion: nextForwardXVersion,
+            hopHostIds: hopIdsForConnect,
+            udpOverTcp: nextUdpOverTcp,
+          },
+          entry,
+          exit,
+          rules: referencedRules,
+          reservations: heldReservations,
+        });
+        Object.assign(data, reverseOptions);
+        const nextDedicatedUdpPortEnabled = !isReverseTunnel(reverseOptions) && (nextMimicEnabled || nextWireGuardEnabled);
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
           (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
@@ -1398,7 +1514,17 @@ export const tunnelsRouter = router({
         const listenerRuleExclusions = primaryManagedTunnelRuleId > 0
           ? [primaryManagedTunnelRuleId]
           : [];
-        if (explicitListenPortChanged) {
+        if (isReverseTunnel(reverseOptions)) {
+          let port = 0;
+          if (nextWireGuardEnabled) {
+            const reservation = await hopRepo.reserveLocalTunnelExitPort(exitHostId, tunnel);
+            if (!reservation) throw new Error("出口 Agent 已无可用本地端口");
+            heldReservations.push(reservation);
+            port = reservation.port;
+          }
+          (data as any).listenPort = port;
+          listenerPortChanged = port !== currentTunnelListenPort || exitHostChanged;
+        } else if (explicitListenPortChanged) {
           // A port explicitly entered by the operator remains strict: do not
           // silently move it to another port.  Automatic/legacy repair is
           // handled only when the value is omitted or set to zero.
@@ -1598,11 +1724,12 @@ export const tunnelsRouter = router({
             ...extraExitNodes.map((node) => node.hostId),
           ]);
         }
-        const topologyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "relayMode", "networkType", "connectHost"]
+        const reverseRuntimeKeys = ["connectionDirection", "reverseConnectHost", "reverseListenPort", "reverseCertPem", "reverseKeyPem", "secret"];
+        const topologyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "relayMode", "networkType", "connectHost", ...reverseRuntimeKeys]
           .some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key])
           || hopChanged
           || loadBalanceChanged;
-        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys, ...FORWARDX_V3_OPTION_KEYS].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        let keyChanged = ["entryGroupId", "exitGroupId", "entryHostId", "exitHostId", "mode", "relayMode", "forwardxVersion", "certDomain", "certPem", "certKeyPem", "listenPort", "mimicPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...reverseRuntimeKeys, ...tunnelRuntimeKeys, ...FORWARDX_V3_OPTION_KEYS].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined
           && dbBool((data as any).isEnabled) !== dbBool((tunnel as any).isEnabled);
         if (keyChanged) (data as any).isRunning = false;
@@ -1618,6 +1745,11 @@ export const tunnelsRouter = router({
           );
         }
         const syncedRuntimeRuleCount = await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
+        if (isReverseTunnel(reverseOptions) && !isReverseTunnel(tunnel)) {
+          for (const rule of referencedRules) {
+            await hopRepo.reconcileForwardRuleTunnelExits(rule, { ...tunnel, ...data });
+          }
+        }
         if (syncedRuntimeRuleCount > 0 || ((modeChanged || forwardXVersionChanged) && activeReferencedRuleCount > 0)) {
           appendPanelLog("info", `[Tunnel] runtime options synchronized tunnel=${id} mode=${nextModeForRuntime} forwardx=${nextForwardXVersion} rules=${syncedRuntimeRuleCount}`);
         }
@@ -1804,6 +1936,7 @@ export const tunnelsRouter = router({
           throw new Error(`此链路仍有关联转发规则 ${impact.forwardRuleCount} 条，请确认后再删除`);
         }
         clearTunnelRuntimeStatus(input.id);
+        clearReverseTunnelConnection(input.id);
         await pushTunnelEndpointRefresh(tunnel, "tunnel-deleted", { urgent: true });
         await db.deleteTunnel(input.id);
         return { success: true };
@@ -1813,12 +1946,25 @@ export const tunnelsRouter = router({
       .mutation(async ({ input, ctx }) => withKeyedTaskLock(`tunnel:${input.id}`, async () => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("Tunnel not found");
-        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("No permission to test this tunnel");
+        if (ctx.user.role !== "admin" && (isReverseTunnel(tunnel) || tunnel.userId !== ctx.user.id)) throw new Error("No permission to test this tunnel");
         await requireTunnelProtocolEnabled(tunnel);
         const entry = await db.getHostById(tunnel.entryHostId);
         const exit = await db.getHostById(tunnel.exitHostId);
         if (!entry) throw new Error("Entry Agent not found");
         if (!exit) throw new Error("Exit Agent not found");
+        if (isReverseTunnel(tunnel)) {
+          if (!dbBool(tunnel.isEnabled)) throw new Error("隧道已停用");
+          if (tunnel.mode === "tls" && !isAgentVersionAtLeast(entry.agentVersion, AGENT_REVERSE_GOST_VERSION)) {
+            throw new Error(`GOST TLS 反向隧道需要将入口 Agent 升级到 ${AGENT_REVERSE_GOST_VERSION} 或更高版本`);
+          }
+          const probes = planManualTunnelProbes({
+            tunnel, hops: [], exits: [], entryHostIds: [Number(entry.id)],
+            hosts: new Map([[Number(entry.id), entry], [Number(exit.id), exit]]),
+          });
+          const queued = await queueManualTunnelProbeBatch(tunnel, probes);
+          await pushTunnelEndpointRefresh(tunnel, "reverse-tunnel-selftest", { urgent: true, refreshMode: "probe" });
+          return queued;
+        }
         appendPanelLog("info", `[TunnelTest] start tunnel=${tunnel.id} name=${tunnel.name} entryHost=${tunnel.entryHostId} exitHost=${tunnel.exitHostId} mode=${tunnel.mode} listenPort=${tunnel.listenPort}`);
         let tunnelHops = await hopRepo.getTunnelHops(Number(tunnel.id));
         const tunnelHopHostIds = Array.isArray(tunnelHops)

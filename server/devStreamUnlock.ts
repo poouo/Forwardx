@@ -29,7 +29,7 @@ export function seedDevStreamUnlockResults(hosts: DevStreamUnlockHost[], now = n
   const statuses: StreamUnlockProviderStatus[] = [
     "available", "available", "available", "available", "blocked", "blocked", "unknown", "available",
   ];
-  const domains = ["netflix.com", "disneyplus.com", "youtube.com", "spotify.com", "bilibili.tv", "ani.gamer.com.tw", "api.abema.io"];
+  const domains = ["netflix.com", "disneyplus.com", "youtube.com", "spotify.com", "bilibili.tv", "ani.gamer.com.tw", "api.abema.io", "tiktok.com"];
   const count = Math.floor(hosts.length / 2);
   for (let index = 0; index < count; index++) {
     const host = hosts[index * 2];
@@ -56,10 +56,10 @@ export function seedDevStreamUnlockResults(hosts: DevStreamUnlockHost[], now = n
     const dns: StreamUnlockDnsResult[] = families.flatMap((family) => domains.map((domain, providerIndex) => ({
       domain,
       family,
-      mode: providerIndex === 0 ? "smart_dns_suspected" : "public_dns",
+      mode: providerIndex === 0 ? "dns_unlocked" : "public_dns",
       systemAddresses: family === "ipv6" ? ["2001:db8:30::10"] : ["192.0.2.100"],
       publicAddresses: family === "ipv6" ? ["2001:db8:40::10"] : ["198.51.100.100"],
-      detail: providerIndex === 0 ? "系统解析存在智能 DNS 特征" : "未发现智能 DNS 特征",
+      detail: providerIndex === 0 ? "使用系统 DNS 时可访问；改用公共 DNS 后，同一平台探针返回访问限制" : "未发现智能 DNS 特征",
       checkedAt: timestamp,
     })));
     fixtures.set(hostId, {

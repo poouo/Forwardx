@@ -32,12 +32,14 @@ type StreamUnlockResult = {
   region?: string | null;
   country?: string | null;
   family?: string | null;
+  detail?: string | null;
 };
 
 type DnsResult = {
   domain?: string;
   family?: string | null;
   mode?: string;
+  detail?: string | null;
 };
 
 type ProviderDisplay = {
@@ -45,7 +47,8 @@ type ProviderDisplay = {
   resultCount: number;
   status: string | null;
   regions: string[];
-  dnsUnlocked: boolean;
+  dnsMode: string | undefined;
+  detail: string;
 };
 
 const DNS_PROVIDER_BY_DOMAIN: Record<string, string> = {
@@ -56,6 +59,7 @@ const DNS_PROVIDER_BY_DOMAIN: Record<string, string> = {
   "bilibili.tv": "bilibili-tv",
   "ani.gamer.com.tw": "bahamut",
   "api.abema.io": "abema",
+  "tiktok.com": "tiktok",
 };
 
 const CATEGORIES = [
@@ -119,11 +123,11 @@ function statusLabel(status: string, availabilityOnly: boolean) {
   }
 }
 
-function statusClass(status: string, dnsUnlocked: boolean) {
-  if (dnsUnlocked || ["available", "unlocked", "yes"].includes(status)) {
+function statusClass(status: string) {
+  if (["dns_unlocked", "dns_region_override", "available", "unlocked", "yes"].includes(status)) {
     return "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
   }
-  if (["partial", "login", "subscription", "login_required"].includes(status)) {
+  if (["smart_dns_suspected", "partial", "login", "subscription", "login_required"].includes(status)) {
     return "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400";
   }
   if (["blocked", "no", "error", "failed"].includes(status)) {
@@ -185,22 +189,23 @@ function HostStreamUnlockDialogContent({ host, onOpenChange }: HostStreamUnlockD
   const activeFamily = (selectedFamily === "ipv4" ? hasIpv4 : hasIpv6) ? selectedFamily : defaultFamily;
   const familyProviderResults = providerResults.filter((result) => !result.family || String(result.family).toLowerCase() === activeFamily);
   const familyDnsResults = dnsResults.filter((result) => !result.family || String(result.family).toLowerCase() === activeFamily);
+  const legacyDns = payload.probeVersion == null || payload.probeVersion === "1";
   const providerDisplays = useMemo<ProviderDisplay[]>(() => STREAM_UNLOCK_PROVIDER_CATALOG.map((provider) => {
     const matches = familyProviderResults.filter((result) => result.providerId === provider.id);
-    const matchingDns = familyDnsResults.filter((result) => providerIdForDomain(result.domain) === provider.id);
-    const dnsUnlocked = !provider.availabilityOnly && matches.some((result) => accessibleStatus(resultStatus(result))
-      && matchingDns.some((dns) => dns.mode === "smart_dns_suspected"
-        && (!dns.family || !result.family || dns.family === result.family)));
+    const latest = matches[matches.length - 1];
+    const dns = familyDnsResults.find((result) => providerIdForDomain(result.domain) === provider.id);
+    const status = latest ? resultStatus(latest) : null;
+    const dnsMode = !legacyDns && status && accessibleStatus(status) ? dns?.mode : undefined;
     const regions = [...new Set(matches.map((result) => normalizeRegion(result.region || result.country)).filter(Boolean))];
-    const status = matches.length > 0 ? resultStatus(matches[matches.length - 1]) : null;
     return {
       provider,
       resultCount: matches.length,
       status,
       regions,
-      dnsUnlocked,
+      dnsMode,
+      detail: [latest?.detail, !legacyDns && dns?.detail].filter(Boolean).join("\n"),
     };
-  }), [familyDnsResults, familyProviderResults]);
+  }), [familyDnsResults, familyProviderResults, legacyDns]);
 
   const hasPreviousResult = providerResults.length > 0 || dnsResults.length > 0 || Boolean(payload?.checkedAt || payload?.finishedAt || payload?.error);
   const taskError = startMutation.error?.message || statusQuery.error?.message || payload?.error;
@@ -284,14 +289,12 @@ function HostStreamUnlockDialogContent({ host, onOpenChange }: HostStreamUnlockD
 }
 
 function ProviderResultRow({ item, checking }: { item: ProviderDisplay; checking: boolean }) {
-  const status = item.dnsUnlocked ? "dns_unlocked" : item.status;
-  const label = item.dnsUnlocked
-    ? t("DNS 解锁")
-    : item.status
-      ? statusLabel(item.status, item.provider.availabilityOnly)
-      : checking
-        ? t("检测中")
-        : null;
+  const dnsLabel = item.dnsMode === "dns_unlocked" ? t("DNS 解锁")
+    : item.dnsMode === "dns_region_override" ? t("DNS 换区")
+    : item.dnsMode === "smart_dns_suspected" ? t("疑似 DNS")
+    : null;
+  const status = dnsLabel ? item.dnsMode : item.status;
+  const label = dnsLabel ?? (item.status ? statusLabel(item.status, item.provider.availabilityOnly) : checking ? t("检测中") : null);
 
   return (
     <div className="flex min-w-0 items-center gap-2.5 rounded-md border bg-card/50 px-2.5 py-2">
@@ -316,7 +319,7 @@ function ProviderResultRow({ item, checking }: { item: ProviderDisplay; checking
           ))}
         </span>
         {label ? (
-          <Badge variant="outline" className={cn("w-[82px] justify-center gap-1 whitespace-nowrap text-[11px]", statusClass(status || "unknown", item.dnsUnlocked))}>
+          <Badge variant="outline" title={item.detail || undefined} className={cn("w-[82px] justify-center gap-1 whitespace-nowrap text-[11px]", statusClass(status || "unknown"))}>
             {checking && <Loader2 className="h-3 w-3 animate-spin" />}
             {label}
           </Badge>

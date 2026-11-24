@@ -1,4 +1,4 @@
-export const STREAM_UNLOCK_PROBE_VERSION = "1";
+export const STREAM_UNLOCK_PROBE_VERSION = "2";
 
 export const STREAM_UNLOCK_PROVIDER_CATALOG = [
   { id: "netflix", name: "Netflix", category: "streaming", availabilityOnly: false },
@@ -18,7 +18,7 @@ export const STREAM_UNLOCK_PROVIDER_CATALOG = [
 export type StreamUnlockProviderId = (typeof STREAM_UNLOCK_PROVIDER_CATALOG)[number]["id"];
 export type StreamUnlockFamily = "ipv4" | "ipv6" | "both";
 export type StreamUnlockProviderStatus = "available" | "partial" | "blocked" | "login_required" | "error" | "unknown";
-export type StreamUnlockDnsMode = "direct" | "smart_dns_suspected" | "public_dns" | "mismatch" | "unknown";
+export type StreamUnlockDnsMode = "direct" | "dns_unlocked" | "dns_region_override" | "smart_dns_suspected" | "public_dns" | "mismatch" | "unknown";
 
 export type StreamUnlockProviderResult = {
   providerId: string;

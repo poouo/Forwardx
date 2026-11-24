@@ -702,19 +702,30 @@ export async function getUserManagementCounts() {
   };
 }
 
-export async function getUsersPage(input: PageRequest) {
+export async function getUsersPage(input: PageRequest & { search?: string }) {
   const db = await getDb();
   if (!db) return { ...pageResult([], 0, input), adminItems: 0 };
+  const search = (input.search || "").trim().slice(0, 128).toLowerCase();
+  let searchCondition;
+  if (search) {
+    const pattern = `%${search.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_")}%`;
+    const numericId = /^#?\d+$/.test(search) ? Number(search.replace(/^#/, "")) : NaN;
+    searchCondition = or(
+      ...[users.username, users.name, users.email, users.displayRemark].map(column => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`),
+      Number.isSafeInteger(numericId) && numericId > 0 ? eq(users.id, numericId) : undefined,
+    );
+  }
   const [totalRows, adminRows] = await Promise.all([
-    db.select({ count: sql<number>`COUNT(*)` }).from(users),
+    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(searchCondition),
     db.select({
       count: sql<number>`COALESCE(SUM(CASE WHEN ${users.role} = 'admin' THEN 1 ELSE 0 END), 0)`,
-    }).from(users),
+    }).from(users).where(searchCondition),
   ]);
   const totalItems = Number(totalRows[0]?.count || 0);
   const adminItems = Number(adminRows[0]?.count || 0);
   const window = pageWindowForTotal(input, totalItems);
   const items = await usersForListQuery(db)
+    .where(searchCondition)
     .orderBy(desc(users.createdAt))
     .limit(window.pageSize)
     .offset(window.offset);

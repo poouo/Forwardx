@@ -48,6 +48,7 @@ interface MultiHopEditorProps {
   initialHopIds?: number[];
   initialHopConnectHosts?: Array<string | null>;
   maxHops?: number;
+  hideConnectOptions?: boolean;
   onChange?: (hopHostIds: number[]) => void;
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
   fixedExitHostIds?: number[];
@@ -89,6 +90,7 @@ export default function MultiHopEditor({
   initialHopIds,
   initialHopConnectHosts,
   maxHops = 5,
+  hideConnectOptions = false,
   onChange,
   onConnectHostsChange,
   fixedExitHostIds = [],
@@ -325,17 +327,19 @@ export default function MultiHopEditor({
         <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">{translateText("从上方选择主机来创建链路")}</div>
       ) : (
         <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          {!hideConnectOptions && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
             <span className="font-medium text-foreground/70">{translateText("开关说明")}</span>
             <span>{translateText("内网：使用该主机内网 IP")}</span>
             <span>{translateText("IPv6：使用该主机 IPv6")}</span>
             <span>{translateText("两者互斥，未配置时不可开启")}</span>
-          </div>
-          <div className="hidden grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_84px] items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid">
+          </div>}
+          <div className={`hidden items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid ${hideConnectOptions
+            ? "grid-cols-[auto_auto_minmax(8rem,1fr)_52px_84px]"
+            : "grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_84px]"}`}>
             <span className="col-span-2">{relayMode === "failover" ? translateText("优先级") : translateText("顺序")}</span>
             <span>{translateText("主机")}</span>
-            <span className="text-center">{translateText("内网")}</span>
-            <span className="text-center">IPv6</span>
+            {!hideConnectOptions && <span className="text-center">{translateText("内网")}</span>}
+            {!hideConnectOptions && <span className="text-center">IPv6</span>}
             <span className="text-center">{translateText("角色")}</span>
             <span className="text-right">{translateText("操作")}</span>
           </div>
@@ -402,7 +406,7 @@ export default function MultiHopEditor({
                 />
 
                 <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
-                <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
+                {!hideConnectOptions && <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
                   {showTunnelEntryIpSwitch ? (
                     <TooltipProvider delayDuration={120}>
                       <Tooltip>
@@ -417,9 +421,9 @@ export default function MultiHopEditor({
                   ) : (
                     <span className="text-[11px] text-muted-foreground/40">--</span>
                   )}
-                </div>
+                </div>}
 
-                <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
+                {!hideConnectOptions && <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
                   {showIpv6Switch ? (
                     <TooltipProvider delayDuration={120}>
                       <Tooltip>
@@ -434,7 +438,7 @@ export default function MultiHopEditor({
                   ) : (
                     <span className="text-[11px] text-muted-foreground/40">--</span>
                   )}
-                </div>
+                </div>}
 
                 <Badge variant="outline" className={`flex h-6 min-w-[44px] shrink-0 justify-center whitespace-nowrap px-1.5 py-0 text-[11px] ${ROLE_COLORS[role]}`}>
                   {translateText(ROLE_LABELS[role])}

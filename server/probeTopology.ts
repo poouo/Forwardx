@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { exitGroupUsesMultipleExits, normalizeExitGroupStrategy } from "../shared/exitStrategy";
 import { normalizeTunnelRelayMode } from "../shared/tunnelRelay";
+import { isReverseTunnel } from "../shared/tunnelDirection";
 
 function text(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
@@ -47,6 +48,7 @@ export function tunnelProbeTopologyKey(tunnel: any, hops: any[] = [], exitNodes:
     exitStrategy,
     hopParts,
     exitParts,
+    ...(isReverseTunnel(tunnel) ? ["reverse", text(tunnel.reverseConnectHost), Number(tunnel.reverseListenPort), tunnel.secret] : []),
   ]);
 }
 

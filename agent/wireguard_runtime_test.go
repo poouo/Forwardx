@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1380,9 +1381,50 @@ func TestWireGuardRuntimeSupportsTwoIndependentEntries(t *testing.T) {
 }
 
 func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
+	t.Run("entry dials exit", func(t *testing.T) { testWireGuardRuntimeTCPAndUDPProxy(t, false) })
+	t.Run("exit dials entry", func(t *testing.T) { testWireGuardRuntimeTCPAndUDPProxy(t, true) })
+}
+
+func wireGuardTestNAT(t *testing.T, entryPort int) (int, *atomic.Bool, <-chan struct{}) {
+	t.Helper()
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { relay.Close() })
+	var reachable atomic.Bool
+	initialDrop := make(chan struct{}, 1)
+	entry := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: entryPort}
+	go func() {
+		var exit *net.UDPAddr
+		buffer := make([]byte, 2048)
+		for {
+			count, sender, err := relay.ReadFromUDP(buffer)
+			if err != nil {
+				return
+			}
+			if !reachable.Load() {
+				select {
+				case initialDrop <- struct{}{}:
+				default:
+				}
+				continue
+			}
+			if sender.Port != entryPort {
+				exit = sender
+				_, _ = relay.WriteToUDP(buffer[:count], entry)
+			} else if exit != nil {
+				_, _ = relay.WriteToUDP(buffer[:count], exit)
+			}
+		}
+	}()
+	return relay.LocalAddr().(*net.UDPAddr).Port, &reachable, initialDrop
+}
+
+func testWireGuardRuntimeTCPAndUDPProxy(t *testing.T, reverse bool) {
 	leftPrivate, leftPublic := testWireGuardKeyPair(t)
 	rightPrivate, rightPublic := testWireGuardKeyPair(t)
-	rightWirePort := testUDPPort(t)
+	wirePort := testUDPPort(t)
 
 	tcpBackend, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1419,17 +1461,42 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 		}
 	}()
 
-	right, err := newWireGuardRuntime(wireGuardSpec{
+	rightSpec := wireGuardSpec{
 		TunnelID:   901,
 		PrivateKey: rightPrivate,
 		PublicKey:  rightPublic,
 		Address:    "100.100.0.2",
-		ListenPort: rightWirePort,
 		MTU:        1380,
 		Peers: []wireGuardPeerSpec{{
 			ID: "1", HostID: 1, PublicKey: leftPublic, Address: "100.100.0.1",
 		}},
-	})
+	}
+	leftSpec := wireGuardSpec{
+		TunnelID:   901,
+		PrivateKey: leftPrivate,
+		PublicKey:  leftPublic,
+		Address:    "100.100.0.1",
+		MTU:        1380,
+		Peers: []wireGuardPeerSpec{{
+			ID: "2", HostID: 2, PublicKey: rightPublic, Address: "100.100.0.2",
+		}},
+	}
+	var reachable *atomic.Bool
+	var initialDrop <-chan struct{}
+	if reverse {
+		var relayPort int
+		relayPort, reachable, initialDrop = wireGuardTestNAT(t, wirePort)
+		leftSpec.ListenPort = wirePort
+		rightSpec.Peers[0].EndpointHost = "127.0.0.1"
+		rightSpec.Peers[0].EndpointPort = relayPort
+		rightSpec.Peers[0].PersistentKeepalive = 1
+	} else {
+		rightSpec.ListenPort = wirePort
+		leftSpec.Peers[0].EndpointHost = "localhost"
+		leftSpec.Peers[0].EndpointPort = wirePort
+		leftSpec.Peers[0].PersistentKeepalive = 25
+	}
+	right, err := newWireGuardRuntime(rightSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1451,24 +1518,32 @@ func TestWireGuardRuntimeTCPAndUDPProxy(t *testing.T) {
 	defer releaseWireGuardRuntimeInstanceRef(right, 901, replacementRightInboundRef)
 	releaseWireGuardRuntimeInstanceRef(right, 901, oldRightInboundRef)
 
-	left, err := newWireGuardRuntime(wireGuardSpec{
-		TunnelID:   901,
-		PrivateKey: leftPrivate,
-		PublicKey:  leftPublic,
-		Address:    "100.100.0.1",
-		MTU:        1380,
-		Peers: []wireGuardPeerSpec{{
-			ID: "2", HostID: 2, PublicKey: rightPublic, Address: "100.100.0.2",
-			EndpointHost: "localhost", EndpointPort: rightWirePort, PersistentKeepalive: 25,
-		}},
-	})
+	if reverse {
+		select {
+		case <-initialDrop:
+		case <-time.After(3 * time.Second):
+			t.Fatal("reverse exit did not initiate a WireGuard handshake")
+		}
+	}
+	left, err := newWireGuardRuntime(leftSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer left.close()
+	if reverse {
+		reachable.Store(true)
+	}
 	setTestWireGuardRuntime(t, 901, left)
-	if latency, reachable := wireGuardTCPLatency(901, "2", servicePort, 8*time.Second); !reachable || latency <= 0 {
-		t.Fatalf("WireGuard TCP latency probe failed: reachable=%v latency=%d", reachable, latency)
+	if latency, connected := wireGuardTCPLatency(901, "2", servicePort, 12*time.Second); !connected || latency <= 0 {
+		for _, node := range []*wireGuardRuntime{left, right} {
+			config, _ := node.device.IpcGet()
+			for _, line := range strings.Split(config, "\n") {
+				if strings.HasPrefix(line, "endpoint=") || strings.HasPrefix(line, "last_handshake_time_sec=") {
+					t.Logf("local overlay %s: %s", node.spec.Address, line)
+				}
+			}
+		}
+		t.Fatalf("WireGuard TCP latency probe failed: reachable=%v latency=%d", connected, latency)
 	}
 
 	const oldProxyRef = "wireguard-proxy-integration-test:old"

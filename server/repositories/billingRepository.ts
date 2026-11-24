@@ -1078,7 +1078,7 @@ export async function createUserSubscription(data: InsertUserSubscription) {
 /** Live, batched accounting lookup. Never use a cross-request entitlement cache
  * or the UI's summary reads (which also load add-ons) on every traffic report. */
 export async function getPlanTrafficModesForRules(rules: Array<Parameters<typeof rulePlanTrafficMode>[0] & { id: number }>) {
-  const modes = new Map<number, PlanTrafficMode>(rules.map(rule => [Number(rule.id), "both"]));
+  const modes = new Map<number, PlanTrafficMode>();
   const userIds = normalizeNumericIds(rules.map(rule => rule.userId));
   if (!userIds.length) return modes;
   const db = await getDb();
@@ -1121,7 +1121,10 @@ export async function getPlanTrafficModesForRules(rules: Array<Parameters<typeof
       hostIds: source.hostIds, tunnelIds: source.tunnelIds, forwardGroupIds: source.forwardGroupIds });
     byUser.set(userId, list);
   }
-  for (const rule of rules) modes.set(Number(rule.id), rulePlanTrafficMode(rule, byUser.get(Number(rule.userId)) || []));
+  for (const rule of rules) {
+    const mode = rulePlanTrafficMode(rule, byUser.get(Number(rule.userId)) || []);
+    if (mode !== undefined) modes.set(Number(rule.id), mode);
+  }
   return modes;
 }
 
@@ -3666,6 +3669,8 @@ export async function listPaymentOrders(limit = 100, userId?: number, selectedId
       status: paymentOrders.status,
       subject: paymentOrders.subject,
       amountCents: paymentOrders.amountCents,
+      baseAmountCents: paymentOrders.baseAmountCents,
+      feeAmountCents: paymentOrders.feeAmountCents,
       currency: paymentOrders.currency,
       tradeNo: paymentOrders.tradeNo,
       payUrl: paymentOrders.payUrl,

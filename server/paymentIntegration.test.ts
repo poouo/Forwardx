@@ -419,3 +419,37 @@ test("failed fulfillment retains confirmed payment and diagnostics until a safe 
   assert.equal((await postAli("ORPHAN-PLAN")).status,200);
   assert.equal(await balance(),100);
 `));
+
+test("payment channel fees are added to gateway charges and excluded from balance credit", () => scenario(String.raw`
+  const feeConfig = {
+    ...base,
+    enabled: true,
+    maxPendingOrders: 0,
+    routes: { ...base.routes, alipay: "easypay" },
+    easypay: { ...base.easypay, enabled: true, apiBase: "https://easy.example.test", pid: "fee-pid", pkey: "fee-secret" },
+    fees: { ...base.fees, alipay: { enabled: true, rateBps: 250, fixedCents: 10 } },
+  };
+  await admin.updateConfig(feeConfig);
+  const legacyClientConfig = { ...feeConfig };
+  delete legacyClientConfig.fees;
+  await admin.updateConfig(legacyClientConfig);
+  assert.deepEqual(await admin.feeQuote({ amountCents: 101, paymentType: "alipay" }), {
+    enabled: true, rateBps: 250, fixedCents: 10, baseAmountCents: 101, feeCents: 13, totalAmountCents: 114,
+  });
+  globalThis.fetch = async (_url, options) => {
+    const params = Object.fromEntries(options.body.entries());
+    assert.equal(params.money, "1.14");
+    return new Response(JSON.stringify({ code: 1, trade_no: "FEE-TRADE", payurl: "https://easy.example.test/pay" }));
+  };
+  const order = await admin.createOrder({ amount: 1.01, paymentType: "alipay" });
+  assert.equal(order.amountCents, 114);
+  assert.equal(order.baseAmountCents, 101);
+  assert.equal(order.feeAmountCents, 13);
+  const params = { pid: "fee-pid", out_trade_no: order.outTradeNo, trade_no: "FEE-TRADE", trade_status: "TRADE_SUCCESS", money: "1.14" };
+  const canonical = Object.keys(params).sort().map(key => key + "=" + params[key]).join("&") + "fee-secret";
+  params.sign = crypto.createHash("md5").update(canonical).digest("hex");
+  params.sign_type = "MD5";
+  assert.equal((await originalFetch(origin + "/api/payment/webhook/easypay", { method: "POST", body: new URLSearchParams(params) })).status, 200);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).status, "completed");
+  assert.equal(await balance(), 101);
+`));

@@ -19,6 +19,7 @@ import { afterDatabaseTransactionSettled, executeRaw, getDatabaseKind, getDb, in
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combineHostPortPolicyWithRange, combinePortPolicies, isPortAllowedByPolicy, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { releaseHostPortReservations, reserveAvailableHostPort, reserveSpecificHostPort, type HostPortReservation } from "../portReservations";
+import { isReverseTunnel } from "../../shared/tunnelDirection";
 import { getHostById } from "./hostRepository";
 import { getForwardRulesByTunnel, getForwardRulesForAgent, updateForwardRule } from "./forwardRuleRepository";
 import { sqlBool } from "./repositoryUtils";
@@ -48,7 +49,11 @@ function databaseBool(value: unknown, fallback = false) {
 // therefore share the tunnel endpoint. Nginx keeps its primary-rule convention.
 const SHARED_GOST_LISTENER_MODES = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 export function usesSharedGostTunnelListener(tunnel: any) {
-  return SHARED_GOST_LISTENER_MODES.includes(String(tunnel?.mode || "").trim().toLowerCase());
+  return !isReverseTunnel(tunnel) && SHARED_GOST_LISTENER_MODES.includes(String(tunnel?.mode || "").trim().toLowerCase());
+}
+
+export function tunnelRuleNeedsExitPort(tunnel: any) {
+  return !isReverseTunnel(tunnel) && String(tunnel?.mode || "").trim().toLowerCase() !== "forwardx";
 }
 export function usesSharedTunnelPrimaryListener(tunnel: any) {
   return usesSharedGostTunnelListener(tunnel) || String(tunnel?.mode || "").trim().toLowerCase() === "nginx_stream";
@@ -134,6 +139,7 @@ function escapeTunnelSearchToken(value: string) {
 function tunnelListCondition(input: Omit<TunnelListQuery, keyof PageRequest>) {
   const conditions: any[] = [];
   if (Number(input.ownerUserId || 0) > 0) {
+    conditions.push(eq(tunnels.connectionDirection, "forward"));
     const allowedIds = normalizeTunnelIds(input.allowedTunnelIds);
     conditions.push(allowedIds.length > 0
       ? or(eq(tunnels.userId, Number(input.ownerUserId)), inArray(tunnels.id, allowedIds))
@@ -155,12 +161,15 @@ function tunnelListCondition(input: Omit<TunnelListQuery, keyof PageRequest>) {
         tunnels.v3ServerName,
         tunnels.networkType,
         tunnels.connectHost,
+        tunnels.reverseConnectHost,
+        tunnels.connectionDirection,
         tunnels.certDomain,
       ].map((column) => sql`LOWER(COALESCE(${column}, '')) LIKE ${pattern} ESCAPE '!'`),
       ...(numeric > 0 ? [
         eq(tunnels.id, numeric),
         eq(tunnels.listenPort, numeric),
         eq(tunnels.mimicPort, numeric),
+        eq(tunnels.reverseListenPort, numeric),
       ] : []),
       sql`EXISTS (
         SELECT 1 FROM ${hosts}
@@ -414,6 +423,14 @@ export async function getTunnelsByIds(tunnelIds: number[]) {
   return rows;
 }
 
+export async function tunnelBelongsToForwardGroup(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db.select({ id: forwardGroupMembers.id }).from(forwardGroupMembers)
+    .where(eq(forwardGroupMembers.tunnelId, tunnelId)).limit(1);
+  return rows.length > 0;
+}
+
 export async function backfillTunnelExitGroupReferences() {
   const db = await getDb();
   if (!db) return 0;
@@ -449,7 +466,7 @@ export async function backfillTunnelExitGroupReferences() {
   const legacyTunnels = await db
     .select({ id: tunnels.id, exitHostId: tunnels.exitHostId })
     .from(tunnels)
-    .where(sql`${tunnels.exitGroupId} IS NULL`);
+    .where(and(sql`${tunnels.exitGroupId} IS NULL`, eq(tunnels.connectionDirection, "forward")));
   let updated = 0;
   for (const tunnel of legacyTunnels as any[]) {
     const exitNodes = await getTunnelExitNodes(Number(tunnel.id));
@@ -986,6 +1003,8 @@ export async function findAvailableTunnelExitPort(
   const usedRulePorts = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedRuleConds));
   const usedTunnelPorts = await db.select({ port: tunnels.listenPort }).from(tunnels).where(eq(tunnels.exitHostId, exitHostId));
   const usedTunnelMimicPorts = await db.select({ port: tunnels.mimicPort }).from(tunnels).where(eq(tunnels.exitHostId, exitHostId));
+  const usedReversePorts = await db.select({ port: tunnels.reverseListenPort }).from(tunnels)
+    .where(and(eq(tunnels.entryHostId, exitHostId), eq(tunnels.connectionDirection, "reverse")));
   const usedExtraTunnelPorts = await db.select({ port: tunnelExitNodes.listenPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, exitHostId));
   const usedExtraTunnelMimicPorts = await db.select({ port: tunnelExitNodes.mimicPort }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, exitHostId));
   const usedHopPorts = await db.select({ port: tunnelHops.listenPort }).from(tunnelHops).where(eq(tunnelHops.hostId, exitHostId));
@@ -1020,6 +1039,7 @@ export async function findAvailableTunnelExitPort(
   usedRulePorts.forEach((r: any) => used.add(Number(r.port)));
   usedTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
   usedTunnelMimicPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedReversePorts.forEach((r: any) => used.add(Number(r.port)));
   usedExtraTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
   usedExtraTunnelMimicPorts.forEach((r: any) => used.add(Number(r.port)));
   usedHopPorts.forEach((r: any) => used.add(Number(r.port)));
@@ -1031,6 +1051,28 @@ export async function findAvailableTunnelExitPort(
     if (r.port != null) used.add(Number(r.port));
   });
   return pickAvailablePort(policy, used, { start: 20000, end: 65535 });
+}
+
+export async function reserveLocalTunnelExitPort(hostId: number, current?: any) {
+  const protocol = "both";
+  const sameEndpoint = Number(current?.exitHostId) === hostId;
+  const currentPort = sameEndpoint ? Number(current.listenPort || 0) : 0;
+  if (currentPort > 0) {
+    const reservation = await reserveSpecificHostPort({
+      hostId, port: currentPort, protocol,
+      isUsed: (port) => isPortUsedOnHost(hostId, port, undefined, protocol, Number(current.id)),
+    });
+    if (reservation) return reservation;
+  }
+  return reserveAvailableHostPort({
+    hostId, protocol,
+    findPort: async (processReservedPorts) => {
+      const used = await getUsedPortsOnHost(hostId, undefined, protocol);
+      for (const port of processReservedPorts) used.add(port);
+      return pickAvailablePort(portPolicyFrom(null), used, { start: 20000, end: 65535 });
+    },
+    isUsed: (port) => isPortUsedOnHost(hostId, port, undefined, protocol),
+  });
 }
 
 /**
@@ -1387,10 +1429,7 @@ export async function reconcileTunnelRulePrimaryExitPorts(
   const tunnelId = Number(tunnelInput?.id || 0);
   if (!Number.isInteger(tunnelId) || tunnelId <= 0) return { processed: 0, changed: 0 };
   const tunnel = await getTunnelById(tunnelId) || tunnelInput;
-  const mode = String(tunnel?.mode || "").trim().toLowerCase();
-  // ForwardX does not use forwardRules.tunnelExitPort for its transport; its
-  // endpoint/mimic state is reconciled by the dedicated ForwardX paths.
-  if (!tunnel || mode === "forwardx") return { processed: 0, changed: 0 };
+  if (!tunnel || !tunnelRuleNeedsExitPort(tunnel)) return { processed: 0, changed: 0 };
   const hostId = Number(options.hostId || tunnel?.exitHostId || 0);
   const listenPort = Number(options.listenPort ?? tunnel?.listenPort ?? 0);
   if (!Number.isInteger(hostId) || hostId <= 0) return { processed: 0, changed: 0 };
@@ -1534,7 +1573,10 @@ export async function isTunnelListenPortUsed(exitHostId: number, listenPort: num
     eq(tunnelHops.hostId, exitHostId),
     sql`(${tunnelHops.listenPort} = ${listenPort} OR ${tunnelHops.mimicPort} = ${listenPort})`,
   ));
-  return rows.some((row: any) => row.id !== excludeTunnelId)
+  const reverseRows = await db.select({ id: tunnels.id }).from(tunnels).where(and(
+    eq(tunnels.entryHostId, exitHostId), eq(tunnels.reverseListenPort, listenPort), eq(tunnels.connectionDirection, "reverse"),
+  ));
+  return [...rows, ...reverseRows].some((row: any) => Number(row.id) !== Number(excludeTunnelId))
     || extraRows.some((row: any) => row.tunnelId !== excludeTunnelId)
     || hopRows.some((row: any) => row.tunnelId !== excludeTunnelId);
 }
@@ -1584,7 +1626,7 @@ export async function ensureForwardXMimicPorts(tunnelInput: any, hopsInput: any[
 
 async function ensureForwardXMimicPortsInTransaction(tunnelInput: any, hopsInput: any[], exitNodesInput: any[]) {
   const tunnelId = Number(tunnelInput?.id || 0);
-  if (tunnelId <= 0) {
+  if (tunnelId <= 0 || isReverseTunnel(tunnelInput)) {
     return { tunnel: tunnelInput, hops: hopsInput, exitNodes: exitNodesInput, changed: false };
   }
   const existing = mimicPortAllocationLocks.get(tunnelId);
@@ -1836,6 +1878,7 @@ export async function getUsedPortsOnHost(
     usedTunnels,
     usedExtraTunnelNodes,
     usedHops,
+    usedReverseListeners,
   ] = await Promise.all([
     db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(...usedRuleConds)),
     db.select({ port: forwardRules.tunnelExitPort })
@@ -1856,6 +1899,8 @@ export async function getUsedPortsOnHost(
     db.select({ tunnelId: tunnelHops.tunnelId, listenPort: tunnelHops.listenPort, mimicPort: tunnelHops.mimicPort })
       .from(tunnelHops)
       .where(eq(tunnelHops.hostId, hostId)),
+    db.select({ id: tunnels.id, port: tunnels.reverseListenPort }).from(tunnels)
+      .where(and(eq(tunnels.entryHostId, hostId), eq(tunnels.connectionDirection, "reverse"))),
   ]);
 
   const used = new Set<number>();
@@ -1866,6 +1911,9 @@ export async function getUsedPortsOnHost(
   usedRules.forEach((row: any) => addPort(row.port));
   usedPrimaryExits.forEach((row: any) => addPort(row.port));
   usedMappedExits.forEach((row: any) => addPort(row.port));
+  usedReverseListeners.forEach((row: any) => {
+    if (Number(row.id) !== excludedTunnelId) addPort(row.port);
+  });
   usedTunnels.forEach((row: any) => {
     if (Number(row.id) === excludedTunnelId) return;
     addPort(row.listenPort);
@@ -1919,6 +1967,10 @@ export async function isPortUsedOnHost(
   }
   const r = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(...conds));
   if ((Number(r[0]?.count) || 0) > 0) return true;
+  const reverseListeners = await db.select({ id: tunnels.id }).from(tunnels).where(and(
+    eq(tunnels.entryHostId, hostId), eq(tunnels.reverseListenPort, sourcePort), eq(tunnels.connectionDirection, "reverse"),
+  ));
+  if (reverseListeners.some((row: any) => Number(row.id) !== excludedTunnelId)) return true;
   const primaryExitConds: any[] = [
     eq(tunnels.exitHostId, hostId),
     notInArray(tunnels.mode, ["forwardx", ...SHARED_GOST_LISTENER_MODES]),
@@ -2565,10 +2617,8 @@ export async function reconcileForwardRuleTunnelExits(
       }
     }
   }
-  if (String((tunnel as any)?.mode || "").toLowerCase() === "forwardx") {
-    // ForwardX transports do not use a per-rule public exit listener. Clear
-    // the legacy primary field as well as endpoint mappings so old rows cannot
-    // keep blocking future tunnel port allocations.
+  if (!tunnelRuleNeedsExitPort(tunnel)) {
+    // Clear legacy fields for transports without per-rule exit listeners.
     if (Number(rule?.tunnelExitPort || 0) > 0) {
       const db = await getDb();
       if (db) {

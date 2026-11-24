@@ -6,6 +6,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import BillingExportButton from "@/components/BillingExportButton";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import { paymentStatusText } from "@/lib/paymentStatus";
 import { Badge } from "@/components/ui/badge";
@@ -348,6 +349,7 @@ export default function Wallet() {
                   </SelectContent>
                 </Select>
               </div>
+              <PaymentFeeBreakdown amountCents={Math.max(0, Math.round(Number(amount) * 100) || 0)} paymentType={paymentType} enabled={!!amount && Number(amount) > 0} />
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRechargeOpen(false)}>{translateText("取消")}</Button>

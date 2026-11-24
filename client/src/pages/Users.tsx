@@ -83,6 +83,8 @@ import {
   Mail,
   MoreHorizontal,
   Pencil,
+  Search,
+  XCircle,
 } from "lucide-react";
 import { useState, useEffect, useMemo, type ElementType } from "react";
 import { toast } from "@/lib/localizedToast";
@@ -439,7 +441,8 @@ function UsersContent() {
   }, [currentUser, setLocation]);
 
   const userPageRequest = usePersistentPageRequest("forwardx.users.page");
-  const userPageInput = { page: userPageRequest.page, pageSize: 12 } as const;
+  const [userSearch, setUserSearch] = useState("");
+  const userPageInput = { page: userPageRequest.page, pageSize: 12, search: userSearch } as const;
   const userPageQuery = trpc.users.listPage.useQuery(userPageInput, {
     enabled: currentUser?.role === "admin" && manageType === "accounts",
     placeholderData: (previousData) => previousData,
@@ -1336,6 +1339,38 @@ function UsersContent() {
         <DataSectionLoading className="sm:hidden" label={translateText("正在加载用户数据")} minHeight="min-h-[220px]" />
       )}
 
+      <div className="flex flex-col gap-2 rounded-lg border border-border/40 bg-card/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative w-full sm:max-w-sm">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={userSearch}
+            onChange={(event) => {
+              setUserSearch(event.target.value);
+              userPageRequest.setPage(1);
+            }}
+            placeholder={translateText("搜索用户名 / 姓名 / 邮箱 / 备注 / ID")}
+            aria-label={translateText("搜索用户")}
+            className="h-9 pl-8 pr-8 text-sm"
+          />
+          {userSearch && (
+            <button
+              type="button"
+              aria-label={translateText("清空搜索")}
+              className="absolute right-2 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => {
+                setUserSearch("");
+                userPageRequest.setPage(1);
+              }}
+            >
+              <XCircle className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {Number(userPageQuery.data?.totalItems || 0)} / {Number(userSummary?.totalUsers ?? userPageQuery.data?.totalItems ?? 0)} {translateText("个用户")}
+        </span>
+      </div>
+
       {!isLoading && users && users.length > 0 && (
         <AutoAnimateContainer className="space-y-3 sm:hidden">
           {pagedUsers.map((u: any) => {
@@ -1456,8 +1491,8 @@ function UsersContent() {
           <div className="h-14 w-14 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
             <UsersIcon className="h-7 w-7 opacity-40" />
           </div>
-          <p className="text-base font-medium">{translateText("暂无其他用户")}</p>
-          <p className="mt-1 text-sm text-muted-foreground/80">{translateText("点击添加用户创建账号")}</p>
+          <p className="text-base font-medium">{userSearch.trim() ? translateText("没有匹配用户") : translateText("暂无其他用户")}</p>
+          <p className="mt-1 text-sm text-muted-foreground/80">{userSearch.trim() ? translateText("请调整搜索条件") : translateText("点击添加用户创建账号")}</p>
         </div>
       )}
 
@@ -1658,8 +1693,8 @@ function UsersContent() {
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <UsersIcon className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">{translateText("暂无其他用户")}</p>
-              <p className="text-sm mt-1 text-muted-foreground/80">{translateText("点击\"添加用户\"按钮创建新用户")}</p>
+              <p className="text-lg font-medium">{userSearch.trim() ? translateText("没有匹配用户") : translateText("暂无其他用户")}</p>
+              <p className="text-sm mt-1 text-muted-foreground/80">{userSearch.trim() ? translateText("请调整搜索条件") : translateText("点击\"添加用户\"按钮创建新用户")}</p>
             </div>
           )}
         </CardContent>

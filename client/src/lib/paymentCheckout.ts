@@ -3,6 +3,10 @@ export type CheckoutOrder = {
   subject?: string | null;
   payUrl?: string | null;
   qrCode?: string | null;
+  amountCents?: number | null;
+  baseAmountCents?: number | null;
+  feeAmountCents?: number | null;
+  currency?: string | null;
 };
 
 export function paymentPageUrl(value?: string | null) {

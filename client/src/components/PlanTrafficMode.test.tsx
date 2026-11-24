@@ -13,7 +13,10 @@ test("plan traffic controls and badges use the project selector and support both
       setLanguagePreference(language); await initializeLanguage();
       const both = renderToStaticMarkup(<PlanTrafficModeBadge />);
       const outbound = renderToStaticMarkup(<PlanTrafficModeBadge mode="outbound" />);
+      const inboundOutbound = renderToStaticMarkup(<PlanTrafficModeBadge mode="inbound_outbound" />);
       const field = renderToStaticMarkup(<PlanTrafficModeField value="outbound" onChange={() => {}} />);
+      const bothField = renderToStaticMarkup(<PlanTrafficModeField value="both" onChange={() => {}} />);
+      const inboundOutboundField = renderToStaticMarkup(<PlanTrafficModeField value="inbound_outbound" onChange={() => {}} />);
       assert.match(field, /role="combobox"/);
       assert.match(field, /for="plan-traffic-mode"/);
       assert.match(field, /pearl-select-trigger/);
@@ -21,7 +24,11 @@ test("plan traffic controls and badges use the project selector and support both
       assert.doesNotMatch(field, /<select(?![^>]*aria-hidden="true")/);
       assert.match(outbound + field, language === "en" ? /One-way \(Outbound\)/ : /单向（仅出向）/);
       assert.match(both, language === "en" ? /Total \(both directions\)/ : /双向合计/);
-      if (language === "en") assert.doesNotMatch(both + outbound + field, /\p{Script=Han}/u);
+      assert.match(bothField, /aria-describedby="plan-traffic-mode-help"/);
+      assert.match(bothField, language === "en" ? /\(inbound \+ outbound\) × 2/ : /（入向 \+ 出向）× 2/);
+      assert.match(inboundOutbound, language === "en" ? /One-way \(Upload and download\)/ : /单向（上下行）/);
+      assert.match(inboundOutboundField, language === "en" ? /counting each direction once/ : /每个方向各计一次/);
+      if (language === "en") assert.doesNotMatch(both + outbound + field + bothField + inboundOutbound + inboundOutboundField, /\p{Script=Han}/u);
       const card = renderToStaticMarkup(<StorePlanCard plan={{ name: "Plan", description: "Custom description", trafficMode: "outbound" }} onBuy={() => {}} />);
       assert.match(card, /Custom description/);
       assert.match(card, language === "en" ? /One-way \(Outbound\)/ : /单向（仅出向）/);

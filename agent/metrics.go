@@ -527,6 +527,7 @@ type tcpingTask struct {
 	SeriesKey       string
 	SeriesLabel     string
 	WireGuardPeerID string
+	ReverseGost     *reverseGostProbe
 	SourcePort      int
 	ProbeKey        string
 	TopologyKey     string
@@ -1664,6 +1665,7 @@ func buildTunnelProbeTasks(probes []tunnelProbe) []tcpingTask {
 			SeriesKey:       probe.SeriesKey,
 			SeriesLabel:     probe.SeriesLabel,
 			WireGuardPeerID: probe.WireGuardPeerID,
+			ReverseGost:     probe.ReverseGost,
 			ProbeKey:        probe.ProbeKey,
 			TopologyKey:     probe.TopologyKey,
 		})
@@ -2002,6 +2004,9 @@ func executeTCPingTaskWithProbes(
 		if !measurement.Reachable && shouldLogAgentReport("icmp-probe-failed", time.Minute) {
 			logf("latency probe failed kind=%s rule=%d method=icmp target=%s replies=%d/%d detail=%q", task.Kind, task.RuleID, task.TargetIP, measurement.ProbeSuccesses, measurement.ProbeCount, measurement.Detail)
 		}
+	} else if task.Kind == "tunnel" && task.ReverseGost != nil {
+		task.Method = "gost-reverse"
+		measurement = probeReverseGost(task.TargetPort, *task.ReverseGost, 5*time.Second)
 	} else if task.Kind == "tunnel" && task.WireGuardPeerID != "" {
 		status := wireGuardProbeTimeout
 		var latency int

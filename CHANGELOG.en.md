@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [2.3.305] - 2026-11-24
+
+- Administrators can enable reverse connections for single-entry, single-exit GOST TLS and ForwardX V2 tunnels. The exit connects to the entry, and forwarding rules keep using entry ports. The tunnel list shows connectivity and reconnection status. Related [#26](https://github.com/poouo/Forwardx/issues/26).
+- Media checks improve visitor region detection, DNS unlock hints, and title availability checks. TikTok evaluates region and availability separately, recognizes regional restrictions, and confirms availability when the page returns a public video feed.
+- Payment channels support percentage and fixed fees. Checkout shows the base amount, fee, and total. Wallet recharges credit the original amount.
+- Administrators can search users by username, name, email, note, or ID. Announcements support images from external URLs embedded with Markdown or HTML.
+- Plans add a single-leg mode that charges the sum of inbound and outbound rule traffic. Two-way mode accounts for both sides of the relay and charges twice that sum.
+- Versions are panel `2.3.305`, Android / iOS `2.4.22`, Agent `2.2.216`, and ForwardX FXP runtime `2.2.123`. Upgrade the Agent for reverse GOST TLS tunnels and the updated media checks.
+
 ## [2.3.304] - 2026-11-23
 
 - MCP `subscriptions.list` now returns active purchased traffic, administrator-granted traffic and their combined total in bytes. Query by user ID to get totals across all matching subscriptions, excluding expired add-ons and subscriptions.

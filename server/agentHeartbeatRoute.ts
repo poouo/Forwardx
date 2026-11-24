@@ -106,6 +106,9 @@ import {
 } from "./forwardXWireGuard";
 import { agentStatusOrderGuard, agentStatusOrderingKey } from "./agentStatusOrdering";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
+import { AGENT_REVERSE_GOST_VERSION, isReverseTunnel } from "@shared/tunnelDirection";
+import { reverseGostCertificatePaths, reverseGostChain, reverseGostExit, reverseGostHealthExit, reverseGostHealthProbe, reverseGostListener } from "./reverseGostTunnel";
+import { reverseTunnelProbeKey } from "./reverseTunnelStatus";
 import {
   normalizeForwardXRuntimeTransportVersion,
   resolveLocalForwardXTransportVersion,
@@ -131,7 +134,7 @@ import {
 import { approveMimicInterfaceRemovals } from "./mimicRemovalGuard";
 import { mimicRuntimeLifecycles } from "./mimicRuntimeLifecycle";
 import { buildTunnelRuleLatencyProbe } from "./ruleLatency";
-import { selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
+import { defaultTunnelHostAddress, selectTunnelDialAddress, selectTunnelHopDialAddress } from "./tunnelAddressSelection";
 import { DnsRuntimeGenerationTracker } from "./dnsRuntimeGeneration";
 import { selectResolvedTargetIp } from "./dnsTargetResolution";
 import { buildForwardXMimicConfig } from "./mimicConfig";
@@ -2386,7 +2389,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const recordTunnelDnsRefresh = (scope: string, refId: unknown) => {
         markTunnelDnsRefresh(tunnelId, dnsRuntimeGeneration(scope, refId), dnsChangedFor(scope, refId));
       };
-      if (String(tunnel?.connectHost || "").trim()) {
+      if (isReverseTunnel(tunnel)) {
+        if (tunnel.reverseConnectHost) recordTunnelDnsRefresh("tunnel-connect", tunnelId);
+        else recordTunnelDnsRefresh("host-entry", Number(tunnel.entryHostId));
+      } else if (String(tunnel?.connectHost || "").trim()) {
         recordTunnelDnsRefresh("tunnel-connect", tunnelId);
       } else {
         recordTunnelDnsRefresh("host-entry", Number(tunnel?.exitHostId || 0));
@@ -2466,7 +2472,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     const isForwardXTunnel = isForwardXTunnelMode;
     const tunnelNeedsMimic = (tunnel: any) => {
-      if (!tunnel || !isForwardXTunnel(tunnel) || !runtimeBool(tunnel.isEnabled) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
+      if (!tunnel || isReverseTunnel(tunnel) || !isForwardXTunnel(tunnel) || !runtimeBool(tunnel.isEnabled) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
       // V2 carries every tunnel protocol inside its WireGuard UDP socket. Its
       // Mimic decision must not depend on a separate UDP rule being present.
       if (isForwardXWireGuardV2(tunnel)) return runtimeBool((tunnel as any).udpOverTcp);
@@ -2477,7 +2483,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     };
     for (const tunnel of hostTunnels as any[]) {
-      if (!tunnelNeedsMimic(tunnel) && !isForwardXWireGuardV2(tunnel)) continue;
+      if (isReverseTunnel(tunnel) || (!tunnelNeedsMimic(tunnel) && !isForwardXWireGuardV2(tunnel))) continue;
       try {
         const ensured = await hopRepo.ensureForwardXMimicPorts(
           tunnel,
@@ -2681,6 +2687,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (runtimeBool(r.pendingDelete) || !runtimeBool(r.isEnabled) || r.forwardType !== "gost") return false;
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && isNginxTunnelMode(tunnel)) return false;
+        if (isReverseTunnel(tunnel) && !runtimeBool(tunnel.isEnabled)) return false;
         return isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel);
       });
     const rateLimitUserIds = Array.from(new Set([...agentHostRules, ...agentAllRules]
@@ -2944,6 +2951,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       addDnsWatch(dnsWatches, address, "host-entry", Number((exit as any)?.id || tunnel?.exitHostId || 0));
       return address;
     };
+    const reverseTunnelEntryAddress = async (tunnel: any) => {
+      const configured = String(tunnel.reverseConnectHost || "").trim();
+      const address = configured || defaultTunnelHostAddress(await db.getHostById(Number(tunnel.entryHostId)));
+      addDnsWatch(dnsWatches, address, configured ? "tunnel-connect" : "host-entry",
+        Number(configured ? tunnel.id : tunnel.entryHostId));
+      return address;
+    };
     const tunnelExitEndpointById = new Map<number, { host: string; port: number; udpPort?: number }>();
     const hostIngressAddressById = new Map<number, string>();
     const getHostIngressAddress = async (hostId: number) => {
@@ -3059,6 +3073,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               }
             }
           }
+        } else if (isReverseTunnel(tunnel)) {
+          addLink(tunnel.exitHostId, tunnel.entryHostId, await reverseTunnelEntryAddress(tunnel), tunnel.reverseListenPort);
         } else {
           const primaryEndpointHost = await tunnelExitHostAddress(tunnel);
           addNode(tunnel?.exitHostId, tunnel?.mimicPort);
@@ -3187,6 +3203,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const isCurrentHostTunnelExitForRule = (rule: any, tunnel: any) => {
       if (!tunnel || (!isGostTunnelMode(tunnel) && !isNginxTunnelMode(tunnel))) return false;
+      if (isReverseTunnel(tunnel)) return Number(tunnel.exitHostId) === Number(host.id);
       return tunnelExitEndpointsForRule(rule, tunnel).some((endpoint) => endpoint.exitHostId === Number(host.id));
     };
     const currentHostTunnelExitPortsForRule = (rule: any, tunnel: any) => {
@@ -3424,7 +3441,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
         const nextHop = Array.isArray(hops) && hops.length >= 2 ? (hops[1] as any) : null;
         tunnelExitEndpointById.set(tunnel.id, {
-          host: nextHop ? await getHopDialAddress(nextHop, tunnel) : await tunnelExitHostAddress(tunnel),
+          host: isReverseTunnel(tunnel) ? "127.0.0.1"
+            : nextHop ? await getHopDialAddress(nextHop, tunnel) : await tunnelExitHostAddress(tunnel),
           port: nextHop ? Number(nextHop.listenPort) : Number(tunnel.listenPort),
           udpPort: nextHop ? Number(nextHop.mimicPort || 0) : Number((tunnel as any).mimicPort || 0),
         });
@@ -3439,6 +3457,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           Array.isArray(hops) ? hops : [],
           tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [],
         );
+        if (isReverseTunnel(tunnel)) {
+          if (!isCurrentHostTunnelEntry(tunnel)) return null;
+          const wireGuard = isForwardXWireGuardV2(tunnel);
+          if (!wireGuard && (!tunnel.secret || !isAgentVersionAtLeast(effectiveAgentVersion, AGENT_REVERSE_GOST_VERSION))) return null;
+          return {
+            tunnelId: tunnel.id,
+            targetIp: "127.0.0.1",
+            targetPort: Number(wireGuard ? tunnel.listenPort : tunnel.reverseListenPort),
+            protocol: "tcp",
+            probeKey: reverseTunnelProbeKey(tunnel),
+            topologyKey,
+            ...(wireGuard ? { wireGuardPeerId: String(tunnel.exitHostId) } : { reverseGost: reverseGostHealthProbe(tunnel, RUNTIME_CONFIG_DIR) }),
+          };
+        }
         if (Array.isArray(hops) && hops.length >= 3) {
           const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
           const currentHostIsEntry = isCurrentHostTunnelEntry(tunnel);
@@ -3722,7 +3754,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             handler: tunnel
               ? {
                   type: proto,
-                  chain: `chain-tunnel-${r.id}`,
+                  chain: isReverseTunnel(tunnel) ? `chain-tunnel-${r.id}-${proto}` : `chain-tunnel-${r.id}`,
                   ...(routeRetries > 0 ? { retries: routeRetries } : {}),
                   ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}),
                 }
@@ -3751,6 +3783,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 dialer: { type: proto },
               }],
             };
+          } else if (isReverseTunnel(tunnel)) {
+            // The exit registration owns the business target. This local
+            // destination is only a placeholder for GOST's CONNECT request.
+            service.forwarder = { nodes: [{ name: `target-${r.id}`, addr: "127.0.0.1:1" }] };
           } else if (!useMultiHopEntry && (!tunnelExitHost || tunnelExitEndpointsForRule(r, tunnel).length === 0)) {
             return null;
           } else if (useMultiHopEntry || protocolPlan?.entryNeedsTarget) {
@@ -3774,7 +3810,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .filter((r: any) => runtimeBool(r.isEnabled) && r.forwardType === "gost" && r.tunnelId)
       .map(async (r: any) => {
         const tunnel = tunnelById.get((r as any).tunnelId) as any;
-        if (!isGostTunnelMode(tunnel)) return null;
+        if (!isGostTunnelMode(tunnel) || isReverseTunnel(tunnel)) return null;
         const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
         if (!tunnel || !tunnelExitHost || tunnelExitEndpointsForRule(r, tunnel).length === 0) return null;
         const tunnelHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
@@ -3873,6 +3909,50 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }))).filter(Boolean);
     const gostChains = [...tunnelGostChains];
     const gostManagedConfigs: any[] = [];
+    for (const tunnel of hostTunnels as any[]) {
+      if (!isReverseTunnel(tunnel) || !isGostTunnelMode(tunnel) || !runtimeBool(tunnel.isEnabled)
+        || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
+        || !tunnel.secret || !tunnel.reverseCertPem || !tunnel.reverseKeyPem) continue;
+      const entry = Number(host.id) === Number(tunnel.entryHostId);
+      const exit = Number(host.id) === Number(tunnel.exitHostId);
+      if (!entry && !exit) continue;
+      const files = reverseGostCertificatePaths(RUNTIME_CONFIG_DIR, Number(tunnel.id));
+      const addPem = (path: string, pem: string) => gostManagedConfigs.push({
+        path, contentBase64: Buffer.from(pem, "utf8").toString("base64"), format: "text", mode: 0o600,
+      });
+      addPem(files.certFile, tunnel.reverseCertPem);
+      if (entry) {
+        addPem(files.keyFile, tunnel.reverseKeyPem);
+        gostServiceConfig.push(reverseGostListener(tunnel, files));
+        const localEndpoint = endpointHostPort("127.0.0.1", tunnel.reverseListenPort);
+        for (const rule of gostRules) {
+          if (Number(rule.tunnelId) !== Number(tunnel.id)) continue;
+          for (const proto of tunnelForwardProtos(rule.protocol)) {
+            const route = `rule-${rule.id}-${proto}`;
+            gostChains.push(reverseGostChain(tunnel, `chain-tunnel-${rule.id}-${proto}`, route, localEndpoint, files.certFile));
+          }
+        }
+      }
+      if (exit) {
+        const entryAddress = await reverseTunnelEntryAddress(tunnel);
+        if (!entryAddress) continue;
+        const endpoint = endpointHostPort(entryAddress, tunnel.reverseListenPort);
+        const healthChain = `chain-reverse-${tunnel.id}-health`;
+        gostChains.push(reverseGostChain(tunnel, healthChain, "health", endpoint, files.certFile));
+        gostServiceConfig.push(reverseGostHealthExit(tunnel, healthChain));
+        const addExit = (route: string, proto: "tcp" | "udp", target: string) => {
+          const chain = `chain-reverse-${tunnel.id}-${route}`;
+          gostChains.push(reverseGostChain(tunnel, chain, route, endpoint, files.certFile));
+          gostServiceConfig.push(reverseGostExit(tunnel, route, chain, proto, target));
+        };
+        for (const rule of tunnelExitRules) {
+          if (Number(rule.tunnelId) !== Number(tunnel.id)) continue;
+          for (const proto of tunnelForwardProtos(rule.protocol)) {
+            addExit(`rule-${rule.id}-${proto}`, proto, await gostTunnelExitTargetAddr(rule, tunnel));
+          }
+        }
+      }
+    }
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters, api: gostRuntimeApiConfig(gostServiceName) }, null, 2), "utf8").toString("base64");
       gostManagedConfigs.push({
@@ -3913,7 +3993,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // Adding/deleting a rule changes only entry services/chains, never this exit.
     const sharedGostExitPlans = planGostTunnelProbeListeners(
       Number(host.id),
-      (hostTunnels as any[]).map((tunnel: any) => ({
+      (hostTunnels as any[]).filter((tunnel) => !isReverseTunnel(tunnel)).map((tunnel: any) => ({
         ...tunnel, protocolEnabled: isTunnelProtocolEnabled(forwardProtocolSettings, tunnel),
       })),
       tunnelExitNodesByTunnelId,
@@ -4781,6 +4861,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const runtimeFamily = tunnelRuntimeFamily(tunnel);
       if (!runtimeFamily) continue;
+      if (runtimeFamily === "gost" && isReverseTunnel(tunnel)) continue;
       const fxpTunnel = runtimeFamily === "forwardx";
       const wireGuardV2 = fxpTunnel && isForwardXWireGuardV2(tunnel);
       const isCurrentHostSharedRuntimeExtraExit = !fxpTunnel && isCurrentHostExtraExit;
@@ -5851,6 +5932,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of tunnelExitRules) {
       if (!runtimeBool(rule.isEnabled)) continue;
       const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+      if (isReverseTunnel(tunnel)) continue;
       for (const trafficPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
         if (!trafficPort) continue;
         protectActiveRulePort(rule, trafficPort);
@@ -6154,7 +6236,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const meta = parseSelfTestMeta((t as any).requestMessage ?? (t as any).message);
         const metaSelfTest = buildMetaAgentSelfTestPayload(t, meta);
         if (metaSelfTest) {
-          selfTests.push(metaSelfTest);
+          const tunnel = "tunnelId" in metaSelfTest ? tunnelById.get(Number(metaSelfTest.tunnelId)) : null;
+          if (isReverseTunnel(tunnel) && tunnel.mode === "tls" && tunnel.secret && metaSelfTest.kind === "tunnel-hop") {
+            selfTests.push({
+              ...metaSelfTest,
+              targetPort: Number(tunnel.reverseListenPort),
+              reverseGost: reverseGostHealthProbe(tunnel, RUNTIME_CONFIG_DIR),
+            });
+          } else {
+            selfTests.push(metaSelfTest);
+          }
           continue;
         }
         const rule = await db.getForwardRuleById(t.ruleId);
@@ -6304,10 +6395,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       responseIssuedAt,
       gostReconcileInterval,
     );
+    // Outbound GOST registrations have no local rule actions. Check the
+    // desired config signature even when only the exit's registrations changed.
+    const gostModelMayHaveChanged = gostManagedConfigs.length > 0 || (forceReconcile && reportedGostHasWork);
     if (!deferActionsForLocalState && (
       gostRuntimeConfigChanged
       || gostRuntimeServiceUnhealthy
       || runtimeSyncBootstrap
+      || gostModelMayHaveChanged
       || gostPeriodicReconcileDue
     )) {
       const runtimeSyncAction = {

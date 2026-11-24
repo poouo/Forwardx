@@ -63,6 +63,11 @@ test("announcement lists clip only overflowing content and open a complete, sani
     assert.doesNotMatch(full.innerHTML, /javascript:|<script/);
     assert.doesNotMatch(full.className, /max-h-|overflow-hidden|line-clamp/);
     assert.equal(full.inert, false);
+
+    await render('![Release image](https://cdn.example.com/release.png)');
+    const image = container.querySelector<HTMLImageElement>("[data-announcement-excerpt] img")!;
+    assert.equal(image.getAttribute("src"), "https://cdn.example.com/release.png");
+    assert.equal(image.getAttribute("alt"), "Release image");
     await act(async () => dialog.querySelector<HTMLButtonElement>("button")!.click());
     assert.equal(document.querySelector("[role=dialog]"), null);
 

@@ -41,23 +41,22 @@ func TestStreamUnlockProvidersIncludesAIAvailabilityChecks(t *testing.T) {
 		if provider.url == "" || provider.parse == nil {
 			t.Fatalf("provider %q is missing its URL or parser", id)
 		}
-		if provider.domain != "" {
+		if id == "tiktok" && provider.domain != "tiktok.com" {
+			t.Errorf("TikTok DNS probe domain = %q", provider.domain)
+		}
+		if streamUnlockIsAI(id) && provider.domain != "" {
 			t.Errorf("provider %q unexpectedly requests DNS classification for domain %q", id, provider.domain)
 		}
 		state, region, _, _ := provider.parse(200, `<html><title>Sign in</title></html>`, provider.url)
-		wantState := "unknown"
-		if id == "tiktok" {
-			wantState = "available"
-		}
-		if state != wantState {
-			t.Errorf("provider %q login entry state = %q, want %q", id, state, wantState)
+		if state != "unknown" {
+			t.Errorf("provider %q login entry state = %q, want unknown", id, state)
 		}
 		if region != "" {
 			t.Errorf("provider %q unexpectedly reports a country region %q", id, region)
 		}
 		state, region, _, _ = provider.parse(200, `{"countryCode":"sg"}`, provider.url)
-		if state != wantState || region != "SG" {
-			t.Errorf("provider %q detected region = (%q, %q), want (%q, SG)", id, state, region, wantState)
+		if state != "unknown" || region != "SG" {
+			t.Errorf("provider %q detected region = (%q, %q), want (unknown, SG)", id, state, region)
 		}
 	}
 }

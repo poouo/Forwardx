@@ -89,6 +89,12 @@ type WxpayConfig = {
   h5AppUrl: string;
 };
 
+type PaymentFeeConfig = {
+  enabled: boolean;
+  rateBps: number;
+  fixedCents: number;
+};
+
 type PaymentConfig = {
   enabled: boolean;
   productName: string;
@@ -105,7 +111,15 @@ type PaymentConfig = {
   wxpay: WxpayConfig;
   stripe: StripeConfig;
   gmpay: GmPayConfig;
+  fees: {
+    alipay: PaymentFeeConfig;
+    wxpay: PaymentFeeConfig;
+    stripe: PaymentFeeConfig;
+    usdt: PaymentFeeConfig;
+  };
 };
+
+const defaultPaymentFee: PaymentFeeConfig = { enabled: false, rateBps: 0, fixedCents: 0 };
 
 const defaultPaymentConfig: PaymentConfig = {
   enabled: false,
@@ -162,6 +176,12 @@ const defaultPaymentConfig: PaymentConfig = {
     secretKey: "",
     network: "tron",
     signatureAlgorithm: "md5",
+  },
+  fees: {
+    alipay: { ...defaultPaymentFee },
+    wxpay: { ...defaultPaymentFee },
+    stripe: { ...defaultPaymentFee },
+    usdt: { ...defaultPaymentFee },
   },
 };
 
@@ -221,6 +241,12 @@ const paymentConfigInput = z.object({
     network: z.enum(GM_PAY_NETWORKS),
     signatureAlgorithm: z.enum(GM_PAY_SIGNATURE_ALGORITHMS).optional(),
   }).optional(),
+  fees: z.object({
+    alipay: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
+    wxpay: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
+    stripe: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
+    usdt: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
+  }).optional(),
 });
 
 const createOrderInput = z.object({
@@ -245,6 +271,30 @@ function mergeConfig(raw: any): PaymentConfig {
     wxpay: { ...defaultPaymentConfig.wxpay, ...(raw?.wxpay || {}) },
     stripe: { ...defaultPaymentConfig.stripe, ...(raw?.stripe || {}) },
     gmpay: { ...defaultPaymentConfig.gmpay, ...(raw?.gmpay || {}) },
+    fees: {
+      ...defaultPaymentConfig.fees,
+      ...(raw?.fees || {}),
+      alipay: { ...defaultPaymentConfig.fees.alipay, ...(raw?.fees?.alipay || {}) },
+      wxpay: { ...defaultPaymentConfig.fees.wxpay, ...(raw?.fees?.wxpay || {}) },
+      stripe: { ...defaultPaymentConfig.fees.stripe, ...(raw?.fees?.stripe || {}) },
+      usdt: { ...defaultPaymentConfig.fees.usdt, ...(raw?.fees?.usdt || {}) },
+    },
+  };
+}
+
+function paymentFeeQuote(config: PaymentConfig, paymentType: "alipay" | "wxpay" | "stripe" | "usdt", amountCents: number) {
+  const baseAmountCents = Math.max(0, Math.round(amountCents));
+  const feeConfig = config.fees[paymentType];
+  const feeCents = config.enabled && feeConfig.enabled
+    ? Math.ceil(baseAmountCents * feeConfig.rateBps / 10000) + feeConfig.fixedCents
+    : 0;
+  return {
+    enabled: config.enabled && feeConfig.enabled,
+    rateBps: feeConfig.rateBps,
+    fixedCents: feeConfig.fixedCents,
+    baseAmountCents,
+    feeCents,
+    totalAmountCents: baseAmountCents + feeCents,
   };
 }
 
@@ -891,14 +941,15 @@ async function finalizePaidOrder(outTradeNo: string) {
           await db.updatePaymentOrder(outTradeNo, { status: "completed", failureReason: null } as any);
           return;
         }
-        await db.addUserBalance(order.userId, Number(order.amountCents || 0), {
+        const creditedAmountCents = Number((order as any).baseAmountCents || order.amountCents || 0);
+        await db.addUserBalance(order.userId, creditedAmountCents, {
           type: "payment",
           description: `在线充值：${outTradeNo}`,
           paymentOrderNo: outTradeNo,
         } as any);
         await db.recoverUserForwardAccessIfEligible(order.userId);
         await db.updatePaymentOrder(outTradeNo, { status: "completed", failureReason: null } as any);
-        appendPanelLog("info", `[Balance] payment recharge user=${order.userId} amount=${order.amountCents} order=${outTradeNo}`);
+        appendPanelLog("info", `[Balance] payment recharge user=${order.userId} amount=${creditedAmountCents} fee=${Number((order as any).feeAmountCents || 0)} order=${outTradeNo}`);
         return;
       }
       await db.updatePaymentOrder(outTradeNo, { status: "completed", failureReason: null } as any);
@@ -1029,10 +1080,29 @@ export async function reconcilePendingPaymentOrders() {
 }
 
 export const paymentRouter = router({
+  feeQuote: protectedProcedure
+    .input(z.object({
+      amountCents: z.number().int().min(0).max(100_000_000),
+      paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
+    }))
+    .query(async ({ input }) => {
+      const config = await getPaymentConfig();
+      const provider = input.paymentType === "stripe"
+        ? "stripe"
+        : input.paymentType === "usdt"
+          ? "gmpay"
+          : input.paymentType === "alipay"
+            ? config.routes.alipay
+            : config.routes.wxpay;
+      const baseAmountCents = provider === "stripe"
+        ? normalizedStripeOrderAmountCents(input.amountCents, config.stripe.currency)
+        : input.amountCents;
+      return paymentFeeQuote(config, input.paymentType, baseAmountCents);
+    }),
   availableMethods: protectedProcedure.query(async () => {
     const config = await getPaymentConfig();
     if (!config.enabled) return [];
-    const methods: Array<{ value: "alipay" | "wxpay" | "stripe" | "usdt"; label: string }> = [];
+    const methods: Array<{ value: "alipay" | "wxpay" | "stripe" | "usdt"; label: string; feeEnabled: boolean; rateBps: number; fixedCents: number }> = [];
     const alipayProvider = config.routes.alipay;
     const wxpayProvider = config.routes.wxpay;
     const usable = (provider: PaymentProvider) => {
@@ -1045,17 +1115,21 @@ export const paymentRouter = router({
         return true;
       } catch { return false; }
     };
+    const addMethod = (value: "alipay" | "wxpay" | "stripe" | "usdt", label: string) => {
+      const fee = config.fees[value];
+      methods.push({ value, label, feeEnabled: fee.enabled, rateBps: fee.rateBps, fixedCents: fee.fixedCents });
+    };
     if (usable(alipayProvider)) {
-      methods.push({ value: "alipay", label: "支付宝" });
+      addMethod("alipay", "支付宝");
     }
     if (usable(wxpayProvider)) {
-      methods.push({ value: "wxpay", label: "微信支付" });
+      addMethod("wxpay", "微信支付");
     }
     if (usable("stripe")) {
-      methods.push({ value: "stripe", label: "Stripe" });
+      addMethod("stripe", "Stripe");
     }
     if (usable("gmpay")) {
-      methods.push({ value: "usdt", label: "USDT" });
+      addMethod("usdt", "USDT");
     }
     return methods;
   }),
@@ -1100,6 +1174,7 @@ export const paymentRouter = router({
           apiBase: normalizeGmPayBase(input.gmpay.apiBase),
           secretKey: input.gmpay.secretKey?.trim() || previous.gmpay.secretKey,
         } : previous.gmpay,
+        fees: input.fees ?? previous.fees,
       });
       if (next.gmpay.enabled && (!next.gmpay.apiBase || !next.gmpay.pid || !next.gmpay.secretKey)) {
         throw new Error("启用 USDT 支付前请完整填写网关地址、商户 PID 和商户密钥");
@@ -1255,9 +1330,11 @@ export const paymentRouter = router({
       }
 
       const rawAmountCents = Math.round(amount * 100);
-      const amountCents = provider === "stripe"
+      const baseAmountCents = provider === "stripe"
         ? normalizedStripeOrderAmountCents(rawAmountCents, config.stripe.currency)
         : rawAmountCents;
+      const fee = paymentFeeQuote(config, input.paymentType, baseAmountCents);
+      const amountCents = fee.totalAmountCents;
       const outTradeNo = createOutTradeNo();
       const panelUrl = await getConfiguredPanelUrl();
       if (!panelUrl) throw new Error("请先配置面板公开访问地址");
@@ -1286,6 +1363,8 @@ export const paymentRouter = router({
           status: "pending",
           subject,
           amountCents,
+          baseAmountCents: fee.baseAmountCents,
+          feeAmountCents: fee.feeCents,
           currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
           orderType: input.planId ? "plan" : input.orderType || "balance",
           planId: input.planId ?? null,

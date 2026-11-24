@@ -52,7 +52,7 @@ function snapshot(state: TaskState): StreamUnlockTaskSnapshot {
 function mergeResult(state: TaskState, incoming: StreamUnlockAgentResult, finished = false) {
   const current = state.result || {
     taskId: state.task.taskId,
-    probeVersion: "1",
+    probeVersion: STREAM_UNLOCK_PROBE_VERSION,
     family: state.task.family,
     providers: [],
     dns: [],

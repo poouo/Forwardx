@@ -18,6 +18,7 @@ import {
 } from "./forwardXTransport";
 import { requireTunnelProtocolEnabled } from "./forwardProtocolSettings";
 import { hostTrafficExcluded } from "../shared/hostTrafficPolicy";
+import { isReverseTunnel } from "../shared/tunnelDirection";
 
 export type SpeedComponent = {
   kind: "receiver" | "proxy" | "gost" | "fxp";
@@ -109,6 +110,9 @@ export async function buildLinkSpeedPlan(
   };
   try {
     if (!enabled(resource.isEnabled)) throw new Error("请先启用链路");
+    if (type === "tunnel" && isReverseTunnel(resource) && resource.mode === "tls") {
+      throw new Error("GOST TLS 反向隧道支持链路自测，吞吐量测速暂未适配");
+    }
     limit(resource.rateLimitMbps);
     const segments: Array<{
       hostId: number;

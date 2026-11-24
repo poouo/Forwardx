@@ -9,6 +9,7 @@
 - Modifications: CLI product label, version/build identity, and a node-level FIFO/HA selector fix to avoid repeatedly retrying known-failed upstreams while healthy alternatives exist. Protocols and configuration syntax are retained. The patch is in `scripts/runtime-patches/`, applied to a private copy of the pinned `go-gost/x v0.8.1` dependency; the shared module cache is never modified.
 - Build recipe: `scripts/build-runtime.sh`; source archive SHA-256 is pinned in `shared/runtimeBuild.ts`. Bundles include `dist/agent/RUNTIME_LICENSE.txt` and `dist/agent/RUNTIME_BUILD.txt` for full upstream license and source/build/checksum provenance.
 - Distribution: compiled locally by the maintainer for an independent runtime release (currently pinned to `runtime-v3.2.6-forwardx.2`). Publish its immutable artifacts before publishing dependent panel or Agent packages. Panel, Docker and Agent packages fetch these same artifacts with pinned SHA-256 verification via `scripts/fetch-runtime.sh`; they do not rebuild or fall back to upstream binaries.
+- Agent dependency: <https://github.com/go-gost/relay> (`github.com/go-gost/relay` v0.5.0), used by the GOST reverse tunnel health probe. The same copyright and MIT license below apply to this dependency.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

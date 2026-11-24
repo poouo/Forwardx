@@ -42,6 +42,8 @@ import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/tr
 import { planTrafficBytes } from "../shared/planTraffic";
 import { mapWithConcurrency } from "./asyncPool";
 import { forwardGroupProbeTopologyKey, tunnelProbeTopologyKey } from "./probeTopology";
+import { isReverseTunnel } from "../shared/tunnelDirection";
+import { observeReverseTunnelConnection, reverseTunnelProbeKey } from "./reverseTunnelStatus";
 import { trafficBillingUserLockKey, withKeyedTaskLock } from "./keyedTaskLock";
 import { isTunnelRelayFailover, tunnelRelayCandidates } from "../shared/tunnelRelay";
 import { tunnelRuntimeFamily } from "./tunnelRuntimePlan";
@@ -371,6 +373,14 @@ export async function validateTunnelProbeSource(
   const topologyKey = String((report as any).topologyKey || "");
   const expectedTopologyKey = context?.topologyKey || tunnelProbeTopologyKey(tunnel, hops, exitNodes);
   if (topologyKey && topologyKey !== expectedTopologyKey) return false;
+  if (isReverseTunnel(tunnel)) {
+    const gost = tunnel.mode === "tls";
+    return Number(hostId) === Number(tunnel.entryHostId)
+      && topologyKey === expectedTopologyKey
+      && report.probeKey === reverseTunnelProbeKey(tunnel)
+      && Number(report.targetPort) === Number(gost ? tunnel.reverseListenPort : tunnel.listenPort)
+      && (!gost || report.method === "gost-reverse");
+  }
   const hopIndex = Number(report.hopIndex);
   const hopCount = Number(report.hopCount);
   if (Number.isInteger(hopIndex) && Number.isInteger(hopCount) && hopCount > 0) {
@@ -1217,6 +1227,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         const accepted = acceptedTunnelReports.has(report);
         const latencyValue = typeof report.latencyMs === "number" && report.latencyMs > 0 ? report.latencyMs : null;
         const isTimeout = !!report.isTimeout || latencyValue === null;
+        if (isReverseTunnel(tunnel)) observeReverseTunnelConnection(tunnel, !isTimeout);
         const seriesKey = cleanTunnelSeriesKey(report.seriesKey);
         const hopIndex = Number(report.hopIndex);
         const hopCount = Number(report.hopCount);

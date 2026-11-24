@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
-import type { StreamUnlockAgentResult } from "../shared/streamUnlock";
+import { STREAM_UNLOCK_PROBE_VERSION, type StreamUnlockAgentResult } from "../shared/streamUnlock";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forwardx-stream-unlock-"));
 process.env.DATABASE_TYPE = "sqlite";
@@ -61,7 +61,7 @@ test("real encrypted sync accepts incremental stream results and final completio
   const queued = tasks.enqueueStreamUnlockAgentTask(hostId, { family: "both" });
   assert.equal(tasks.takeStreamUnlockAgentTasks(hostId)[0].taskId, queued.taskId);
   const result: StreamUnlockAgentResult = {
-    taskId: queued.taskId, probeVersion: "1", family: "both", providers: [], dns: [],
+    taskId: queued.taskId, probeVersion: STREAM_UNLOCK_PROBE_VERSION, family: "both", providers: [], dns: [],
     startedAt: new Date().toISOString(), finishedAt: "",
   };
   const send = async (route: string, value: StreamUnlockAgentResult) => {
@@ -74,10 +74,13 @@ test("real encrypted sync accepts incremental stream results and final completio
   assert.equal(tasks.latestStreamUnlockAgentTask(hostId)?.status, "running");
   assert.equal(tasks.latestStreamUnlockAgentTask(hostId)?.providers.length, 1);
   result.providers.push({ providerId: "youtube", providerName: "YouTube", family: "ipv6", status: "error", evidence: "ipv6:" });
-  result.dns.push({ domain: "youtube.com", family: "ipv4", mode: "direct", systemAddresses: ["192.0.2.1"], publicAddresses: ["192.0.2.1"] });
+  result.dns.push(
+    { domain: "youtube.com", family: "ipv4", mode: "dns_unlocked", systemAddresses: ["192.0.2.1"], publicAddresses: ["198.51.100.1"] },
+    { domain: "youtube.com", family: "ipv6", mode: "unknown", systemAddresses: [], publicAddresses: ["2001:db8::1"] },
+  );
   await send("/api/agent/stream-unlock-progress", result);
   assert.deepEqual(tasks.latestStreamUnlockAgentTask(hostId)?.providers.map((row) => row.family).sort(), ["ipv4", "ipv6"]);
-  assert.equal(tasks.latestStreamUnlockAgentTask(hostId)?.dns.length, 1);
+  assert.deepEqual(tasks.latestStreamUnlockAgentTask(hostId)?.dns, result.dns);
   result.finishedAt = new Date().toISOString();
   await send("/api/agent/stream-unlock-result", result);
   const completed = tasks.latestStreamUnlockAgentTask(hostId)!;
