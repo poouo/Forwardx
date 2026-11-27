@@ -86,8 +86,6 @@ const telegramWebAppLoginSchema = z.object({
 
 type TelegramWebAppAuthPayload = {
   hash: string;
-  authDate: number;
-  queryId: string;
   telegramId: string;
   username: string | null;
   firstName: string | null;
@@ -134,8 +132,6 @@ function verifyTelegramWebAppLogin(initData: string, token: string): TelegramWeb
   const params = new URLSearchParams(normalized);
   const hash = String(params.get("hash") || "").trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(hash)) return null;
-  const queryId = String(params.get("query_id") || "").trim();
-  if (!/^[a-z0-9_-]{8,128}$/i.test(queryId)) return null;
   const authDate = Number(params.get("auth_date") || 0);
   if (!Number.isFinite(authDate) || authDate <= 0) return null;
   const now = Math.floor(Date.now() / 1000);
@@ -157,8 +153,6 @@ function verifyTelegramWebAppLogin(initData: string, token: string): TelegramWeb
 
   return {
     hash,
-    authDate,
-    queryId,
     ...parsedUser,
   };
 }
@@ -409,8 +403,8 @@ export const telegramRouter = router({
           throw new Error("TELEGRAM_WEBAPP_CHALLENGE_INVALID");
         }
       }
-      const replayKey = `${payload.queryId}:${payload.hash}`;
-      if (!consumeTelegramWebAppLoginOnce(replayKey)) {
+      // query_id is optional; the verified hash already identifies the launch data.
+      if (!consumeTelegramWebAppLoginOnce(payload.hash)) {
         throw new Error("TELEGRAM_WEBAPP_REPLAYED");
       }
 

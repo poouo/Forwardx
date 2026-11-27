@@ -26,6 +26,16 @@ export function planPortCountText(portCount: unknown) {
   return Number(portCount) === 0 ? translateText("不限") : translateText("{0} 个端口", [Number(portCount) || 0]);
 }
 
+export function planTrafficQuotaText(size?: number | null) {
+  const value = Number(size || 0);
+  return value > 0 ? `${parseFloat((value / 1024 ** 3).toFixed(2))} GB` : translateText("不限");
+}
+
+export function planRateLimitText(rate?: number | null) {
+  const value = Number(rate || 0);
+  return value > 0 ? `${parseFloat(value.toFixed(2))} Mbps` : translateText("不限");
+}
+
 export function subscriptionPortRangeText(subscription: { portCount?: unknown; portRangeStart?: unknown; portRangeEnd?: unknown }) {
   if (Number(subscription.portCount) === 0) return translateText("不限");
   return subscription.portRangeStart && subscription.portRangeEnd ? `${subscription.portRangeStart}-${subscription.portRangeEnd}` : "-";

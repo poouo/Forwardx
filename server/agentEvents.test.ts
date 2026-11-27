@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
+  pushAgentDesiredState,
   pushAgentSupportBundle,
   registerAgentEventClient,
-  unregisterAgentEventClient,
   supersedeAgentEventClient,
   getAgentEventQueueStats,
 } from "./agentEvents";
@@ -43,6 +43,14 @@ class FakeEventResponse extends EventEmitter {
 function asResponse(value: FakeEventResponse) {
   return value as any;
 }
+
+test("desired state can fall back to the heartbeat without a stream warning", (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  assert.equal(pushAgentDesiredState(910_020, { desiredState: { actions: [] } }), false);
+  assert.equal(warn.mock.callCount(), 0);
+  assert.equal(pushAgentSupportBundle(910_020, "needs-stream"), false);
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /agent-support-bundle.*no-active-stream/);
+});
 
 test("superseding an Agent sends an authenticated notice and retires only its stream", () => {
   const response = new FakeEventResponse();
@@ -104,7 +112,7 @@ test("replacing an Agent SSE stream closes the old response without unregisterin
   const newStream = registerAgentEventClient(910_004, "new-token", asResponse(newResponse));
 
   assert.equal(oldResponse.ended, true);
-  unregisterAgentEventClient(910_004, asResponse(oldResponse));
+  oldResponse.emit("close");
   assert.equal(pushAgentSupportBundle(910_004, "new-stream"), true);
   assert.equal(newResponse.writes.length, 1);
   newStream.close();

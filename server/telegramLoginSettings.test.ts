@@ -53,18 +53,28 @@ test("TG login entry defaults on, is admin-controlled and leaves signed WebApp a
         query_id:"TEST_QUERY_12345",
         user:JSON.stringify({id:123456789,first_name:"Test"}),
       });
-      const checkString = [...params.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,value])=>key+"="+value).join("\n");
       const secret = createHmac("sha256","WebAppData").update(token).digest();
-      params.set("hash",createHmac("sha256",secret).update(checkString).digest("hex"));
-      const signedIn = await telegram.loginWithWebApp({initData:params.toString()});
-      assert.equal(signedIn.id,1);
-      assert.equal(cookies.length,1);
+      function sign(params) {
+        const checkString = [...params.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,value])=>key+"="+value).join("\n");
+        return createHmac("sha256",secret).update(checkString).digest("hex");
+      }
+      params.set("hash",sign(params));
+      assert.equal((await telegram.loginWithWebApp({initData:params.toString()})).id,1);
       await assert.rejects(telegram.loginWithWebApp({initData:params.toString()}),/TELEGRAM_WEBAPP_REPLAYED/);
+
+      params.delete("hash");
+      params.delete("query_id");
+      params.set("chat_type","sender");
+      params.set("hash",sign(params));
+      assert.equal((await telegram.loginWithWebApp({initData:params.toString()})).id,1);
+      await assert.rejects(telegram.loginWithWebApp({initData:params.toString()}),/TELEGRAM_WEBAPP_REPLAYED/);
+      assert.equal(cookies.length,2);
+
       params.set("hash","0".repeat(64));
       await assert.rejects(telegram.loginWithWebApp({initData:params.toString()}),/TELEGRAM_WEBAPP_VERIFY_FAILED/);
       await runtime.executeRaw('UPDATE users SET telegramLoginCode=?,telegramLoginCodeExpiresAt=? WHERE id=1', ["BOT-LOGIN-CODE-123",Math.floor(Date.now()/1000)+300]);
       assert.equal((await telegram.login({code:"BOT-LOGIN-CODE-123"})).id,1);
-      assert.equal(cookies.length,2);
+      assert.equal(cookies.length,3);
       await admin.updateSettings({telegram:{loginEnabled:true}});
       await checkFlag(true);
     } finally { await runtime.closeDatabase(); }

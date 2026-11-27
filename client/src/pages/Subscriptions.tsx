@@ -5,12 +5,13 @@ import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
 import { PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
+import { PlanCheckoutBenefits } from "@/components/PlanCheckoutBenefits";
 import { planBillingCycles } from "@shared/planPurchase";
 import { SubscriptionStatusTabs, type SubscriptionListStatus } from "@/components/SubscriptionStatusTabs";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
-import { subscriptionPortRangeText } from "@/lib/planDisplay";
+import { planRateLimitText, planResourceText, planTrafficQuotaText as bytes, subscriptionPortRangeText } from "@/lib/planDisplay";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,31 +20,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { planResourceText } from "@/lib/planDisplay";
 import { pollingInterval } from "@/lib/polling";
 import { trafficQuotaBreakdown, type TrafficQuotaSourceKind } from "@/lib/trafficQuota";
 import { trpc } from "@/lib/trpc";
 import { CalendarClock, CheckCircle2, CreditCard, Gauge, Minus, Package, Plus, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "@/lib/localizedToast";
+import { paymentMethodSupportsCurrency, type PaymentType } from "@shared/paymentMethods";
 import { useLocation } from "wouter";
 import { BILLING_DATE_TIME_FORMAT_OPTIONS } from "@shared/billingTime";
 import { MAX_TRAFFIC_ADDON_QUANTITY, trafficAddonPurchaseTotals } from "@shared/trafficAddonPurchase";
 
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
-}
-
-function bytes(size?: number | null) {
-  const value = Number(size || 0);
-  if (!value) return translateText("不限");
-  const gigabytes = value / (1024 ** 3);
-  return `${parseFloat(gigabytes.toFixed(2))} GB`;
-}
-
-function speed(value?: number | null) {
-  const num = Number(value || 0);
-  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : translateText("不限");
 }
 
 function dateTime(value?: string | Date | null) {
@@ -100,7 +89,7 @@ export default function Subscriptions() {
     && sub.source === "admin"
     && (sub.allowSelfRenew === true || Number(sub.allowSelfRenew) === 1),
   );
-  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
+  const { data: availablePaymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
     enabled: !!storeStatus?.enabled || hasRenewableSubscription,
   });
   const { data: userTraffic = [] } = trpc.dashboard.userTraffic.useQuery(undefined, {
@@ -110,9 +99,16 @@ export default function Subscriptions() {
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
   const [addonQuantity, setAddonQuantity] = useState("1");
   const [renewingSub, setRenewingSub] = useState<any | null>(null);
+  const renewalPlanQuery = trpc.plans.renewalPlan.useQuery({ subscriptionId: Number(renewingSub?.id) || 0 }, {
+    enabled: !!renewingSub,
+  });
+  const renewalPlan = renewalPlanQuery.data;
+  const renewalCurrency = renewalPlan?.currency || renewingSub?.currency || "CNY";
+  const paymentMethods = availablePaymentMethods.filter(method => paymentMethodSupportsCurrency(method, renewalCurrency));
   const [renewQuantity, setRenewQuantity] = useState("1");
   const [renewalCycleDays, setRenewalCycleDays] = useState<number | undefined>();
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
+  const [preferredPaymentType, setPaymentType] = useState<PaymentType>("stripe");
+  const paymentType = paymentMethods.find(method => method.value === preferredPaymentType)?.value ?? paymentMethods[0]?.value ?? preferredPaymentType;
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
@@ -198,7 +194,7 @@ export default function Subscriptions() {
   });
 
   const openRenew = (sub: any) => {
-    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | "usdt" | undefined;
+    const firstMethod = availablePaymentMethods.find(method => paymentMethodSupportsCurrency(method, sub.currency || "CNY"))?.value;
     if (firstMethod) setPaymentType(firstMethod);
     setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
@@ -244,10 +240,10 @@ export default function Subscriptions() {
   const balanceReady = !walletLoading && balanceCents !== null;
   const balance = balanceCents ?? 0;
   const balanceEnough = balanceReady && !!addonTotals && balance >= addonTotals.priceCents;
-  const selectedRenewalCycleDays = renewalCycleDays ?? Number(renewingSub?.durationDays || 0);
-  const renewalCycles = renewingSub ? planBillingCycles(renewingSub) : [];
+  const selectedRenewalCycleDays = renewalCycleDays ?? Number(renewalPlan?.durationDays || 0);
+  const renewalCycles = renewalPlan ? planBillingCycles(renewalPlan) : [];
   const permitsMultiple = renewalCycles.length > 1;
-  const renewTotals = planPurchaseQuote(renewingSub, permitsMultiple ? renewQuantity : "1", selectedRenewalCycleDays);
+  const renewTotals = planPurchaseQuote(renewalPlan, permitsMultiple ? renewQuantity : "1", selectedRenewalCycleDays);
   const renewingPrice = renewTotals?.priceCents ?? 0;
   const appliedDiscount = billingFeatures?.discountEnabled && discountPreview?.quoteKey === discountQuoteKey(Number(renewingSub?.planId), renewTotals?.priceCents, discountCode) ? discountPreview : null;
   const renewFinalAmountCents = Number(appliedDiscount?.finalAmountCents ?? renewingPrice);
@@ -366,7 +362,7 @@ export default function Subscriptions() {
                     </div>
                     <div className="min-w-0">
                       <div className="text-xs">{translateText("限速")}</div>
-                      <div className="mt-1 font-medium text-foreground">{speed(sub.rateLimitMbps)}</div>
+                      <div className="mt-1 font-medium text-foreground">{planRateLimitText(sub.rateLimitMbps)}</div>
                     </div>
                   </div>
 
@@ -422,93 +418,105 @@ export default function Subscriptions() {
 
         </SubscriptionStatusTabs>
         <Dialog open={!!renewingSub} onOpenChange={(open) => !open && closeRenewDialog()}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
+          <DialogContent className="grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-md sm:p-0">
+            <DialogHeader className="px-4 pb-3 pt-4 pr-12 sm:px-6 sm:pr-12">
               <DialogTitle className="flex items-center gap-2">
                 <CreditCard className="h-5 w-5" />{translateText("续费套餐")}</DialogTitle>
-              <DialogDescription>{translateText("再次购买 ")}{renewingSub?.planName || translateText("当前套餐")}{translateText(" 会延长当前订阅有效期。")}</DialogDescription>
+              <DialogDescription>{translateText("再次购买 ")}{renewalPlan?.name || renewingSub?.planName || translateText("当前套餐")}{translateText(" 会延长当前订阅有效期。")}</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4">
-              {renewingSub && <PlanBillingCycleSelect options={renewalCycles} value={selectedRenewalCycleDays} currency={renewingSub.currency || undefined}
-                onChange={(days) => { setRenewalCycleDays(days); setDiscountPreview(null); }} disabled={createOrder.isPending || renewWithBalance.isPending} />}
-              {permitsMultiple && <PlanPurchaseQuantity value={renewQuantity} onChange={(value) => { setRenewQuantity(value); setDiscountPreview(null); }}
-                durationDays={selectedRenewalCycleDays} valid={!!renewTotals} disabled={createOrder.isPending || renewWithBalance.isPending} />}
-              <div className="rounded-lg border bg-muted/20 p-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{translateText("套餐金额")}</span>
-                  <span>{money(renewingPrice, renewingSub?.currency || "CNY")}</span>
+            <div className="dialog-scroll-area grid min-h-0 min-w-0 touch-pan-y content-start gap-4 overflow-y-auto overscroll-contain px-4 py-2 sm:px-6">
+              {renewalPlan ? <>
+                <PlanBillingCycleSelect options={renewalCycles} value={selectedRenewalCycleDays} currency={renewalCurrency}
+                  onChange={(days) => { setRenewalCycleDays(days); setDiscountPreview(null); }} disabled={createOrder.isPending || renewWithBalance.isPending} />
+                {permitsMultiple && <PlanPurchaseQuantity value={renewQuantity} onChange={(value) => { setRenewQuantity(value); setDiscountPreview(null); }}
+                  durationDays={selectedRenewalCycleDays} valid={!!renewTotals} disabled={createOrder.isPending || renewWithBalance.isPending} showTotalDuration={false} />}
+                <PlanCheckoutBenefits plan={renewalPlan} durationDays={renewTotals?.durationDays} />
+                <div className="rounded-lg border bg-muted/20 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{translateText("套餐金额")}</span>
+                    <span>{money(renewingPrice, renewalCurrency)}</span>
+                  </div>
+                  {appliedDiscount && (
+                    <div className="mt-1 flex items-center justify-between text-emerald-600">
+                      <span>{translateText("优惠")}</span>
+                      <span>-{money(appliedDiscount.discountAmountCents, renewalCurrency)}</span>
+                    </div>
+                  )}
+                  <div className="mt-2 flex items-center justify-between font-medium">
+                    <span>{payMode === "gateway" ? translateText("商品应付") : translateText("应付")}</span>
+                    <span>{money(renewFinalAmountCents, renewalCurrency)}</span>
+                  </div>
+                  {payMode === "gateway" && <PaymentFeeBreakdown amountCents={renewFinalAmountCents} paymentType={paymentType} currency={renewalCurrency} enabled={paymentMethods.length > 0 && !freeRenewal} />}
+                  <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{translateText("当前到期")}</span>
+                    <span>{dateTime(renewingSub?.expiresAt)}</span>
+                  </div>
                 </div>
-                {appliedDiscount && (
-                  <div className="mt-1 flex items-center justify-between text-emerald-600">
-                    <span>{translateText("优惠")}</span>
-                    <span>-{money(appliedDiscount.discountAmountCents, renewingSub?.currency || "CNY")}</span>
+
+                {billingFeatures?.discountEnabled && (
+                  <div className="flex gap-2">
+                    <Input value={discountCode} onChange={(e) => { setDiscountCode(e.target.value.toUpperCase()); setDiscountPreview(null); }} placeholder={translateText("折扣码（可选）")} />
+                    <Button
+                      variant="outline"
+                      onClick={() => renewingSub && previewDiscount.mutate({ code: discountCode, amountCents: renewingPrice, planId: Number(renewingSub.planId) })}
+                      disabled={!renewTotals || !discountCode.trim() || previewDiscount.isPending}
+                    >
+                      <TicketPercent className="mr-2 h-4 w-4" />{translateText(" 应用")}</Button>
                   </div>
                 )}
-                <div className="mt-2 flex items-center justify-between font-medium">
-                  <span>{payMode === "gateway" ? translateText("商品应付") : translateText("应付")}</span>
-                  <span>{money(renewFinalAmountCents, renewingSub?.currency || "CNY")}</span>
-                </div>
-                {payMode === "gateway" && <PaymentFeeBreakdown amountCents={renewFinalAmountCents} paymentType={paymentType} currency={renewingSub?.currency || "CNY"} enabled={!freeRenewal} />}
-                <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{translateText("当前到期")}</span>
-                  <span>{dateTime(renewingSub?.expiresAt)}</span>
-                </div>
-              </div>
 
-              {billingFeatures?.discountEnabled && (
-                <div className="flex gap-2">
-                  <Input value={discountCode} onChange={(e) => { setDiscountCode(e.target.value.toUpperCase()); setDiscountPreview(null); }} placeholder={translateText("折扣码（可选）")} />
-                  <Button
-                    variant="outline"
-                    onClick={() => renewingSub && previewDiscount.mutate({ code: discountCode, amountCents: renewingPrice, planId: Number(renewingSub.planId) })}
-                    disabled={!renewTotals || !discountCode.trim() || previewDiscount.isPending}
-                  >
-                    <TicketPercent className="mr-2 h-4 w-4" />{translateText(" 应用")}</Button>
-                </div>
-              )}
-
-              {!freeRenewal && <div className="grid gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPayMode("balance")}
-                  disabled={walletLoading}
-                  className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
-                    payMode === "balance" ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"
-                  } disabled:cursor-not-allowed disabled:opacity-60`}
-                >
-                  <span className="flex items-center gap-2 font-medium">
-                    <WalletCards className="h-4 w-4" />{translateText("余额支付（")}<AnimatedStatValue
-                      value={money(balance)}
-                      loading={walletLoading}
-                      cacheKey="subscriptions.wallet.balance.inline"
-                      fallbackValue={money(0)}
-                      className="inline-block align-middle"
-                    />
-                    ）
-                  </span>
-                  {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
-                </button>
-                {paymentMethods.map((method: any) => (
+                {!freeRenewal && <div className="grid gap-2">
                   <button
-                    key={method.value}
                     type="button"
-                    onClick={() => { setPayMode("gateway"); setPaymentType(method.value); }}
+                    onClick={() => setPayMode("balance")}
+                    disabled={walletLoading}
                     className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
-                      payMode === "gateway" && paymentType === method.value
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/60 bg-background/60 hover:bg-muted/60"
-                    }`}
+                      payMode === "balance" ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
                   >
-                    <span className="font-medium">{method.label}</span>
-                    {payMode === "gateway" && paymentType === method.value && <CheckCircle2 className="h-4 w-4" />}
+                    <span className="flex items-center gap-2 font-medium">
+                      <WalletCards className="h-4 w-4" />{translateText("余额支付（")}<AnimatedStatValue
+                        value={money(balance)}
+                        loading={walletLoading}
+                        cacheKey="subscriptions.wallet.balance.inline"
+                        fallbackValue={money(0)}
+                        className="inline-block align-middle"
+                      />
+                      ）
+                    </span>
+                    {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
                   </button>
-                ))}
-                {paymentMethods.length === 0 && (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{translateText("暂无在线支付方式。")}</div>
-                )}
-              </div>}
+                  {paymentMethods.map((method: any) => (
+                    <button
+                      key={method.value}
+                      type="button"
+                      onClick={() => { setPayMode("gateway"); setPaymentType(method.value); }}
+                      className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
+                        payMode === "gateway" && paymentType === method.value
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border/60 bg-background/60 hover:bg-muted/60"
+                      }`}
+                    >
+                      <span className="font-medium">{method.label}</span>
+                      {payMode === "gateway" && paymentType === method.value && <CheckCircle2 className="h-4 w-4" />}
+                    </button>
+                  ))}
+                  {paymentMethods.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{translateText("暂无在线支付方式。")}</div>
+                  )}
+                </div>}
+              </> : renewalPlanQuery.isPending ? (
+                <p role="status" className="text-sm text-muted-foreground">{translateText("正在加载套餐数据")}</p>
+              ) : renewalPlanQuery.isError ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <p role="alert" className="text-destructive">{translateText("套餐信息加载失败")}</p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void renewalPlanQuery.refetch()}>{translateText("重试")}</Button>
+                </div>
+              ) : (
+                <p role="status" className="text-sm text-muted-foreground">{translateText("套餐不可购买")}</p>
+              )}
             </div>
-            <DialogFooter className="gap-2">
+            <DialogFooter className="gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
               <Button variant="outline" onClick={closeRenewDialog}>{translateText("取消")}</Button>
               <Button
                 onClick={confirmRenew}

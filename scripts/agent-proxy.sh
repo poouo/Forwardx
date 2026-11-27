@@ -47,6 +47,13 @@ fwx_agent_proxy_args() {
         FORWARDX_INSTALL_MIMIC="${1#*=}"
         [ -n "$FORWARDX_INSTALL_MIMIC" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }
         shift ;;
+      --nginx)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '[ERROR] --nginx requires y, n or ask.' >&2; return 1; }
+        FORWARDX_INSTALL_NGINX="$2"; shift 2 ;;
+      --nginx=*)
+        FORWARDX_INSTALL_NGINX="${1#*=}"
+        [ -n "$FORWARDX_INSTALL_NGINX" ] || { echo '[ERROR] --nginx requires y, n or ask.' >&2; return 1; }
+        shift ;;
       -h|--help) ACTION=help; shift ;;
       --*) echo "[ERROR] Unknown option: ${1%%=*}" >&2; return 1 ;;
       *) [ -z "$TOKEN" ] || { echo '[ERROR] Unexpected argument.' >&2; return 1; }; TOKEN="$1"; shift ;;
@@ -59,6 +66,14 @@ fwx_agent_proxy_args() {
     *) echo '[ERROR] --mimic / FORWARDX_INSTALL_MIMIC must be y, n or ask.' >&2; return 1 ;;
   esac
   export FORWARDX_INSTALL_MIMIC
+  case "${FORWARDX_INSTALL_NGINX:-}" in
+    '') if [ "$ACTION" = install ]; then FORWARDX_INSTALL_NGINX=yes; else FORWARDX_INSTALL_NGINX=''; fi ;;
+    1|true|TRUE|yes|YES|y|Y|on|ON) FORWARDX_INSTALL_NGINX=yes ;;
+    0|false|FALSE|no|NO|n|N|off|OFF) FORWARDX_INSTALL_NGINX=no ;;
+    ask) ;;
+    *) echo '[ERROR] --nginx / FORWARDX_INSTALL_NGINX must be y, n or ask.' >&2; return 1 ;;
+  esac
+  export FORWARDX_INSTALL_NGINX
   # Offline removal/help must also work with a broken config or missing jq.
   case "$ACTION" in uninstall|remove|delete|help|'') return 0 ;; esac
   if [ "$FWX_PROXY_EXPLICIT" != true ]; then

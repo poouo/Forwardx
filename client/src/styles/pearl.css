@@ -261,7 +261,7 @@
   .dialog-panel[data-state="open"] { animation-duration: 300ms; animation-timing-function: var(--pearl-ease); }
   .dialog-overlay { --dialog-overlay-tint: rgb(24 33 30 / 40%); }
   .dark .dialog-overlay { --dialog-overlay-tint: rgb(0 0 0 / 66%); }
-  .route-content-enter { animation: pearl-content-reveal 380ms var(--pearl-ease) backwards; }
+  .route-content-enter { animation: pearl-content-reveal 180ms var(--pearl-ease) backwards; }
   .tab-content-enter[data-state="active"] { animation: forwardx-tab-enter 180ms var(--pearl-ease) backwards; }
   .stagger-card { animation-duration: 380ms; }
   .forwardx-stat-value-inner { will-change: auto; }
@@ -490,8 +490,8 @@
 }
 
 @keyframes pearl-content-reveal {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { transform: translateY(4px); }
+  to { transform: none; }
 }
 
 @keyframes auth-network-connect {

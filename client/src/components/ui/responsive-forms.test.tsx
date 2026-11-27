@@ -138,6 +138,21 @@ test("long dialogs keep their actions visible and give their form body a shrinka
   assert.doesNotMatch(mobileUpdate, /<DialogContent className="[^"]*\boverflow-hidden\b/);
 });
 
+test("tunnel forms keep compact mobile version labels and put advanced settings after the common fields", () => {
+  const versions = section("pages/Tunnels.tsx", "const renderForwardXVersionOptions", "{renderTunnelDirection()}");
+  for (const version of ["V1", "V2", "V3"]) assert.ok(versions.includes(`label: "${version}"`));
+  assert.match(versions, /grid min-w-0 grid-cols-3/);
+  assert.match(versions, /\{label\}<span className="hidden sm:inline"> \{transport\}/);
+  assert.match(versions, /className="[^"]*hidden[^"]*sm:block">\{description\}/);
+  const tunnelDialogs = source("pages/Tunnels.tsx").split("{renderForwardXVersionOptions()}").slice(1);
+  assert.equal(tunnelDialogs.length, 2);
+  for (const form of tunnelDialogs) {
+    const fields = form.slice(0, form.indexOf("{renderTunnelRuntimeOptions()}"));
+    assert.match(fields, /translateText\("出口监听端口"\)/);
+    assert.match(fields, /translateText\("流量倍率"\)/);
+  }
+});
+
 test("dialogs shrink inside native safe areas without overriding panel height limits", () => {
   const shared = source("components/ui/dialog.tsx");
   assert.match(shared, /dialog-positioner[^\"]*flex flex-col items-center justify-center/);
@@ -172,7 +187,7 @@ test("long forwarding editors reserve header and footer height and scroll only t
   for (const path of ["pages/ForwardGroups.tsx", "pages/Rules.tsx", "pages/Hosts.tsx", "pages/Tunnels.tsx"]) {
     const text = source(path);
     assert.match(text, /<DialogContent[^\n]*grid-rows-\[auto_minmax\(0,1fr\)_auto\]/, path);
-    assert.match(text, /className="[^\"]*min-h-0 touch-pan-y[^\"]*overflow-y-auto[^\"]*overscroll-contain/, path);
+    assert.match(text, /className="[^\"]*min-h-0 (?:min-w-0 )?touch-pan-y[^\"]*overflow-y-auto[^\"]*overscroll-contain/, path);
   }
   const users = section("pages/Users.tsx", '<Dialog open={showTrafficSettings}', '<Tabs defaultValue="permission"');
   assert.match(users, /<DialogHeader>/);

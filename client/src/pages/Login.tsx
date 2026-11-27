@@ -25,6 +25,7 @@ import { useThemeDefinition } from "@/lib/themeRuntime";
 import { themeText, type ThemeText } from "@shared/themeViews";
 import { getLanguage } from "@/i18n";
 import { loginContentMotion } from "@/lib/loginTransition";
+import { getTelegramWebAppInitData, initializeTelegramWebAppBridge } from "@/lib/telegramWebApp";
 import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
@@ -58,23 +59,6 @@ type CaptchaChallengeState = {
   expiresAt: number;
   purpose: "login" | "register";
 };
-
-type TelegramWebAppBridge = {
-  initData?: string;
-  ready?: () => void;
-  expand?: () => void;
-};
-
-function getTelegramWebAppBridge(): TelegramWebAppBridge | null {
-  if (typeof window === "undefined") return null;
-  return ((window as any).Telegram?.WebApp as TelegramWebAppBridge | undefined) || null;
-}
-
-function getTelegramWebAppInitData() {
-  const webApp = getTelegramWebAppBridge();
-  const initData = typeof webApp?.initData === "string" ? webApp.initData.trim() : "";
-  return initData;
-}
 
 function getTelegramWebAppChallenge() {
   if (typeof window === "undefined") return "";
@@ -616,8 +600,9 @@ export default function Login() {
 
   useEffect(() => {
     if (telegramWebAppAutoLoginTriedRef.current || telegramWebAppLoginMutation.isPending) return;
-    if (!isTelegramWebAppRequested()) return;
+    if (!isTelegramWebAppRequested() && !getTelegramWebAppInitData()) return;
 
+    initializeTelegramWebAppBridge();
     const challenge = getTelegramWebAppChallenge();
     let cancelled = false;
     let intervalId: number | null = null;
@@ -628,13 +613,6 @@ export default function Login() {
       const initData = getTelegramWebAppInitData();
       if (!initData) return false;
       telegramWebAppAutoLoginTriedRef.current = true;
-      const webApp = getTelegramWebAppBridge();
-      try {
-        webApp?.ready?.();
-        webApp?.expand?.();
-      } catch {
-        // no-op
-      }
       telegramWebAppChallengeRetriedRef.current = false;
       telegramWebAppLoginMutation.mutate({
         initData,
@@ -662,7 +640,7 @@ export default function Login() {
       if (intervalId) window.clearInterval(intervalId);
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [telegramWebAppLoginMutation.isPending, telegramWebAppLoginMutation.mutate]);
+  }, [search, telegramWebAppLoginMutation.isPending, telegramWebAppLoginMutation.mutate]);
 
   useEffect(() => {
     if (getTelegramWebAppInitData()) return;

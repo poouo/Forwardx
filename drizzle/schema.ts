@@ -969,13 +969,14 @@ export const paymentOrders = table("payment_orders", {
   id: serial("id"),
   outTradeNo: text("outTradeNo").notNull().unique(),
   userId: int("userId").notNull(),
-  provider: varchar("provider", { length: 32 }).notNull(), // easypay | alipay | wxpay | stripe | gmpay
-  paymentType: varchar("paymentType", { length: 32 }).notNull(), // alipay | wxpay | stripe | usdt
+  provider: varchar("provider", { length: 32 }).notNull(), // easypay | alipay | wxpay | stripe | paypal | gmpay
+  paymentType: varchar("paymentType", { length: 32 }).notNull(), // alipay | wxpay | stripe | paypal | usdt
   status: varchar("status", { length: 32 }).notNull().default("pending"), // pending | paid | completed | expired | cancelled | failed
   subject: text("subject").notNull(),
   amountCents: bigint("amountCents", { mode: "number" }).notNull(),
   baseAmountCents: bigint("baseAmountCents", { mode: "number" }).notNull().default(0),
   feeAmountCents: bigint("feeAmountCents", { mode: "number" }).notNull().default(0),
+  balanceCreditCents: bigint("balanceCreditCents", { mode: "number" }), // CNY wallet credit for payments with a separate settlement amount.
   currency: varchar("currency", { length: 16 }).notNull().default("CNY"),
   tradeNo: text("tradeNo"),
   payUrl: text("payUrl"),
@@ -1260,6 +1261,10 @@ export const announcements = table("announcements", {
   isActive: boolean("isActive").notNull().default(true),
   startsAt: epoch("startsAt"),
   expiresAt: epoch("expiresAt"),
+  scheduledAt: epoch("scheduledAt"),
+  publishedAt: epoch("publishedAt"),
+  editedAt: epoch("editedAt"),
+  pushOnPublish: boolean("pushOnPublish").notNull().default(false),
   createdByUserId: int("createdByUserId"),
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),

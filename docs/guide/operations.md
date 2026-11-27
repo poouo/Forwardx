@@ -97,6 +97,6 @@ conntrack -L -o extended | head -n 5
 sysctl net.netfilter.nf_conntrack_acct
 ```
 
-Agent 安装和脚本升级会检查并尝试安装 `conntrack`，加载连接跟踪模块，开启 `net.netfilter.nf_conntrack_acct=1` 并读回验证。启动配置保存在 `/etc/sysctl.d/99-forwardx-source-accounting.conf` 和 `/etc/modules-load.d/forwardx-source-accounting.conf`，不覆盖其他内核配置。依赖安装、内核权限或持久化失败会明确告警，但不阻断 Agent 安装和正常转发。仅替换 Agent 二进制不会执行这些脚本检查；旧部署可重新运行当前 Agent 升级脚本补齐。
+首次安装 Agent 会尝试安装 `conntrack`。安装和脚本升级都会检查连接跟踪，尝试加载内核模块、开启 `net.netfilter.nf_conntrack_acct=1` 并读回验证。启动配置保存在 `/etc/sysctl.d/99-forwardx-source-accounting.conf` 和 `/etc/modules-load.d/forwardx-source-accounting.conf`。内核权限或持久化失败时会告警，Agent 继续运行。旧节点缺少 `conntrack` 命令时，可通过系统包管理器补装。
 
 Debian/Ubuntu 也可手动执行 `apt-get install conntrack` 和 `sysctl -w net.netfilter.nf_conntrack_acct=1`。开启后通常只有新建立的连接才包含字节计数，不断开现有连接，不补算旧历史；已有未知样本在所选日期内仍标记为不完整。运行时采集只读取连接跟踪，不反复修改内核参数。受限容器、内核不支持或其他配置覆盖该选项时，需要主机管理员处理。

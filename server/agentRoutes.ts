@@ -6,7 +6,7 @@ import { registerMimicBuildCacheRoutes } from "./mimicBuildCache";
 import { registerAgentDiscoveryRoutes } from "./agentDiscovery";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
-import { registerAgentEventClient, unregisterAgentEventClient, supersedeAgentEventClient } from "./agentEvents";
+import { registerAgentEventClient, supersedeAgentEventClient } from "./agentEvents";
 import { agentInstallationGate, agentSupersededResponse, claimAgentInstallation, normalizeAgentInstallationId } from "./agentInstallation";
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
 import { AGENT_PANEL_MIGRATION_VERSION, hasAgentVersionChanged, isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
@@ -136,7 +136,6 @@ function setAgentEventStreamHeaders(res: Response, connection: "keep-alive" | "c
 }
 
 async function openAgentEventStream(input: {
-  req: Request;
   res: Response;
   token: string;
   agentVersion?: string | null;
@@ -149,13 +148,12 @@ async function openAgentEventStream(input: {
 }
 
 async function openOwnedAgentEventStream(input: {
-  req: Request;
   res: Response;
   token: string;
   agentVersion?: string | null;
   installationId?: unknown;
 }) {
-  const { req, res, token } = input;
+  const { res, token } = input;
   const migratedTo = await db.getSetting("migratedToPanelUrl");
   if (migratedTo) {
     res.status(200);
@@ -233,6 +231,7 @@ async function openOwnedAgentEventStream(input: {
     }
   }
 
+  if (res.destroyed || res.writableEnded) return;
   res.status(200);
   setAgentEventStreamHeaders(res, "keep-alive");
   res.flushHeaders?.();
@@ -243,21 +242,13 @@ async function openOwnedAgentEventStream(input: {
   res.socket?.setNoDelay?.(true);
 
   const eventStream = registerAgentEventClient(host.id, token, res, { heartbeatIntervalMs: 25_000 });
-  if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
+  if (VERBOSE_AGENT_EVENTS) {
+    console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
+    eventStream.onClose(() => console.info(`[AgentEvent] host=${host.id} disconnected`));
+  }
+  // The event registry tracks the response lifetime. The incoming request
+  // can finish while this SSE response remains open.
   eventStream.writeEvent("ready", { success: true });
-
-  let cleanedUp = false;
-  const cleanup = () => {
-    if (cleanedUp) return;
-    cleanedUp = true;
-    req.off("aborted", cleanup);
-    req.off("close", cleanup);
-    unregisterAgentEventClient(host.id, res);
-    if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} disconnected`);
-  };
-  req.once("aborted", cleanup);
-  req.once("close", cleanup);
-  eventStream.onClose(cleanup);
 }
 
 // Enrollment has its own discovery key, before an Agent credential exists.
@@ -338,7 +329,6 @@ agentRouter.get("/api/stream", async (req: Request, res: Response) => {
     }
     res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
     await openAgentEventStream({
-      req,
       res,
       token,
       agentVersion: payload?.agentVersion,
@@ -382,7 +372,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
       return;
     }
     res.setHeader(AGENT_AUTH_RESULT_HEADER, AGENT_AUTH_RESULT_ACCEPTED);
-    await openAgentEventStream({ req, res, token, agentVersion: req.header("X-Agent-Version"), installationId: req.header("X-Agent-Installation") });
+    await openAgentEventStream({ res, token, agentVersion: req.header("X-Agent-Version"), installationId: req.header("X-Agent-Installation") });
   } catch (error) {
     console.error("[Agent Events] Error:", error);
     res.status(500).json({ error: "Internal server error" });

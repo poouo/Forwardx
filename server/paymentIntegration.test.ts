@@ -420,6 +420,36 @@ test("failed fulfillment retains confirmed payment and diagnostics until a safe 
   assert.equal(await balance(),100);
 `));
 
+test("a verified Alipay trade-not-found query keeps waiting for payment", () => scenario(String.raw`
+  await admin.updateConfig({...config,alipay:{...config.alipay,mode:"page"}});
+  const order=await admin.createOrder({amount:1,paymentType:"alipay"});
+  const subCode="ACQ.TRADE_NOT_EXIST";
+  const notFound={code:"40004",sub_code:subCode,sub_msg:"交易不存在"};
+  await db.recordPaymentOrderFailure(order.outTradeNo,"支付状态核对失败，请管理员按订单号查看支付日志");
+  globalThis.fetch=async (_url,options)=>{
+    const params=Object.fromEntries(options.body.entries());
+    assert.equal(params.method,"alipay.trade.query");
+    return aliResponse(params.method,notFound);
+  };
+  assert.deepEqual(await admin.queryOrder({outTradeNo:order.outTradeNo}),{
+    outTradeNo:order.outTradeNo,status:"pending",reconciliationFailed:false,
+  });
+  assert.equal(await balance(),0);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).failureReason,null);
+  const retry=async (payload,signed)=>{
+    await runtime.executeRaw("UPDATE payment_orders SET lastPaymentCheckAt = NULL WHERE outTradeNo = ?",[order.outTradeNo]);
+    globalThis.fetch=async()=>aliResponse("alipay.trade.query",payload,signed);
+    return admin.queryOrder({outTradeNo:order.outTradeNo});
+  };
+  assert.equal((await retry(notFound,false)).reconciliationFailed,true);
+  assert.equal((await retry({...notFound,sub_code:"ACQ.SYSTEM_ERROR"},true)).reconciliationFailed,true);
+  assert.equal(await balance(),0);
+  assert.equal((await retry({
+    code:"10000",out_trade_no:order.outTradeNo,trade_no:"ALIPAY-PAID",trade_status:"TRADE_SUCCESS",total_amount:"1.00",
+  },true)).status,"completed");
+  assert.equal(await balance(),100);
+`));
+
 test("payment channel fees are added to gateway charges and excluded from balance credit", () => scenario(String.raw`
   const feeConfig = {
     ...base,
@@ -452,4 +482,158 @@ test("payment channel fees are added to gateway charges and excluded from balanc
   assert.equal((await originalFetch(origin + "/api/payment/webhook/easypay", { method: "POST", body: new URLSearchParams(params) })).status, 200);
   assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).status, "completed");
   assert.equal(await balance(), 101);
+`));
+
+test("PayPal validates the captured order, preserves wallet currency and isolates sandbox orders", () => scenario(String.raw`
+  const paypal = { ...base.paypal, enabled:true, currency:"USD", cnyPerUnit:7.25, clientId:"merchant-client",
+    clientSecret:"merchant-secret", webhookId:"WEBHOOKID", environment:"sandbox" };
+  const fee = { enabled:true, rateBps:250, fixedCents:30 };
+  const paypalConfig = { ...base, enabled:true, maxPendingOrders:0, paypal, fees:{ ...base.fees, paypal:fee } };
+  await assert.rejects(admin.updateConfig({...paypalConfig,paypal:{...paypal,cnyPerUnit:0}}), /人民币换算汇率/);
+  const safe = await admin.updateConfig(paypalConfig);
+  assert.equal(safe.paypal.clientSecret,"");
+  assert.equal(safe.paypal.hasClientSecret,true);
+  assert.deepEqual(await otherUser.availableMethods(),[]);
+  await assert.rejects(otherUser.createOrder({amount:72.5,paymentType:"paypal",orderType:"test"}),/沙盒仅支持管理员/);
+  await assert.rejects(admin.createOrder({amount:72.5,paymentType:"paypal"}),/沙盒仅支持管理员/);
+  assert.deepEqual(await admin.feeQuote({amountCents:7250,paymentType:"paypal"}), {
+    ...fee, currency:"USD", baseAmountCents:1000, feeCents:55, totalAmountCents:1055,
+  });
+  assert.equal((await admin.feeQuote({amountCents:7251,paymentType:"paypal"})).baseAmountCents,1001);
+  await assert.rejects(admin.feeQuote({amountCents:1000,paymentType:"paypal",currency:"EUR"}), /套餐币种/);
+
+  const orders = new Map();
+  let environment = "sandbox";
+  let captureRequests = 0;
+  let verifiedEvents = 0;
+  globalThis.fetch = async (url, options) => {
+    const u = new URL(url);
+    assert.equal(u.hostname, environment === "sandbox" ? "api-m.sandbox.paypal.com" : "api-m.paypal.com");
+    assert.equal(options.redirect,"error");
+    if (u.pathname === "/v1/oauth2/token") {
+      assert.equal(options.headers.Authorization,"Basic "+Buffer.from("merchant-client:merchant-secret").toString("base64"));
+      assert.equal(options.body,"grant_type=client_credentials");
+      return Response.json({access_token:"test-access"});
+    }
+    assert.equal(options.headers.Authorization,"Bearer test-access");
+    if (u.pathname === "/v1/notifications/verify-webhook-signature") {
+      const params = JSON.parse(options.body);
+      assert.equal(params.webhook_id,"WEBHOOKID");
+      assert.equal(params.transmission_id,"TRANSMISSION");
+      assert.ok(params.webhook_event.event_type);
+      verifiedEvents++;
+      return Response.json({verification_status:params.transmission_sig === "valid" ? "SUCCESS" : "FAILURE"});
+    }
+    if (u.pathname === "/v2/checkout/orders") {
+      const request = JSON.parse(options.body);
+      const unit = request.purchase_units[0];
+      const experience = request.payment_source.paypal.experience_context;
+      assert.equal(options.headers["PayPal-Request-Id"],"create-"+unit.reference_id);
+      assert.equal(request.intent,"CAPTURE");
+      assert.equal(experience.shipping_preference,"NO_SHIPPING");
+      assert.equal(experience.user_action,"PAY_NOW");
+      assert.equal(new URL(experience.return_url).pathname,"/api/payment/return/paypal");
+      assert.equal(new URL(experience.cancel_url).searchParams.get("payment_cancelled"),"1");
+      const id = "ORDER"+(orders.size+1);
+      orders.set(id,{id,intent:"CAPTURE",status:"CREATED",purchase_units:[unit]});
+      const host = environment === "sandbox" ? "www.sandbox.paypal.com" : "www.paypal.com";
+      return Response.json({id,links:[{rel:"payer-action",href:"https://"+host+"/checkoutnow?token="+id}]});
+    }
+    const [,id,capture] = /^\/v2\/checkout\/orders\/([A-Z0-9]+)(\/capture)?$/.exec(u.pathname) || [];
+    const order = orders.get(id);
+    assert.ok(order);
+    if (capture) {
+      assert.equal(options.headers["PayPal-Request-Id"],"capture-"+order.purchase_units[0].reference_id);
+      if (order.status === "COMPLETED") return Response.json({details:[{issue:"ORDER_ALREADY_CAPTURED"}]},{status:422});
+      assert.equal(order.status,"APPROVED");
+      captureRequests++;
+      order.status="COMPLETED";
+      const unit=order.purchase_units[0];
+      unit.payments={captures:[{id:"CAPTURE"+id,status:"COMPLETED",amount:{...unit.amount},final_capture:true}]};
+      return Response.json(order);
+    }
+    assert.equal(options.method,"GET");
+    return Response.json(order);
+  };
+  const post = (type, id, signature = "valid", captureId = "CAPTURE"+id) => originalFetch(origin+"/api/payment/webhook/paypal",{
+    method:"POST",headers:{"Content-Type":"application/json","PayPal-Auth-Algo":"SHA256withRSA","PayPal-Cert-Url":"https://api.paypal.com/cert",
+      "PayPal-Transmission-Id":"TRANSMISSION","PayPal-Transmission-Sig":signature,"PayPal-Transmission-Time":"2026-11-27T00:00:00Z"},
+    body:JSON.stringify({event_type:type,resource:type==="CHECKOUT.ORDER.APPROVED" ? {id} : {id:captureId,supplementary_data:{related_ids:{order_id:id}}}}),
+  });
+  const browserReturn = (order, token = order.tradeNo) => originalFetch(origin+"/api/payment/return/paypal?return_to=/wallet&out_trade_no="+order.outTradeNo+"&token="+token,{redirect:"manual"});
+
+  const sandbox = await admin.createOrder({amount:72.5,paymentType:"paypal",orderType:"test"});
+  assert.match(sandbox.payUrl,/^https:\/\/www\.sandbox\.paypal\.com\//);
+  orders.get(sandbox.tradeNo).status="APPROVED";
+  assert.equal((await post("CHECKOUT.ORDER.APPROVED",sandbox.tradeNo)).status,200);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(sandbox.outTradeNo)).status,"completed");
+  assert.equal(await balance(),0);
+  assert.deepEqual((await admin.stats()).paidAmounts,[]);
+
+  await admin.updateConfig({...paypalConfig,paypal:{...paypal,environment:"live",clientSecret:""}});
+  // Legacy settings forms only send known channels; the PayPal settings and fee survive.
+  const legacy = {...paypalConfig,fees:{...paypalConfig.fees}};
+  delete legacy.paypal;
+  delete legacy.fees.paypal;
+  await admin.updateConfig(legacy);
+  environment="live";
+  assert.deepEqual(await otherUser.availableMethods(),[{value:"paypal",label:"PayPal",feeEnabled:true,rateBps:250,fixedCents:30,currency:"USD"}]);
+  const order=await admin.createOrder({amount:72.5,paymentType:"paypal"});
+  assert.deepEqual([order.amountCents,order.baseAmountCents,order.feeAmountCents,order.balanceCreditCents,order.currency],[1055,1000,55,7250,"USD"]);
+  assert.match(order.payUrl,/^https:\/\/www\.paypal\.com\//);
+  assert.equal(orders.get(order.tradeNo).purchase_units[0].amount.value,"10.55");
+  assert.equal((await browserReturn(order)).status,303);
+  assert.equal(captureRequests,1);
+  orders.get(order.tradeNo).status="APPROVED";
+  assert.equal((await post("CHECKOUT.ORDER.APPROVED",order.tradeNo,"invalid")).status,400);
+  assert.equal((await browserReturn(order,"WRONGID")).status,303);
+  assert.equal(await balance(),0);
+  assert.equal(captureRequests,1);
+
+  await admin.updateConfig({...paypalConfig,paypal:{...paypal,environment:"live",cnyPerUnit:6.5}});
+  const returned=await browserReturn(order);
+  assert.equal(returned.status,303);
+  assert.equal(new URL(returned.headers.get("location")).searchParams.get("payment_return"),"paypal");
+  assert.equal((await db.getPaymentOrderByOutTradeNo(order.outTradeNo)).status,"completed");
+  assert.equal(await balance(),7250);
+  assert.notEqual((await post("PAYMENT.CAPTURE.COMPLETED",order.tradeNo,"valid","WRONGCAPTURE")).status,200);
+  assert.equal((await post("PAYMENT.CAPTURE.COMPLETED",order.tradeNo)).status,200);
+  assert.equal((await post("CHECKOUT.ORDER.APPROVED",order.tradeNo)).status,200);
+  assert.equal(verifiedEvents,5);
+  assert.equal(captureRequests,2);
+  assert.equal(await balance(),7250);
+  assert.deepEqual((await admin.stats()).paidAmounts,[{currency:"USD",amountCents:1055}]);
+
+  const next=await admin.createOrder({amount:6.5,paymentType:"paypal"});
+  const remote=orders.get(next.tradeNo);
+  remote.status="COMPLETED";
+  const unit=remote.purchase_units[0];
+  unit.payments={captures:[{id:"CAPTURE"+next.tradeNo,status:"COMPLETED",amount:{currency_code:"USD",value:"0.01"}}]};
+  assert.equal((await post("PAYMENT.CAPTURE.COMPLETED",next.tradeNo)).status,500);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(next.outTradeNo)).status,"pending");
+  assert.equal(await balance(),7250);
+  unit.payments.captures[0].amount=unit.amount;
+  await payment.reconcilePendingPaymentOrders();
+  assert.equal((await db.getPaymentOrderByOutTradeNo(next.outTradeNo)).status,"completed");
+  assert.equal(await balance(),7900);
+
+  await db.setSetting("storeEnabled","true");
+  await runtime.insertAndGetId("hosts",{id:1,name:"paypal-host",ip:"127.0.0.1",userId:1,portRangeStart:20000,portRangeEnd:30000});
+  await runtime.insertAndGetId("subscription_plans",{id:1,name:"paypal-plan",priceCents:650,currency:"CNY",durationDays:30,stockLimit:1,portCount:2,trafficLimit:1000000});
+  await runtime.insertAndGetId("subscription_plan_hosts",{planId:1,hostId:1});
+  const planOrder=await admin.createOrder({amount:999,paymentType:"paypal",planId:1,returnPath:"/store"});
+  assert.equal(planOrder.amountCents,133);
+  orders.get(planOrder.tradeNo).status="APPROVED";
+  const [returnResponse, approvalResponse]=await Promise.all([browserReturn(planOrder),post("CHECKOUT.ORDER.APPROVED",planOrder.tradeNo)]);
+  assert.equal(returnResponse.status,303);
+  assert.equal(approvalResponse.status,200);
+  const subscription=await db.getUserSubscriptionByPaymentOrderNo(planOrder.outTradeNo);
+  assert.ok(subscription);
+  const renewalOrder=await admin.createOrder({amount:1,paymentType:"paypal",planId:1,subscriptionId:subscription.id,returnPath:"/subscriptions"});
+  orders.get(renewalOrder.tradeNo).status="APPROVED";
+  assert.equal((await post("CHECKOUT.ORDER.APPROVED",renewalOrder.tradeNo)).status,200);
+  assert.equal((await db.getPaymentOrderByOutTradeNo(renewalOrder.outTradeNo)).subscriptionId,subscription.id);
+  const renewed=await db.getUserSubscriptionById(subscription.id);
+  assert.ok(new Date(renewed.expiresAt).getTime() > new Date(subscription.expiresAt).getTime());
+  assert.equal(await balance(),7900);
 `));

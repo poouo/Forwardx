@@ -1,6 +1,7 @@
 import { t as translateText } from "@/i18n";
 import DashboardLayout from "@/components/DashboardLayout";
 import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
+import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -22,6 +23,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useUrlTab } from "@/hooks/useUrlTab";
+import { PAYPAL_CURRENCIES, type PayPalCurrency, type PaymentType } from "@shared/paymentMethods";
 import { trpc } from "@/lib/trpc";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
@@ -85,6 +87,15 @@ type PaymentConfigForm = {
     webhookSecret: string;
     currency: string;
   };
+  paypal: {
+    enabled: boolean;
+    environment: "sandbox" | "live";
+    clientId: string;
+    clientSecret: string;
+    webhookId: string;
+    currency: PayPalCurrency;
+    cnyPerUnit: number;
+  };
   gmpay: {
     enabled: boolean;
     apiBase: string;
@@ -93,17 +104,18 @@ type PaymentConfigForm = {
     network: "tron" | "ethereum" | "bsc" | "polygon" | "solana" | "aptos" | "plasma";
     signatureAlgorithm: "md5" | "hmac-sha256";
   };
-  fees: Record<"alipay" | "wxpay" | "stripe" | "usdt", { enabled: boolean; rateBps: number; fixedCents: number }>;
+  fees: Record<PaymentType, { enabled: boolean; rateBps: number; fixedCents: number }>;
 };
 
-type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "gmpay" | "test";
-const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "gmpay", "test"] as const;
+const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "paypal", "gmpay", "test"] as const;
+type PaymentTab = (typeof PAYMENT_TABS)[number];
 const PAYMENT_TAB_ITEMS = [
   { value: "basic", label: translateText("基础设置") },
   { value: "easypay", label: translateText("易支付") },
   { value: "alipay", label: translateText("支付宝官方") },
   { value: "wxpay", label: translateText("微信官方") },
   { value: "stripe", label: "Stripe" },
+  { value: "paypal", label: "PayPal" },
   { value: "gmpay", label: "USDT" },
   { value: "test", label: translateText("测试下单") },
 ] as const satisfies readonly SlidingTabItem<PaymentTab>[];
@@ -157,6 +169,15 @@ const emptyForm: PaymentConfigForm = {
     webhookSecret: "",
     currency: "cny",
   },
+  paypal: {
+    enabled: false,
+    environment: "sandbox",
+    clientId: "",
+    clientSecret: "",
+    webhookId: "",
+    currency: "USD",
+    cnyPerUnit: 0,
+  },
   gmpay: {
     enabled: false,
     apiBase: "",
@@ -169,6 +190,7 @@ const emptyForm: PaymentConfigForm = {
     alipay: { enabled: false, rateBps: 0, fixedCents: 0 },
     wxpay: { enabled: false, rateBps: 0, fixedCents: 0 },
     stripe: { enabled: false, rateBps: 0, fixedCents: 0 },
+    paypal: { enabled: false, rateBps: 0, fixedCents: 0 },
     usdt: { enabled: false, rateBps: 0, fixedCents: 0 },
   },
 };
@@ -187,6 +209,7 @@ function PaymentStatCard({
   cacheKey,
   fallbackValue,
   action,
+  wrapValue = false,
 }: {
   label: string;
   value: string | number;
@@ -196,6 +219,7 @@ function PaymentStatCard({
   cacheKey: string;
   fallbackValue?: string | number;
   action?: React.ReactNode;
+  wrapValue?: boolean;
 }) {
   return (
     <Card hoverable className="group relative overflow-hidden border-border/40 bg-card/60">
@@ -209,7 +233,7 @@ function PaymentStatCard({
             loading={loading}
             cacheKey={cacheKey}
             fallbackValue={fallbackValue}
-            className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums"
+            className={`mt-1.5 text-2xl font-bold tracking-tight tabular-nums ${wrapValue ? "break-words leading-tight" : "truncate leading-none"}`}
           />
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
@@ -256,7 +280,7 @@ export default function Payments() {
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
   const [amount, setAmount] = useState("10");
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("alipay");
+  const [paymentType, setPaymentType] = useState<PaymentType>("alipay");
   const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
   const [activeTab, setActiveTab] = useUrlTab<PaymentTab>({
     values: PAYMENT_TABS,
@@ -314,6 +338,17 @@ export default function Payments() {
         webhookSecret: "",
         currency: config.stripe.currency || "cny",
       },
+      paypal: {
+        ...emptyForm.paypal,
+        ...(config.paypal && {
+          enabled: config.paypal.enabled,
+          environment: config.paypal.environment,
+          clientId: config.paypal.clientId,
+          webhookId: config.paypal.webhookId,
+          currency: config.paypal.currency,
+          cnyPerUnit: config.paypal.cnyPerUnit,
+        }),
+      },
       gmpay: {
         enabled: config.gmpay?.enabled || false,
         apiBase: config.gmpay?.apiBase || "",
@@ -326,6 +361,7 @@ export default function Payments() {
         alipay: { enabled: !!config.fees?.alipay?.enabled, rateBps: Number(config.fees?.alipay?.rateBps || 0), fixedCents: Number(config.fees?.alipay?.fixedCents || 0) },
         wxpay: { enabled: !!config.fees?.wxpay?.enabled, rateBps: Number(config.fees?.wxpay?.rateBps || 0), fixedCents: Number(config.fees?.wxpay?.fixedCents || 0) },
         stripe: { enabled: !!config.fees?.stripe?.enabled, rateBps: Number(config.fees?.stripe?.rateBps || 0), fixedCents: Number(config.fees?.stripe?.fixedCents || 0) },
+        paypal: config.fees?.paypal ?? emptyForm.fees.paypal,
         usdt: { enabled: !!config.fees?.usdt?.enabled, rateBps: Number(config.fees?.usdt?.rateBps || 0), fixedCents: Number(config.fees?.usdt?.fixedCents || 0) },
       },
     });
@@ -414,12 +450,13 @@ export default function Payments() {
           />
           <PaymentStatCard
             label={translateText("已支付金额")}
-            value={formatMoney(stats?.paidAmountCents)}
+            value={stats?.paidAmounts?.map(({ amountCents, currency }) => formatMoney(amountCents, currency)).join(" / ") || formatMoney(0)}
             icon={WalletCards}
             tone="text-violet-600 dark:text-violet-400"
             loading={statsLoading}
             cacheKey="payments.paidAmount"
             fallbackValue={formatMoney(0)}
+            wrapValue
           />
           <PaymentStatCard
             label={translateText("已支付订单")}
@@ -506,6 +543,7 @@ export default function Payments() {
                   ["alipay", translateText("支付宝")],
                   ["wxpay", translateText("微信支付")],
                   ["stripe", "Stripe"],
+                  ["paypal", "PayPal"],
                   ["usdt", "USDT"],
                 ] as const).map(([key, label]) => {
                   const fee = form.fees[key];
@@ -513,7 +551,9 @@ export default function Payments() {
                     <div key={key} className="grid gap-3 rounded-lg border bg-background/70 p-3 md:grid-cols-[minmax(0,1fr)_auto_160px_160px] md:items-center">
                       <div>
                         <div className="font-medium">{label}</div>
-                        <div className="text-xs text-muted-foreground">{translateText("用户侧选择此方式时生效")}</div>
+                        <div className="text-xs text-muted-foreground">{key === "paypal"
+                          ? translateText("固定费用按 PayPal 收款币种计算")
+                          : translateText("用户侧选择此方式时生效")}</div>
                       </div>
                       <Switch checked={fee.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, fees: { ...prev.fees, [key]: { ...prev.fees[key], enabled } } }))} aria-label={translateText("启用 {0} 通道费用", [label])} />
                       <Field label={translateText("费率 (%)")}>
@@ -712,6 +752,54 @@ export default function Payments() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="paypal" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><CreditCard className="h-5 w-5" /> PayPal</CardTitle>
+                <CardDescription>{translateText("通过 PayPal 收银台付款。沙盒仅供管理员测试下单。")}</CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 md:grid-cols-2">
+                <div className="flex items-center justify-between rounded-lg border bg-background/70 px-4 py-3 md:col-span-2">
+                  <Label htmlFor="paypal-enabled">{translateText("启用 PayPal")}</Label>
+                  <Switch id="paypal-enabled" checked={form.paypal.enabled} onCheckedChange={(enabled) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, enabled } }))} />
+                </div>
+                <Field label={translateText("PayPal 环境")}>
+                  <Select value={form.paypal.environment} onValueChange={(environment: PaymentConfigForm["paypal"]["environment"]) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, environment } }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sandbox">{translateText("沙盒测试")}</SelectItem>
+                      <SelectItem value="live">{translateText("正式收款")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label={translateText("收款币种")}>
+                  <Select value={form.paypal.currency} onValueChange={(currency: PayPalCurrency) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, currency } }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {PAYPAL_CURRENCIES.map((currency) => <SelectItem key={currency} value={currency}>{currency}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {form.paypal.currency !== "CNY" && <Field label={translateText("人民币换算汇率")} hint={translateText("填写每 1 {0} 对应的人民币金额。人民币订单按此汇率计算 PayPal 实付。", [form.paypal.currency])}>
+                  <Input type="number" min="0.000001" max="1000000" step="0.000001" value={form.paypal.cnyPerUnit || ""} onChange={(e) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, cnyPerUnit: Number(e.target.value) } }))} />
+                </Field>}
+                <Field label="Client ID">
+                  <Input value={form.paypal.clientId} onChange={(e) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, clientId: e.target.value } }))} />
+                </Field>
+                <Field label="Client Secret" hint={config?.paypal?.hasClientSecret ? translateText("已保存密钥，留空表示不修改") : translateText("尚未保存密钥")}>
+                  <Input type="password" autoComplete="new-password" value={form.paypal.clientSecret} onChange={(e) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, clientSecret: e.target.value } }))} />
+                </Field>
+                <Field label="Webhook ID" hint={translateText("填入同一 PayPal 应用中此回调地址对应的 Webhook ID。")}>
+                  <Input value={form.paypal.webhookId} onChange={(e) => setForm((prev) => ({ ...prev, paypal: { ...prev.paypal, webhookId: e.target.value } }))} />
+                </Field>
+                <div className="min-w-0 md:col-span-2">
+                  <CallbackItem label={translateText("PayPal Webhook 地址")} value={`${panelUrl}/api/payment/webhook/paypal`} />
+                  <p className="mt-2 break-words text-xs text-muted-foreground">CHECKOUT.ORDER.APPROVED · PAYMENT.CAPTURE.COMPLETED</p>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           <TabsContent value="gmpay" className="mt-4">
             <Card>
               <CardHeader>
@@ -796,16 +884,17 @@ export default function Payments() {
                 <CardDescription>{translateText("创建测试订单。")}</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
-                <Field label={translateText("金额")}>
+                <Field label={paymentType === "paypal" ? translateText("金额（CNY）") : translateText("金额")}>
                   <Input type="number" min={0.01} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
                 </Field>
                 <Field label={translateText("支付方式")}>
-                  <Select value={paymentType} onValueChange={(value: "alipay" | "wxpay" | "stripe" | "usdt") => setPaymentType(value)}>
+                  <Select value={paymentType} onValueChange={(value: PaymentType) => setPaymentType(value)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="alipay">{translateText("支付宝")}</SelectItem>
                       <SelectItem value="wxpay">{translateText("微信")}</SelectItem>
                       <SelectItem value="stripe">Stripe</SelectItem>
+                      <SelectItem value="paypal">PayPal</SelectItem>
                       <SelectItem value="usdt">USDT</SelectItem>
                     </SelectContent>
                   </Select>
@@ -814,6 +903,9 @@ export default function Payments() {
                   <Button className="w-full" onClick={() => createOrder.mutate({ amount: Number(amount), paymentType, orderType: "test", returnPath: "/payments" })} disabled={createOrder.isPending}>
                     {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}{translateText("创建订单")}</Button>
                 </div>
+                {paymentType === "paypal" && <div className="md:col-span-3">
+                  <PaymentFeeBreakdown amountCents={Math.round(Number(amount) * 100) || 0} paymentType={paymentType} enabled={config?.paypal?.enabled === true} />
+                </div>}
               </CardContent>
             </Card>
           </TabsContent>

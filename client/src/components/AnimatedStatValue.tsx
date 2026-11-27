@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ElementType } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { getLanguage } from "@/i18n";
 import { useMotionEnabled } from "./MotionPolicy";
@@ -107,18 +107,14 @@ export default function AnimatedStatValue({
   const previousDisplayRef = useRef(displayValue);
   const [animationState, setAnimationState] = useState({ key: 0, changed: false });
 
-  useEffect(() => {
-    if (!motionEnabled) {
+  useLayoutEffect(() => {
+    if (!motionEnabled || loading) {
       previousDisplayRef.current = displayValue;
       setAnimationState(state => state.changed ? { ...state, changed: false } : state);
       return;
     }
     if (previousDisplayRef.current === displayValue) return;
     previousDisplayRef.current = displayValue;
-    if (loading) {
-      setAnimationState((state) => ({ ...state, changed: false }));
-      return;
-    }
     setAnimationState((state) => ({ key: state.key + 1, changed: true }));
   }, [displayValue, loading, motionEnabled]);
 

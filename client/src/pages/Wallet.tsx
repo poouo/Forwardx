@@ -21,8 +21,7 @@ import { trpc } from "@/lib/trpc";
 import { CheckCircle2, CreditCard, Gift, Package, ReceiptText, RefreshCw, WalletCards } from "lucide-react";
 import { useState } from "react";
 import { toast } from "@/lib/localizedToast";
-
-type PaymentType = "alipay" | "wxpay" | "stripe" | "usdt";
+import type { PaymentType } from "@shared/paymentMethods";
 
 function money(cents?: number | null, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((Number(cents) || 0) / 100);
@@ -44,6 +43,7 @@ function paymentMethodText(type?: string | null) {
   if (type === "alipay") return translateText("支付宝");
   if (type === "wxpay") return translateText("微信支付");
   if (type === "stripe") return "Stripe";
+  if (type === "paypal") return "PayPal";
   if (type === "usdt" || type === "gmpay") return "USDT";
   return type || "-";
 }
@@ -83,7 +83,8 @@ export default function Wallet() {
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [checkoutOrder, setCheckoutOrder] = useState<CheckoutOrder | null>(null);
   const [amount, setAmount] = useState("50");
-  const [paymentType, setPaymentType] = useState<PaymentType>("stripe");
+  const [preferredPaymentType, setPaymentType] = useState<PaymentType>("stripe");
+  const paymentType = paymentMethods.find(method => method.value === preferredPaymentType)?.value ?? paymentMethods[0]?.value ?? preferredPaymentType;
   const [redeemCode, setRedeemCode] = useState("");
 
   const createOrder = trpc.payment.createOrder.useMutation({
@@ -113,7 +114,7 @@ export default function Wallet() {
   });
 
   const openRecharge = () => {
-    const first = paymentMethods[0]?.value as PaymentType | undefined;
+    const first = paymentMethods[0]?.value;
     if (first) setPaymentType(first);
     setRechargeOpen(true);
   };
@@ -349,7 +350,7 @@ export default function Wallet() {
                   </SelectContent>
                 </Select>
               </div>
-              <PaymentFeeBreakdown amountCents={Math.max(0, Math.round(Number(amount) * 100) || 0)} paymentType={paymentType} enabled={!!amount && Number(amount) > 0} />
+              <PaymentFeeBreakdown amountCents={Math.max(0, Math.round(Number(amount) * 100) || 0)} paymentType={paymentType} enabled={paymentMethods.length > 0 && Number(amount) > 0} />
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRechargeOpen(false)}>{translateText("取消")}</Button>

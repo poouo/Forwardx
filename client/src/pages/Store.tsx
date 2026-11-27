@@ -5,6 +5,7 @@ import PaymentCheckoutDialog from "@/components/PaymentCheckoutDialog";
 import PaymentFeeBreakdown from "@/components/PaymentFeeBreakdown";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "@/components/PlanPurchaseQuantity";
 import { billingCycleLabel, PlanBillingCycleSelect } from "@/components/PlanBillingCycleSelect";
+import { PlanCheckoutBenefits } from "@/components/PlanCheckoutBenefits";
 import { planBillingCycles } from "@shared/planPurchase";
 import type { CheckoutOrder } from "@/lib/paymentCheckout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { planDescription, planResourceText, planPortCountText } from "@/lib/planDisplay";
+import { planDescription, planResourceText, planPortCountText, planRateLimitText, planTrafficQuotaText } from "@/lib/planDisplay";
 import { PlanDetails } from "@/components/PlanDetails";
 import { PlanTrafficModeBadge } from "@/components/PlanTrafficMode";
 import { MeteredRuleLimitBadge, ProductStockBadge } from "@/components/ProductStock";
@@ -27,6 +28,7 @@ import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useState } from "react";
 import { toast } from "@/lib/localizedToast";
+import { paymentMethodSupportsCurrency, type PaymentType } from "@shared/paymentMethods";
 
 function money(cents?: number, currency = "CNY") {
   return new Intl.NumberFormat(getFormatLocale(), { style: "currency", currency }).format((cents || 0) / 100);
@@ -49,18 +51,6 @@ function moneyFromMilliCents(milliCents?: number, currency = "CNY") {
     minimumFractionDigits: yuan > 0 && yuan < 0.01 ? 3 : 2,
     maximumFractionDigits: 3,
   }).format(yuan);
-}
-
-function bytes(size?: number | null) {
-  const value = Number(size || 0);
-  if (!value) return translateText("不限");
-  const gigabytes = value / (1024 ** 3);
-  return `${parseFloat(gigabytes.toFixed(2))} GB`;
-}
-
-function speed(value?: number | null) {
-  const num = Number(value || 0);
-  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : translateText("不限");
 }
 
 const durationOptions = [
@@ -90,8 +80,8 @@ function effectiveBillingPriceMilliCents(config: any) {
 function planBenefitItems(plan: any) {
   const items = [
     Number(plan.portCount) === 0 ? translateText("端口不限") : translateText("连续端口 {0} 个", [plan.portCount || 0]),
-    translateText("套餐流量 {0}", [bytes(plan.trafficLimit)]),
-    translateText("限速 {0}", [speed(plan.rateLimitMbps)]),
+    translateText("套餐流量 {0}", [planTrafficQuotaText(plan.trafficLimit)]),
+    translateText("限速 {0}", [planRateLimitText(plan.rateLimitMbps)]),
     translateText("规则 {0} · 连接 {1} · IP {2}", [plan.maxRules || translateText("不限"), plan.maxConnections || translateText("不限"), plan.maxIPs || translateText("不限")]),
     translateText("连接数按主机或隧道聚合；IP 数按用户、入口主机共享"),
     translateText("可用资源 {0}", [planResourceText(plan)]),
@@ -202,14 +192,16 @@ export default function Store() {
   });
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { placeholderData: (previousData) => previousData });
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
-  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
+  const { data: availablePaymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
     placeholderData: (previousData) => previousData,
   });
   const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
+  const paymentMethods = availablePaymentMethods.filter(method => paymentMethodSupportsCurrency(method, selectedPlan?.currency || "CNY"));
   const [planQuantity, setPlanQuantity] = useState("1");
   const [billingCycleDays, setBillingCycleDays] = useState<number | undefined>();
-  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe" | "usdt">("stripe");
+  const [preferredPaymentType, setPaymentType] = useState<PaymentType>("stripe");
+  const paymentType = paymentMethods.find(method => method.value === preferredPaymentType)?.value ?? paymentMethods[0]?.value ?? preferredPaymentType;
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
@@ -264,7 +256,7 @@ export default function Store() {
   });
 
   const buy = (plan: any) => {
-    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | "usdt" | undefined;
+    const firstMethod = availablePaymentMethods.find(method => paymentMethodSupportsCurrency(method, plan.currency || "CNY"))?.value;
     if (firstMethod) setPaymentType(firstMethod);
     setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
@@ -411,18 +403,19 @@ export default function Store() {
         <PaymentCheckoutDialog order={checkoutOrder} onClose={() => setCheckoutOrder(null)} />
 
         <Dialog open={!!selectedPlan} onOpenChange={(open) => !open && setSelectedPlan(null)}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
+          <DialogContent className="grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-md sm:p-0">
+            <DialogHeader className="px-4 pb-3 pt-4 pr-12 sm:px-6 sm:pr-12">
               <DialogTitle className="flex items-center gap-2">
                 <CreditCard className="h-5 w-5" />{translateText("选择支付方式")}</DialogTitle>
               <DialogDescription>{translateText("购买 ")}{selectedPlan?.name || translateText("套餐")}{translateText("，金额 ")}{selectedPlan ? money(finalAmountCents, selectedPlan.currency) : "-"}
               </DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4">
+            <div className="dialog-scroll-area grid min-h-0 min-w-0 touch-pan-y content-start gap-4 overflow-y-auto overscroll-contain px-4 py-2 sm:px-6">
               {selectedPlan && <PlanBillingCycleSelect options={purchaseCycles} value={selectedCycleDays} currency={selectedPlan.currency}
                 onChange={(days) => { setBillingCycleDays(days); setDiscountPreview(null); }} disabled={createOrder.isPending || buyWithBalance.isPending} />}
               {permitsMultiple && <PlanPurchaseQuantity value={planQuantity} onChange={(value) => { setPlanQuantity(value); setDiscountPreview(null); }}
-                durationDays={selectedCycleDays} valid={!!purchaseTotals} disabled={createOrder.isPending || buyWithBalance.isPending} />}
+                durationDays={selectedCycleDays} valid={!!purchaseTotals} disabled={createOrder.isPending || buyWithBalance.isPending} showTotalDuration={false} />}
+              {selectedPlan && <PlanCheckoutBenefits plan={selectedPlan} durationDays={purchaseTotals?.durationDays} />}
               {selectedPlan?.renewalSubscriptionId && (
                 <p className="text-sm text-muted-foreground">{translateText("已购买同款套餐，本次购买将延长原订阅的有效期。")}</p>
               )}
@@ -441,7 +434,7 @@ export default function Store() {
                   <span>{payMode === "gateway" ? translateText("商品应付") : translateText("应付")}</span>
                   <span>{money(finalAmountCents, selectedPlan?.currency)}</span>
                 </div>
-                {payMode === "gateway" && <PaymentFeeBreakdown amountCents={finalAmountCents} paymentType={paymentType} currency={selectedPlan?.currency || "CNY"} enabled={!freePurchase} />}
+                {payMode === "gateway" && <PaymentFeeBreakdown amountCents={finalAmountCents} paymentType={paymentType} currency={selectedPlan?.currency || "CNY"} enabled={paymentMethods.length > 0 && !freePurchase} />}
               </div>
               {billingFeatures?.discountEnabled && (
               <div className="flex gap-2">
@@ -495,7 +488,7 @@ export default function Store() {
                 )}
               </div>}
             </div>
-            <DialogFooter className="gap-2">
+            <DialogFooter className="gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
               <Button variant="outline" onClick={() => setSelectedPlan(null)}>{translateText("取消")}</Button>
               <Button onClick={confirmBuy} disabled={!purchaseTotals || !plans.some((plan) => plan.id === selectedPlan?.id && (!productStock(plan).soldOut || plan.renewalSubscriptionId)) || createOrder.isPending || buyWithBalance.isPending || previewDiscount.isPending || (!freePurchase && (payMode === "gateway" ? paymentMethods.length === 0 : walletLoading))}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}

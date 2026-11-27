@@ -1,7 +1,7 @@
 export const PAYMENT_RETURN_PATHS = ["/store", "/subscriptions", "/wallet", "/payments"] as const;
 
 export type PaymentReturnPath = (typeof PAYMENT_RETURN_PATHS)[number];
-export type PaymentProvider = "easypay" | "alipay" | "wxpay" | "stripe" | "gmpay";
+export type PaymentProvider = "easypay" | "alipay" | "wxpay" | "stripe" | "paypal" | "gmpay";
 
 export const DEFAULT_PAYMENT_RETURN_PATH: PaymentReturnPath = "/wallet";
 

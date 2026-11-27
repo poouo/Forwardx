@@ -193,6 +193,20 @@ export const plansRouter = router({
     await db.expireUserSubscriptions();
     return db.listUserSubscriptions(ctx.user.id, { visibility: "user", excludeCancelled: true });
   }),
+  renewalPlan: protectedProcedure
+    .input(z.object({ subscriptionId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      const subscriptions = await db.listStoreRenewalSubscriptions(ctx.user.id);
+      const subscription = subscriptions.find(item => Number(item.id) === input.subscriptionId);
+      if (!subscription?.planId) return null;
+
+      // This list already checks ownership, visibility and the admin opt-in.
+      const adminSelfRenewal = subscription.source === "admin";
+      if (!adminSelfRenewal && (await db.getSetting("storeEnabled")) !== "true") return null;
+      const plan = await db.getSubscriptionPlanById(Number(subscription.planId));
+      if (!plan?.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) return null;
+      return plan;
+    }),
   assign: adminProcedure
     .input(z.object({
       userId: z.number().int().positive(),

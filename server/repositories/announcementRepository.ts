@@ -1,6 +1,6 @@
-import { and, desc, eq, sql } from "drizzle-orm";
-import { announcementReads, announcements, InsertAnnouncement } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, nowDate } from "../dbRuntime";
+import { and, asc, desc, eq, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { announcementReads, announcements, type Announcement, type InsertAnnouncement } from "../../drizzle/schema";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier, withDatabaseTransaction } from "../dbRuntime";
 import { getSetting, setSetting } from "./settingsRepository";
 
 const CURRENT_DEVELOPER_UPGRADE_ANNOUNCEMENT: {
@@ -13,81 +13,137 @@ function normalizeAnnouncementVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }
 
-async function deactivateOtherPopups(exceptId?: number) {
+const publicationTime = sql<number>`COALESCE(${announcements.publishedAt}, ${announcements.createdAt})`;
+
+const published = or(isNull(announcements.scheduledAt), isNotNull(announcements.publishedAt));
+const visible = and(eq(announcements.isActive, true), published);
+
+async function getAnnouncementForUpdate(id: number): Promise<Announcement | undefined> {
   const db = await getDb();
-  if (!db) return;
-  const where = exceptId
-    ? and(eq(announcements.type, "popup"), sql`${announcements.id} != ${exceptId}`)
-    : eq(announcements.type, "popup");
-  await db.update(announcements).set({ isActive: false, updatedAt: nowDate() } as any).where(where);
+  if (!db) return undefined;
+  const q = quoteDbIdentifier;
+  const lock = getDatabaseKind() === "sqlite" ? "" : " FOR UPDATE";
+  const rows = await queryRaw(`SELECT id FROM ${q("announcements")} WHERE id = ?${lock}`, [id]);
+  if (!rows.length) return undefined;
+  return (await db.select().from(announcements).where(eq(announcements.id, id)).limit(1))[0];
 }
 
-async function deactivateOtherUpgradePopups(targetVersion: string, exceptId?: number) {
+async function replacePublishedPopup(item: Announcement) {
+  if (item.type !== "popup" && (item.type !== "upgrade_popup" || !item.targetVersion)) return;
   const db = await getDb();
   if (!db) return;
-  const normalizedVersion = normalizeAnnouncementVersion(targetVersion);
-  if (!normalizedVersion) return;
-  const baseWhere = and(eq(announcements.type, "upgrade_popup"), eq(announcements.targetVersion, normalizedVersion));
-  const where = exceptId ? and(baseWhere, sql`${announcements.id} != ${exceptId}`) : baseWhere;
-  await db.update(announcements).set({ isActive: false, updatedAt: nowDate() } as any).where(where);
+  const sameGroup = item.type === "popup"
+    ? eq(announcements.type, "popup")
+    : and(eq(announcements.type, "upgrade_popup"), eq(announcements.targetVersion, item.targetVersion!));
+  await db.update(announcements).set({ isActive: false }).where(and(
+    sameGroup,
+    ne(announcements.id, item.id),
+    eq(announcements.isActive, true),
+    published,
+  ));
 }
 
-export async function listAnnouncements(includeInactive = false) {
+export async function listAnnouncements(includeInactive = false): Promise<Announcement[]> {
   const db = await getDb();
   if (!db) return [];
-  const base = db.select().from(announcements);
-  if (!includeInactive) {
-    return base
-      .where(eq(announcements.isActive, true))
-      .orderBy(desc(announcements.updatedAt), desc(announcements.createdAt));
-  }
-  return base.orderBy(desc(announcements.updatedAt), desc(announcements.createdAt));
+  return db.select().from(announcements)
+    .where(includeInactive ? undefined : visible)
+    .orderBy(desc(publicationTime), desc(announcements.id));
 }
 
 export async function createAnnouncement(data: InsertAnnouncement) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const next = {
-    ...data,
-    targetVersion: data.type === "upgrade_popup" ? normalizeAnnouncementVersion(data.targetVersion) || null : null,
-    isActive: true,
-    startsAt: null,
-    expiresAt: null,
-  } as any;
-  if (next.type === "popup") await deactivateOtherPopups();
-  if (next.type === "upgrade_popup" && next.targetVersion) await deactivateOtherUpgradePopups(next.targetVersion);
-  await db.insert(announcements).values(next);
-  return listAnnouncements(true);
+  return withDatabaseTransaction(async () => {
+    const now = nowDate();
+    const scheduledAt = data.scheduledAt ?? null;
+    if (scheduledAt && scheduledAt <= now) throw new Error("定时发布时间必须晚于当前时间");
+    const id = await insertAndGetId("announcements", {
+      ...data,
+      targetVersion: data.type === "upgrade_popup" ? normalizeAnnouncementVersion(data.targetVersion) || null : null,
+      isActive: true,
+      scheduledAt,
+      publishedAt: scheduledAt ? null : now,
+    });
+    const item = await getAnnouncementForUpdate(id);
+    if (!item) throw new Error("公告不存在");
+    if (!scheduledAt) await replacePublishedPopup(item);
+    return item;
+  });
 }
 
 export async function updateAnnouncement(id: number, data: Partial<InsertAnnouncement>) {
+  return withDatabaseTransaction(async () => {
+    const db = await getDb();
+    const current = await getAnnouncementForUpdate(id);
+    if (!db || !current) throw new Error("公告不存在");
+    const now = nowDate();
+    const scheduled = !!current.scheduledAt && !current.publishedAt;
+    const scheduledAt = data.scheduledAt === undefined ? current.scheduledAt : data.scheduledAt;
+    if (!scheduled && data.scheduledAt != null) throw new Error("已发布公告的发布时间不能更改");
+    if (scheduled && data.scheduledAt && data.scheduledAt <= now) throw new Error("定时发布时间必须晚于当前时间");
+    const type = data.type ?? current.type;
+    const targetVersion = type === "upgrade_popup"
+      ? normalizeAnnouncementVersion(data.targetVersion ?? current.targetVersion) || null
+      : null;
+    const publishingNow = scheduled && !scheduledAt;
+    const notificationRequested = data.pushOnPublish ?? current.pushOnPublish;
+    const edited = !scheduled && (data.title !== undefined && data.title !== current.title
+      || data.content !== undefined && data.content !== current.content
+      || type !== current.type || targetVersion !== current.targetVersion);
+    await db.update(announcements).set({
+      ...data,
+      type,
+      targetVersion,
+      scheduledAt: scheduled ? scheduledAt : current.scheduledAt,
+      publishedAt: publishingNow ? now : current.publishedAt,
+      editedAt: edited ? now : current.editedAt,
+      pushOnPublish: scheduled && !publishingNow && notificationRequested,
+      updatedAt: now,
+    }).where(eq(announcements.id, id));
+    const next = (await db.select().from(announcements).where(eq(announcements.id, id)).limit(1))[0] as Announcement;
+    if (next.isActive && (publishingNow || (!scheduled && (type !== current.type || targetVersion !== current.targetVersion)))) {
+      await replacePublishedPopup(next);
+    }
+    return {
+      announcement: next,
+      shouldPush: next.isActive && (!scheduled || publishingNow) && notificationRequested,
+    };
+  });
+}
+
+export async function publishDueAnnouncements(now = nowDate()) {
   const db = await getDb();
-  if (!db) return undefined;
-  const next = {
-    ...data,
-    targetVersion: data.type === "upgrade_popup" ? normalizeAnnouncementVersion(data.targetVersion) || null : null,
-    isActive: true,
-    startsAt: null,
-    expiresAt: null,
-    updatedAt: nowDate(),
-  } as any;
-  if (next.type === "popup") await deactivateOtherPopups(id);
-  if (next.type === "upgrade_popup" && next.targetVersion) await deactivateOtherUpgradePopups(next.targetVersion, id);
-  await db.update(announcements).set(next).where(eq(announcements.id, id));
-  const rows = await db.select().from(announcements).where(eq(announcements.id, id)).limit(1);
-  return rows[0];
+  if (!db) return [];
+  const due = await db.select({ id: announcements.id }).from(announcements).where(and(
+    eq(announcements.isActive, true),
+    isNull(announcements.publishedAt),
+    lte(announcements.scheduledAt, now),
+  )).orderBy(asc(announcements.scheduledAt), asc(announcements.id)).limit(50);
+  const published: Announcement[] = [];
+  for (const { id } of due) {
+    const item = await withDatabaseTransaction(async () => {
+      const row = await getAnnouncementForUpdate(id);
+      if (!row?.isActive || row.publishedAt || !row.scheduledAt || row.scheduledAt > now) return;
+      await (await getDb())!.update(announcements).set({ publishedAt: now, pushOnPublish: false }).where(eq(announcements.id, id));
+      await replacePublishedPopup(row);
+      return row;
+    });
+    if (item) published.push(item);
+  }
+  return published;
 }
 
 export async function deleteAnnouncement(id: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(announcementReads).where(eq(announcementReads.announcementId, id));
-  await db.delete(announcements).where(eq(announcements.id, id));
+  await withDatabaseTransaction(async () => {
+    const db = await getDb();
+    if (!db || !await getAnnouncementForUpdate(id)) return;
+    await db.delete(announcementReads).where(eq(announcementReads.announcementId, id));
+    await db.delete(announcements).where(eq(announcements.id, id));
+  });
 }
 
-export async function listUserAnnouncements() {
-  const rows = await listAnnouncements(false);
-  return rows.filter((row: any) => row?.type !== "upgrade_popup");
+export async function listUserAnnouncements(includeInactive = false) {
+  const rows = await listAnnouncements(includeInactive);
+  return rows.filter((row: Announcement) => row.type !== "upgrade_popup");
 }
 
 export async function getUnreadPopupAnnouncement(userId: number) {
@@ -96,8 +152,8 @@ export async function getUnreadPopupAnnouncement(userId: number) {
   const popupRows = await db
     .select()
     .from(announcements)
-    .where(and(eq(announcements.type, "popup"), eq(announcements.isActive, true)))
-    .orderBy(desc(announcements.updatedAt), desc(announcements.createdAt))
+    .where(and(eq(announcements.type, "popup"), visible))
+    .orderBy(desc(publicationTime), desc(announcements.id))
     .limit(1);
   const popup = popupRows[0];
   if (!popup) return undefined;
@@ -121,10 +177,10 @@ export async function getUnreadUpgradeAnnouncement(userId: number, version: stri
       and(
         eq(announcements.type, "upgrade_popup"),
         eq(announcements.targetVersion, normalizedVersion),
-        eq(announcements.isActive, true),
+        visible,
       ),
     )
-    .orderBy(desc(announcements.updatedAt), desc(announcements.createdAt))
+    .orderBy(desc(publicationTime), desc(announcements.id))
     .limit(1);
   const upgradePopup = rows[0];
   if (!upgradePopup) return undefined;

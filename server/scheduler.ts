@@ -27,6 +27,7 @@ import { reconcileHostDdnsRecords } from "./hostDdns";
 import { createNonOverlappingScheduledTask as createScheduledTask } from "./scheduledTask";
 import { databaseHealth } from "./databaseHealthState";
 import { runOperationsDailyReport } from "./operationsDailyReport";
+import { runScheduledAnnouncementPublishing } from "./announcementPublishing";
 import {
   SELF_TEST_TIMEOUT_SECONDS,
   selfTestTimeoutSeconds,
@@ -664,6 +665,7 @@ export function startScheduler() {
     await settleAffiliateCommissions();
   });
   const operationsDailyReport = createNonOverlappingScheduledTask("operations daily report", runOperationsDailyReport, { slowTaskMs: 15_000 });
+  const announcementPublishing = createNonOverlappingScheduledTask("announcement publishing", runScheduledAnnouncementPublishing);
 
   const repeatAfter = (task: () => Promise<boolean>, intervalMs: number, delayMs: number) => {
     const startTimer = setTimeout(() => {
@@ -688,6 +690,7 @@ export function startScheduler() {
   };
 
   repeatAfter(hostStatusSweep, 30 * 1000, 5_000);
+  repeatAfter(announcementPublishing, 5_000, 1_000);
   repeatAfter(ruleLimitSweep, 30_000, 7_000);
   startSelfTestSweepTimer(async () => { await selfTestTimeoutSweep(); });
   void recoverPendingSelfTestSweep();

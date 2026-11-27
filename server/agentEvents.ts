@@ -293,13 +293,6 @@ export function registerAgentEventClient(
   };
 }
 
-export function unregisterAgentEventClient(hostId: number, res: Response) {
-  const current = agentEventClients.get(hostId);
-  if (current?.res === res) {
-    closeAgentEventClient(current);
-  }
-}
-
 export function closeAgentControlStreams() {
   // Only management SSE is closed. No listener/runtime/forwarding process is
   // stopped; Agents reconnect to the same URL, now served by the relay.
@@ -319,14 +312,14 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
   if (seamlessBackgroundPaused()) return false;
   const client = agentEventClients.get(hostId);
   if (!client) {
-    const important = event === "agent-upgrade"
+    // Desired state is also included in the current heartbeat response.
+    const requiresStream = event === "agent-upgrade"
       || event === "agent-panel-migration"
-      || event === "agent-support-bundle"
-      || (event === "agent-desired-state" && !!data?.desiredState);
-    if (important) {
+      || event === "agent-support-bundle";
+    if (requiresStream) {
       logAgentEventIssue(hostId, event, "no-active-stream");
     } else if (event !== "agent-refresh" && VERBOSE_AGENT_EVENTS) {
-      console.warn(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
+      console.info(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
     }
     return false;
   }

@@ -174,7 +174,8 @@ AI API Key 不建议写入 Docker `.env`。后台保存后会做脱敏展示，�
 | `FORWARDX_AGENT_RELEASE_VERSION` | 当前面板 Release 标签 | 指定 Agent 安装器下载资产所在的面板 Release，不是 Agent 自身版本号。 |
 | `FORWARDX_AGENT_PROXY` | 未指定时读取 Agent 配置 | 安装器的显式代理覆盖，空值表示直连；推荐使用 `--proxy URL` / `--no-proxy`。运行时以 `config.json` 的 `proxyUrl` 为准，不以此环境变量替代配置。 |
 | `FORWARDX_REALM_VERSION` | `2.9.4` | Agent 安装器的 Realm 版本，默认兼容版；显式指定其他版本前确认 libc 和系统兼容性。 |
-| `FORWARDX_INSTALL_MIMIC` | `ask` | 可选 mimic 安装选择，默认交互询问；普通转发不依赖它。 |
+| `FORWARDX_INSTALL_MIMIC` | `ask` | 首次安装时交互询问。升级时仅在指定 `y` 时安装。 |
+| `FORWARDX_INSTALL_NGINX` | 首装 `y`，升级沿用配置 | Nginx stream 安装选择，接受 `y`、`n`、`ask`。`--nginx` 命令行参数优先。 |
 | `FORWARDX_AGENT_PANEL_FIRST` | 面板设置决定 | 优先从面板内置资产下载 Agent 运行时，失败再回退到 GitHub。 |
 | `FORWARDX_CURL_CONNECT_TIMEOUT` | `15` | 下载连接超时时间。 |
 | `FORWARDX_CURL_LOW_SPEED_LIMIT` | `1024` | 下载低速判断阈值。 |

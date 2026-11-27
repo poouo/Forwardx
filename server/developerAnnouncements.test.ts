@@ -154,3 +154,70 @@ test("existing popup route lazily reads remote notices, persists per-admin reads
     await assert.rejects(caller(1).dismiss({ id: "../invalid" }), { code: "BAD_REQUEST" });
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("panel announcements publish immediately or on schedule and retain their publication time on edit", async (t) => {
+  const { announcementsRouter } = await import("./routers/announcements");
+  const { publishDueAnnouncements } = await import("./repositories/announcementRepository");
+  const { runScheduledAnnouncementPublishing } = await import("./announcementPublishing");
+  const request = { req: { headers: {}, socket: {} }, res: {}, authSession: null, authFailureReason: null };
+  const admin = announcementsRouter.createCaller({ ...request, user: { id: 1, role: "admin" } } as any);
+  const user = announcementsRouter.createCaller({ ...request, user: { id: 3, role: "user" } } as any);
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const inOneMinute = new Date(now.getTime() + 60_000);
+  const inTwoMinutes = new Date(now.getTime() + 120_000);
+
+  const legacy = await runtime.insertAndGetId("announcements", { title: "Legacy", content: "Legacy body", startsAt: inTwoMinutes, createdAt: now });
+  assert.equal((await user.list()).find((item) => item.id === legacy)?.createdAt.getTime(), now.getTime());
+  const { announcement: current } = await admin.create({ title: "Current popup", content: "Popup body", type: "popup" });
+  assert.equal(current.publishedAt?.getTime(), now.getTime());
+  const payload = { title: "Scheduled popup", content: "Scheduled body", type: "popup" as const, publishAt: inOneMinute.toISOString() };
+  await assert.rejects(user.create(payload), { code: "FORBIDDEN" });
+  await assert.rejects(admin.create({ ...payload, publishAt: "2030-01-01T09:00:00+99:00" }), { code: "BAD_REQUEST" });
+  await assert.rejects(admin.create({ ...payload, publishAt: now.toISOString() }), /定时发布时间必须晚于当前时间/);
+  const { announcement: scheduled, telegramPush } = await admin.create({ ...payload, telegramPush: true });
+  const { announcement: later } = await admin.create({ ...payload, title: "Later popup", publishAt: inTwoMinutes.toISOString() });
+  assert.ok(scheduled.pushOnPublish);
+  assert.equal(telegramPush.requested, false);
+  assert.equal(scheduled.publishedAt, null);
+  assert.equal((await user.popup())?.id, current.id);
+  assert.ok((await admin.list()).some((item) => item.id === scheduled.id));
+  assert.ok(!(await user.list()).some((item) => item.id === scheduled.id));
+  await runScheduledAnnouncementPublishing();
+  assert.equal((await user.popup())?.id, current.id);
+
+  const { announcement: editedSchedule } = await admin.update({ ...payload, id: scheduled.id, title: "Edited schedule" });
+  assert.ok(editedSchedule.pushOnPublish);
+  assert.equal(editedSchedule.editedAt, null);
+
+  await runtime.closeDatabase();
+  t.mock.timers.setTime(inOneMinute.getTime() + 2_000);
+  await runtime.connectDatabase();
+  const sweeps = await Promise.all([publishDueAnnouncements(), publishDueAnnouncements()]);
+  assert.deepEqual(sweeps.flat().map((item) => item.id), [scheduled.id]);
+  assert.ok(sweeps.flat()[0].pushOnPublish);
+  const publishedPopup = await user.popup();
+  assert.equal(publishedPopup?.id, scheduled.id);
+  assert.equal(publishedPopup?.publishedAt?.getTime(), Date.now());
+  assert.ok(!publishedPopup?.pushOnPublish);
+  assert.ok(!(await user.list()).some((item) => item.id === current.id || item.id === later.id));
+
+  t.mock.timers.setTime(Date.now() + 5_000);
+  await assert.rejects(admin.update({ ...payload, id: scheduled.id }), /发布时间不能更改/);
+  const edited = await admin.update({ id: scheduled.id, type: "popup", title: "Edited once published", content: "New content" });
+  assert.equal(edited.announcement.publishedAt?.getTime(), publishedPopup?.publishedAt?.getTime());
+  assert.equal(edited.announcement.editedAt?.getTime(), Date.now());
+  assert.equal((await user.popup())?.content, "New content");
+  assert.equal((await user.list()).find((item) => item.id === scheduled.id)?.editedAt?.getTime(), Date.now());
+
+  const manual = await admin.update({ ...payload, id: later.id, publishAt: null });
+  assert.equal(manual.announcement.publishedAt?.getTime(), Date.now());
+  assert.equal(manual.announcement.editedAt, null);
+  assert.equal((await user.popup())?.id, later.id);
+  const { announcement: cancelled } = await admin.create({ ...payload, publishAt: inTwoMinutes.toISOString() });
+  await admin.delete({ id: cancelled.id });
+  t.mock.timers.setTime(inTwoMinutes.getTime());
+  await runScheduledAnnouncementPublishing();
+  assert.equal((await user.popup())?.id, later.id);
+  assert.ok(!(await admin.list()).some((item) => item.id === cancelled.id));
+});

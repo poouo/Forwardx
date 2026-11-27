@@ -3843,7 +3843,10 @@ export async function listPaymentOrdersForReconciliation(since: Date, limit = 20
   if (!db) return [];
   return db.select().from(paymentOrders).where(and(
     inArray(paymentOrders.status, ["pending", "expired", "failed", "cancelled"]),
-    inArray(paymentOrders.provider, ["alipay", "wxpay", "easypay"]),
+    or(
+      inArray(paymentOrders.provider, ["alipay", "wxpay", "easypay"]),
+      and(eq(paymentOrders.provider, "paypal"), isNotNull(paymentOrders.tradeNo)),
+    ),
     sql`COALESCE(${paymentOrders.expiresAt}, ${paymentOrders.createdAt}) >= ${Math.floor(since.getTime() / 1000)}`,
     sql`(${paymentOrders.lastPaymentCheckAt} IS NULL OR ${paymentOrders.lastPaymentCheckAt} <= ${Math.floor((Date.now() - 30_000) / 1000)})`,
   )).orderBy(sql`COALESCE(${paymentOrders.lastPaymentCheckAt}, 0)`, asc(paymentOrders.createdAt)).limit(limit);
@@ -3865,21 +3868,33 @@ export async function getUserSubscriptionByPaymentOrderNo(paymentOrderNo: string
 
 export async function getPaymentOrderStats() {
   const db = await getDb();
-  if (!db) return { totalOrders: 0, pendingOrders: 0, paidOrders: 0, paidAmountCents: 0 };
-  const rows = await db
+  if (!db) return { totalOrders: 0, pendingOrders: 0, paidOrders: 0, paidAmountCents: 0, paidAmounts: [] };
+  const currency = sql<string>`UPPER(${paymentOrders.currency})`;
+  const rows: Array<{
+    currency: string;
+    totalOrders: number;
+    pendingOrders: number;
+    paidOrders: number;
+    paidAmountCents: number;
+  }> = await db
     .select({
+      currency,
       totalOrders: sql<number>`COUNT(*)`,
       pendingOrders: sql<number>`SUM(CASE WHEN ${paymentOrders.status} = 'pending' THEN 1 ELSE 0 END)`,
       paidOrders: sql<number>`SUM(CASE WHEN ${paymentOrders.status} IN ('paid', 'processing', 'completed') THEN 1 ELSE 0 END)`,
-      paidAmountCents: sql<number>`COALESCE(SUM(CASE WHEN ${paymentOrders.status} IN ('paid', 'processing', 'completed') THEN ${paymentOrders.amountCents} ELSE 0 END), 0)`,
+      paidAmountCents: sql<number>`SUM(CASE WHEN ${paymentOrders.orderType} <> 'test' AND ${paymentOrders.status} IN ('paid', 'processing', 'completed') THEN ${paymentOrders.amountCents} ELSE 0 END)`,
     })
-    .from(paymentOrders).where(isNull(paymentOrders.adminDismissedAt));
-  const row = rows[0];
+    .from(paymentOrders).where(isNull(paymentOrders.adminDismissedAt))
+    .groupBy(currency).orderBy(currency);
+  const paidAmounts = rows.flatMap(row => Number(row.paidAmountCents) > 0
+    ? [{ currency: row.currency, amountCents: Number(row.paidAmountCents) }]
+    : []);
   return {
-    totalOrders: Number(row?.totalOrders || 0),
-    pendingOrders: Number(row?.pendingOrders || 0),
-    paidOrders: Number(row?.paidOrders || 0),
-    paidAmountCents: Number(row?.paidAmountCents || 0),
+    totalOrders: rows.reduce((sum, row) => sum + Number(row.totalOrders), 0),
+    pendingOrders: rows.reduce((sum, row) => sum + Number(row.pendingOrders), 0),
+    paidOrders: rows.reduce((sum, row) => sum + Number(row.paidOrders), 0),
+    paidAmountCents: paidAmounts.find(row => row.currency === "CNY")?.amountCents ?? 0,
+    paidAmounts,
   };
 }
 

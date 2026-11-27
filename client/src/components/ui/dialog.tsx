@@ -108,38 +108,44 @@ const DialogOverlay = React.forwardRef<React.ComponentRef<typeof DialogPrimitive
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
-const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>>(({ className, children, onScroll, ...props }, ref) => {
+// Radix Presence tracks the forwarded panel node inside the safe-area wrapper.
+const DialogPanel = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>>(({ className, children, onScroll, ...props }, ref) => {
   const closeButtonRef = React.useRef<HTMLButtonElement>(null)
 
   return (
-    <DialogPortal>
-      <DialogOverlay />
-      <div className="dialog-positioner pointer-events-none fixed inset-0 z-50 flex flex-col items-center justify-center p-3 sm:p-6">
-        <DialogPrimitive.Content
-          data-theme-part="dialog"
-          ref={ref}
-          data-forwardx-dialog-content=""
-          className={cn("dialog-panel pointer-events-auto grid min-h-0 relative auto-rows-max max-h-[min(92svh,calc(100svh-1.5rem))] w-[calc(100vw-1.5rem)] max-w-lg gap-4 overflow-x-hidden overflow-y-auto overscroll-contain rounded-[22px] p-4 sm:max-h-[min(92svh,calc(100svh-3rem))] sm:w-full sm:p-6", className)}
-          onScroll={(event) => {
-            // Keep the close button at the visible top edge of the scrolling panel.
-            closeButtonRef.current?.style.setProperty("--forwardx-dialog-scroll-top", `${event.currentTarget.scrollTop}px`)
-            onScroll?.(event)
-          }}
-          {...props}
+    <div className="dialog-positioner pointer-events-none fixed inset-0 z-50 flex flex-col items-center justify-center p-3 sm:p-6">
+      <DialogPrimitive.Content
+        data-theme-part="dialog"
+        ref={ref}
+        data-forwardx-dialog-content=""
+        className={cn("dialog-panel pointer-events-auto grid min-h-0 relative auto-rows-max max-h-[min(92svh,calc(100svh-1.5rem))] w-[calc(100vw-1.5rem)] max-w-lg gap-4 overflow-x-hidden overflow-y-auto overscroll-contain rounded-[22px] p-4 sm:max-h-[min(92svh,calc(100svh-3rem))] sm:w-full sm:p-6", className)}
+        onScroll={(event) => {
+          // Keep the close button at the visible top edge of the scrolling panel.
+          closeButtonRef.current?.style.setProperty("--forwardx-dialog-scroll-top", `${event.currentTarget.scrollTop}px`)
+          onScroll?.(event)
+        }}
+        {...props}
+      >
+        {children}
+        <DialogPrimitive.Close
+          ref={closeButtonRef}
+          className="absolute right-4 top-[calc(1rem+var(--forwardx-dialog-scroll-top,0px))] z-10 inline-flex h-8 w-8 items-center justify-center rounded-md bg-popover text-popover-foreground ring-offset-background transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40 focus-visible:ring-offset-2"
         >
-          {children}
-          <DialogPrimitive.Close
-            ref={closeButtonRef}
-            className="absolute right-4 top-[calc(1rem+var(--forwardx-dialog-scroll-top,0px))] z-10 inline-flex h-8 w-8 items-center justify-center rounded-md bg-popover text-popover-foreground ring-offset-background transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive focus:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40 focus-visible:ring-offset-2"
-          >
-            <X className="h-4 w-4" />
-            <span className="sr-only">{t("关闭")}</span>
-          </DialogPrimitive.Close>
-        </DialogPrimitive.Content>
-      </div>
-    </DialogPortal>
+          <X className="h-4 w-4" />
+          <span className="sr-only">{t("关闭")}</span>
+        </DialogPrimitive.Close>
+      </DialogPrimitive.Content>
+    </div>
   )
 })
+DialogPanel.displayName = "DialogPanel"
+
+const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>>((props, ref) => (
+  <DialogPortal>
+    <DialogOverlay />
+    <DialogPanel {...props} ref={ref} />
+  </DialogPortal>
+))
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

@@ -55,6 +55,8 @@ configure_proxy() {
       --no-proxy) value=''; explicit=true; shift ;;
       --mimic) [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }; FORWARDX_INSTALL_MIMIC="$2"; shift 2 ;;
       --mimic=*) FORWARDX_INSTALL_MIMIC="${1#*=}"; [ -n "$FORWARDX_INSTALL_MIMIC" ] || { echo '[ERROR] --mimic requires y, n or ask.' >&2; return 1; }; shift ;;
+      --nginx) [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '[ERROR] --nginx requires y, n or ask.' >&2; return 1; }; FORWARDX_INSTALL_NGINX="$2"; shift 2 ;;
+      --nginx=*) FORWARDX_INSTALL_NGINX="${1#*=}"; [ -n "$FORWARDX_INSTALL_NGINX" ] || { echo '[ERROR] --nginx requires y, n or ask.' >&2; return 1; }; shift ;;
       -h|--help) ACTION=help; shift ;;
       --*) echo '[ERROR] Unknown option.' >&2; return 1 ;;
       *) [ -z "$TOKEN" ] || return 1; TOKEN="$1"; shift ;;
@@ -67,6 +69,14 @@ configure_proxy() {
     *) echo '[ERROR] --mimic / FORWARDX_INSTALL_MIMIC must be y, n or ask.' >&2; return 1 ;;
   esac
   export FORWARDX_INSTALL_MIMIC
+  case "${FORWARDX_INSTALL_NGINX:-}" in
+    '') if [ "$ACTION" = install ]; then FORWARDX_INSTALL_NGINX=yes; else FORWARDX_INSTALL_NGINX=''; fi ;;
+    1|true|TRUE|yes|YES|y|Y|on|ON) FORWARDX_INSTALL_NGINX=yes ;;
+    0|false|FALSE|no|NO|n|N|off|OFF) FORWARDX_INSTALL_NGINX=no ;;
+    ask) ;;
+    *) echo '[ERROR] --nginx / FORWARDX_INSTALL_NGINX must be y, n or ask.' >&2; return 1 ;;
+  esac
+  export FORWARDX_INSTALL_NGINX
   case "$ACTION" in uninstall|remove|delete|help|'') return 0 ;; esac
   if [ "$explicit" = false ]; then
     for file in "$CONFIG_DIR/config.json" "$LEGACY_CONFIG_DIR/config.json"; do
@@ -112,15 +122,18 @@ show_help() {
 参数:
   install   <TOKEN>  安装 Agent 并注册到面板
   upgrade   [TOKEN]  升级 Agent，默认复用现有配置
-  install-tool NAME  仅安装指定转发组件（realm/gost/iptables/nftables/socat/nginx）
+  install-tool NAME  仅安装指定转发组件（realm/gost/iptables/nftables/socat/nginx/mimic）
+  menu               在 Linux SSH 终端打开 Agent 管理菜单（不带参数同样打开）
   uninstall          完全卸载 Agent 及相关服务
   --proxy URL        安装/运行/升级使用代理，例如 socks5h://127.0.0.1:1080
   --no-proxy         保存为直连；升级默认保留配置中的 proxyUrl
   --mimic y|n|ask    安装时自动安装/跳过 Mimic，ask 表示交互询问（默认）
+  --nginx y|n|ask    安装或跳过 Nginx (stream)，首次安装默认 y，升级沿用已保存的选择
 
 说明:
   未指定 --mimic 时会询问是否安装 mimic UDP 混淆环境，默认 n，输入 Y 才会安装。
   兼容 FORWARDX_INSTALL_MIMIC 环境变量，命令行参数优先；也支持 --mimic=y。
+  Nginx 也支持 FORWARDX_INSTALL_NGINX、--nginx=n。升级可用 --mimic y 补装。
 EOF
 }
 
@@ -211,6 +224,7 @@ run_panel_installer() {
     GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL" \
     FORWARDX_AGENT_PANEL_FIRST="$FORWARDX_AGENT_PANEL_FIRST" \
     FORWARDX_INSTALL_MIMIC="$FORWARDX_INSTALL_MIMIC" \
+    FORWARDX_INSTALL_NGINX="$FORWARDX_INSTALL_NGINX" \
     FORWARDX_MIMIC_INSTALLER_URL="$FORWARDX_MIMIC_INSTALLER_URL" \
     FORWARDX_MIMIC_VERSION="$FORWARDX_MIMIC_VERSION" \
     FORWARDX_REALM_VERSION_EXPLICIT="$FORWARDX_REALM_VERSION_EXPLICIT" \
@@ -294,7 +308,7 @@ do_upgrade() {
 do_install_tool() {
   require_root
   local tool="$1"
-  case "$tool" in realm|gost|iptables|nftables|socat|nginx) ;; *) echo '[错误] 不支持的转发组件'; return 1 ;; esac
+  case "$tool" in realm|gost|iptables|nftables|socat|nginx|mimic) ;; *) echo '[错误] 不支持的转发组件'; return 1 ;; esac
   read_existing_config
   PANEL_URL="${PANEL_URL:-${EXISTING_PANEL_URL:-}}"
   [ -n "$PANEL_URL" ] || { echo '[错误] 未找到面板地址，请先安装 Agent 或设置 PANEL_URL'; return 1; }
@@ -376,6 +390,30 @@ do_uninstall() {
 
   echo "[完成] Agent 已卸载"
 }
+
+if [ "$#" -eq 0 ] || [ "$ACTION" = menu ]; then
+  [ "$#" -le 1 ] || { show_help; exit 1; }
+  require_root
+  if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+    echo '[错误] 请在交互式 Linux SSH 终端打开 Agent 菜单。' >&2
+    exit 1
+  fi
+  exec 3>&-
+  script_dir="$(dirname -- "${BASH_SOURCE[0]:-}")"
+  if [ -r "$script_dir/agent-proxy.sh" ] && [ -r "$script_dir/forwardx-manage.sh" ] && [ -r "$script_dir/install-agent.sh" ]; then
+    FORWARDX_MANAGE_DIR="$script_dir" bash "$script_dir/forwardx-manage.sh" agent
+  else
+    menu_dir="$(mktemp -d /tmp/forwardx-agent-menu.XXXXXX)"
+    trap 'rm -f -- "$menu_dir/agent-proxy.sh" "$menu_dir/forwardx-manage.sh" "$menu_dir/install-agent.sh"; rmdir -- "$menu_dir"' EXIT
+    for asset in agent-proxy.sh forwardx-manage.sh install-agent.sh; do
+      curl -fsSL --connect-timeout "$FORWARDX_CURL_CONNECT_TIMEOUT" --max-time 60 \
+        "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/$asset" -o "$menu_dir/$asset"
+      [ -s "$menu_dir/$asset" ] && bash -n "$menu_dir/$asset" || exit 1
+    done
+    FORWARDX_MANAGE_DIR="$menu_dir" bash "$menu_dir/forwardx-manage.sh" agent
+  fi
+  exit
+fi
 
 configure_proxy "$@" || { echo '[ERROR] Invalid installation options or proxy configuration; cancelled.' >&2; exit 1; }
 case "$ACTION" in

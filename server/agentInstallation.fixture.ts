@@ -6,6 +6,7 @@ import { connectDatabase, closeDatabase, executeRaw, queryRaw } from "./dbRuntim
 import { ensureDatabaseSchema } from "./dbSchema";
 import { agentRouter } from "./agentRoutes";
 import { decryptPayload, encryptPayload } from "./agentCrypto";
+import { getAgentEventQueueStats } from "./agentEvents";
 import { claimAgentInstallation } from "./agentInstallation";
 import { getAgentAuthHostIdentity, invalidateAgentAuthTokenCandidates } from "./repositories/tokenRepository";
 
@@ -13,6 +14,17 @@ const token = "installation-route-test-token";
 const batchToken = "batch-installation-route-test-token";
 const first = "a".repeat(64), second = "b".repeat(64), third = "c".repeat(64);
 const app = express();
+let finishStreamRequest: (() => Promise<unknown>) | undefined;
+app.use((req, _res, next) => {
+  if (req.path === "/api/stream") {
+    finishStreamRequest = async () => {
+      const closed = once(req, "close");
+      req.resume();
+      await closed;
+    };
+  }
+  next();
+});
 app.use(express.json({ limit: "2mb" }));
 app.use(agentRouter);
 const server = http.createServer(app);
@@ -62,6 +74,9 @@ try {
   const reader = stream.body!.getReader();
   const ready = await reader.read();
   assert.match(new TextDecoder().decode(ready.value), /event: message/);
+  assert.ok(finishStreamRequest);
+  await finishStreamRequest();
+  assert.equal(getAgentEventQueueStats().clients, 1, "finishing the request must leave its SSE response registered");
 
   assert.equal((await register(second)).agentSuperseded, undefined);
   assert.equal(Number((await queryRaw('SELECT "isRunning" FROM "forward_rules" WHERE "id" = ?', [1]))[0].isRunning), 0);
@@ -75,6 +90,7 @@ try {
   assert.ok(retiredEvent.includes("data: "), "old stream should receive takeover notice");
   const lastEnvelope = JSON.parse(retiredEvent.split("data: ").at(-1)!.trim());
   assert.equal((decryptPayload(lastEnvelope, token, { validateTimestamp: false }) as any).type, "agent-superseded");
+  assert.equal(getAgentEventQueueStats().clients, 0);
 
   assert.equal((await register(first, "203.0.113.99")).agentSuperseded, true);
   assert.equal((await post("/api/agent/heartbeat", first, { ip: "203.0.113.99" })).agentSuperseded, true);

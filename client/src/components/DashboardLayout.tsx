@@ -1,4 +1,5 @@
 import { getFormatLocale, getLanguage } from "@/i18n";
+import { announcementDateText } from "@/lib/announcementDates";
 import { t as translateText } from "@/i18n";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useThemeDefinition } from "@/lib/themeRuntime";
@@ -456,7 +457,8 @@ function DashboardLayoutContent({
   });
   const { data: popupAnnouncement } = trpc.announcements.popup.useQuery(undefined, {
     enabled: !!user,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
     retry: false,
   });
   const { data: upgradeAnnouncement, isFetched: upgradeAnnouncementFetched } = trpc.announcements.upgradePopup.useQuery(undefined, {
@@ -2243,7 +2245,7 @@ function DashboardLayoutContent({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showAnnouncement} onOpenChange={(open) => {
+      <Dialog open={showAnnouncement && !!popupAnnouncement} onOpenChange={(open) => {
         if (!open && popupAnnouncement?.id) dismissAnnouncement.mutate({ id: popupAnnouncement.id });
         setShowAnnouncement(open);
       }}>
@@ -2252,7 +2254,10 @@ function DashboardLayoutContent({
             <Megaphone className="h-5 w-5" />
             {popupAnnouncement?.title || translateText("公告")}
           </DialogTitle>
-          <DialogDescription>{translateText("关闭后可在公告中查看。")}</DialogDescription>
+          <DialogDescription>
+            {popupAnnouncement && <span className="mb-1 block">{announcementDateText(popupAnnouncement)}</span>}
+            {translateText("关闭后可在公告中查看。")}
+          </DialogDescription>
           <div
             className="forwardx-rich-text max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml(popupAnnouncement?.content || "") }}
@@ -2271,9 +2276,12 @@ function DashboardLayoutContent({
             <Megaphone className="h-5 w-5" />
             {(getLanguage() === "en" ? upgradeAnnouncement?.englishTitle || upgradeAnnouncement?.title : upgradeAnnouncement?.title) || translateText("升级公告")}
           </DialogTitle>
-          <DialogDescription>{upgradeAnnouncement?.source === "developer"
+          <DialogDescription>
+            {upgradeAnnouncement?.source === "local" && <span className="mb-1 block">{announcementDateText(upgradeAnnouncement)}</span>}
+            {upgradeAnnouncement?.source === "developer"
             ? translateText("请留意以下重要通知。")
-            : <>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</>}</DialogDescription>
+            : <>{translateText("已检测到面板已升级。请阅读本次版本公告，")}{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}{translateText("S 后可确认进入页面。")}</>}
+          </DialogDescription>
           <div
             className="forwardx-rich-text max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
             dangerouslySetInnerHTML={{ __html: renderMixedHtml((getLanguage() === "en" ? upgradeAnnouncement?.englishContent || upgradeAnnouncement?.content : upgradeAnnouncement?.content) || "") }}

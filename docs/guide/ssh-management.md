@@ -17,6 +17,8 @@ fwxm panel
 fwxm agent
 ```
 
+尚未安装 Agent 时，也可从项目的 [Agent 入口脚本](https://github.com/poouo/Forwardx/blob/main/scripts/install-agent.sh) 打开菜单。在 Linux SSH 终端运行 `sudo bash install-agent.sh menu`，选择安装，输入面板地址和 Agent Token，并选择是否安装 Nginx、Mimic。新版安装器完成后可直接运行 `fwxm agent`。
+
 菜单中的 **2）运行状态** 查看当前组件，**4）重启面板或 Agent** 重启所选组件；不是同时重启两者。其他选项包括关键信息、日志、代理、升级、重装修复与卸载；仅面板菜单显示管理员密码重置。输入 `0` 退出，查看持续日志时按 Ctrl+C 结束。
 
 Docker 面板在**宿主机 SSH** 执行命令，不是在容器内。菜单选项执行完成后本次命令结束；再次输入 `fwxm` 即可重新打开。
@@ -31,6 +33,7 @@ Docker 面板在**宿主机 SSH** 执行命令，不是在容器内。菜单选�
 | 启动 / 停止 | `fwxm panel start` / `stop` | `fwxm agent start` / `stop` |
 | 跟随日志 | `fwxm panel logs` | `fwxm agent logs` |
 | 配置路径、服务与地址 | `fwxm panel info` | `fwxm agent info` |
+| 修改面板连接地址和节点 Token | — | `fwxm agent configure` |
 | 查看转发组件 | — | `fwxm agent tools` |
 | 选择安装转发组件 | — | `fwxm agent tools install` |
 | 后台地址提示 | `fwxm panel address` | — |
@@ -44,7 +47,7 @@ Docker 面板在**宿主机 SSH** 执行命令，不是在容器内。菜单选�
 
 ## Agent 转发环境
 
-Agent 菜单的 **9）转发环境（查看 / 安装）** 可查看 Realm、ForwardX Runtime（GOST）、iptables、nftables、socat、Nginx 的安装状态和可执行文件路径，也可选择其中一个组件安装。支持直接执行：
+Agent 菜单的 **9）转发环境（查看 / 安装）** 可查看 Realm、ForwardX Runtime（GOST）、iptables、nftables、socat、Nginx、Mimic 的安装状态和可执行文件路径，也可选择其中一个组件安装。支持直接执行：
 
 ```bash
 fwxm agent tools                    # 查看，不下载或启动组件
@@ -52,6 +55,7 @@ fwxm agent tools install            # 交互选择安装哪个组件
 fwxm agent tools install realm      # 只安装 Realm
 fwxm agent tools install gost       # 安装项目自编译 ForwardX Runtime
 fwxm agent tools install nftables
+fwxm agent tools install mimic
 ```
 
 需先通过包含本功能的新版面板安装器安装或升级 Agent，以更新 `fwxm` 和缓存脚本；单独安装组件也要求面板支持此功能。查询状态可离线进行，安装时读取该主机的面板连接地址和代理，复用原有组件安装来源及检查流程。失败会显示错误，不会回退为整套 Agent 重装。
@@ -78,6 +82,7 @@ fwxm agent tools install nftables
 - `status` 显示本地服务管理器状态或 Docker 容器状态，不等于业务链路、数据库与所有转发目标均健康。
 - `panel restart` 不升级镜像，也不会让 Docker 重新读取修改后的 Compose 环境；环境变更见 [环境变量](./env-vars.md)。
 - `agent restart` 仅请求重启 Agent，不主动重启独立转发进程，但不能据此保证所有异常或升级场景连接不断。
+- `agent configure` 会保留现有代理及其他设置，保存面板连接配置后重启 Agent。Token 留空时沿用原值，切换到其他面板时请使用目标面板对应的节点 Token。
 - `repair` 重新下载安装当前可用版本并重启，保留数据/配置，**可能升级版本**；不是数据库恢复工具，也不是安装固定旧版本。
 - 卸载 Agent 会停止受管转发。Docker 面板卸载确认后删除对应数据卷；本地卸载单独询问是否删除目录。先读 [卸载与数据保留](./uninstall.md)。
 - 面板代理只影响维护下载，不代理 Node 运行通信或 Docker daemon 镜像拉取；Agent 代理不代理业务转发。详见 [代理配置](./agent-proxy-manager.md) / [English guide](./agent-proxy-manager.en.md)。

@@ -236,8 +236,8 @@ function MobileInfoRow({
 
 function PaymentLedgerDetails({ item }: { item: any }) {
   if (item.kind !== "payment") return null;
-  const providers: Record<string, string> = { easypay: "易支付", alipay: "支付宝官方", wxpay: "微信官方", stripe: "Stripe", gmpay: "GM Pay" };
-  const methods: Record<string, string> = { alipay: "支付宝", wxpay: "微信", stripe: "Stripe", usdt: "USDT" };
+  const providers: Record<string, string> = { easypay: "易支付", alipay: "支付宝官方", wxpay: "微信官方", stripe: "Stripe", paypal: "PayPal", gmpay: "GM Pay" };
+  const methods: Record<string, string> = { alipay: "支付宝", wxpay: "微信", stripe: "Stripe", paypal: "PayPal", usdt: "USDT" };
   return <div className="mt-1 space-y-1 text-xs">
     <p className="text-muted-foreground">{translateText(providers[item.provider] || item.provider || "-")} · {translateText(methods[item.paymentType] || item.paymentType || "-")}</p>
     {item.failureReason && <p className="max-w-80 break-words text-destructive">{translateText(item.failureReason)}</p>}

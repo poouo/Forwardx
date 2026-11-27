@@ -16,9 +16,17 @@ import { installDashboardCache } from "./lib/dashboardCache";
 import { readSiteBranding, saveSiteBranding } from "./lib/siteBranding";
 import { shouldRetryQuery } from "./lib/queryPolicy";
 import { userEntry } from "./lib/userImpersonation";
+import { getTelegramWebAppLaunchData } from "./lib/telegramWebApp";
 
 userEntry.initialize();
 globalThis.fetch = userEntry.wrapFetch(globalThis.fetch.bind(globalThis));
+
+// A bot menu may point at the panel root. Keep the launch data through the
+// transition to the login page, before the router can redirect without it.
+const { pathname, search, hash } = window.location;
+if (!mobileAuth.isNative && pathname === "/" && getTelegramWebAppLaunchData(hash)) {
+  window.history.replaceState(window.history.state, "", `/login${search}${hash}`);
+}
 
 const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
 

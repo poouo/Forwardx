@@ -54,6 +54,12 @@ try {
   await admin.updateFields({ id: unlimited!.id, portCount: 3, syncExistingSubscribers: false });
   assert.equal((await db.getActiveUserSubscriptions(2)).find(sub => sub.id === bought.subscriptionId)!.portCount, 0);
   assert.deepEqual((await db.getUserPlanPortRange(2, 1))!.ranges, [{ start: 1, end: 65535 }]);
+  await db.setSetting("storeEnabled", "true");
+  const buyer = plansRouter.createCaller({ user: { id: 2, role: "user" }, req: { headers: {} }, res: {}, authSession: null, authFailureReason: null } as any);
+  const renewalPlan = await buyer.renewalPlan({ subscriptionId: bought.subscriptionId });
+  assert.equal(renewalPlan?.portCount, 3, "offer uses the latest plan even when existing entitlements are frozen");
+  assert.deepEqual(renewalPlan?.hostIds, [1]);
+  assert.equal(await buyer.renewalPlan({ subscriptionId: another.subscriptionId }), null);
   // Explicit renewal takes the latest finite plan and obtains a real block.
   const limitedRenewal = await db.purchasePlanWithBalance(2, unlimited!.id, undefined, bought.subscriptionId);
   assert.equal(limitedRenewal.portRangeEnd! - limitedRenewal.portRangeStart! + 1, 3);

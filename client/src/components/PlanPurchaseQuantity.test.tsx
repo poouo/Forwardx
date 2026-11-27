@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { initializeLanguage, getLanguagePreference, setLanguagePreference } from "@/i18n";
 import { PlanPurchaseQuantity, planPurchaseQuote, discountQuoteKey } from "./PlanPurchaseQuantity";
 import { PlanBillingCycleSelect } from "./PlanBillingCycleSelect";
+import { PlanCheckoutBenefits } from "./PlanCheckoutBenefits";
 import { planBillingCycles } from "@shared/planPurchase";
 
 test("purchase period control shows total validity and accessible input in both languages", async () => {
@@ -37,6 +38,54 @@ test("invalid quantities have no quote and pending purchase controls are disable
   assert.equal(planPurchaseQuote({ ...plan, cyclePrices: null }, "2"), null);
   const pending = renderToStaticMarkup(<PlanPurchaseQuantity value="2" onChange={() => {}} durationDays={30} disabled valid />);
   assert.equal((pending.match(/disabled=""/g) || []).length, 3);
+});
+
+test("checkout benefits follow the selected cycle and quantity without multiplying quotas", async () => {
+  const previous = getLanguagePreference();
+  try {
+    setLanguagePreference("en");
+    await initializeLanguage();
+    const plan = {
+      priceCents: 1000,
+      durationDays: 30,
+      cyclePrices: JSON.stringify([{ durationDays: 90, kind: "fixed", priceCents: 2400 }]),
+      trafficLimit: 100 * 1024 ** 3,
+      trafficMode: "both",
+      portCount: 3,
+      rateLimitMbps: 50,
+      maxRules: 4,
+      maxConnections: 20,
+      maxIPs: 5,
+      hostIds: [1],
+    };
+    const render = (quantity: string, cycle: number) =>
+      renderToStaticMarkup(<PlanCheckoutBenefits plan={plan} durationDays={planPurchaseQuote(plan, quantity, cycle)?.durationDays} />);
+    const monthly = render("1", 30);
+    const twoQuarters = render("2", 90);
+    assert.match(monthly, /30 days/);
+    assert.doesNotMatch(monthly, /resets monthly/);
+    assert.match(twoQuarters, /180 days/);
+    assert.match(twoQuarters, /resets monthly/);
+    for (const html of [monthly, twoQuarters]) {
+      assert.match(html, /100 GB/);
+      assert.match(html, /3 ports/);
+      assert.match(html, /50 Mbps/);
+    }
+    assert.doesNotMatch(render("", 90), /180 days|resets monthly/);
+    assert.match(renderToStaticMarkup(<PlanCheckoutBenefits plan={{ ...plan, trafficLimit: 0 }} durationDays={0} />), /Never Expires/);
+    const custom = { ...plan, description: "**Custom plan description**" };
+    const customMonthly = renderToStaticMarkup(<PlanCheckoutBenefits plan={custom} durationDays={30} />);
+    const customQuarterly = renderToStaticMarkup(<PlanCheckoutBenefits plan={custom} durationDays={90} />);
+    for (const html of [customMonthly, customQuarterly]) {
+      assert.match(html, /<strong>Custom plan description<\/strong>/);
+      assert.doesNotMatch(html, /Plan Benefits|100 GB|3 ports/);
+    }
+    assert.match(customMonthly, /30 days/);
+    assert.match(customQuarterly, /90 days.*resets monthly/s);
+  } finally {
+    setLanguagePreference(previous);
+    await initializeLanguage();
+  }
 });
 
 test("selected billing cycle shows its discount and fixed-duration plans have no selector", async () => {

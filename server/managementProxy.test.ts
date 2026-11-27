@@ -125,6 +125,36 @@ test("copied command forwards appended options unchanged through primary and fal
   assert.notEqual(failedDownload.status, 0, "download failures must not be hidden by a successful empty Bash process");
 });
 
+test("both Agent entrypoints default Nginx on fresh install and opt in on upgrade", () => {
+  const bootstrap = source("install-agent.sh");
+  for (const [setup, parser] of [
+    [managementAsset("agent-proxy.sh"), "fwx_agent_proxy_args"],
+    [bootstrap.slice(0, bootstrap.indexOf("show_help() {")), "configure_proxy"],
+  ]) {
+    const result = run(`${setup}
+set -eu
+export FORWARDX_AGENT_PROXY=''
+CONFIG_DIR=/tmp/forwardx-agent-test/config
+LEGACY_CONFIG_DIR=/tmp/forwardx-agent-test/legacy
+check() {
+  local expected="$1"
+  shift
+  ${parser} "$@"
+  [ "$FORWARDX_INSTALL_NGINX" = "$expected" ]
+  [ "$(bash -c 'printf %s "$FORWARDX_INSTALL_NGINX"')" = "$expected" ]
+}
+(unset FORWARDX_INSTALL_NGINX; check yes install token)
+(unset FORWARDX_INSTALL_NGINX; check '' upgrade)
+(FORWARDX_INSTALL_NGINX=y; check no install token --nginx=n)
+(FORWARDX_INSTALL_NGINX=n; check yes upgrade --nginx y)
+(FORWARDX_INSTALL_NGINX=ask; check ask install token)
+if ${parser} install token --nginx=; then exit 10; fi
+if ${parser} install token --nginx maybe; then exit 11; fi
+`);
+    assert.equal(result.status, 0, `${parser}: ${result.stderr}`);
+  }
+});
+
 test("generated installer persists proxy before starting and bundles offline management", () => {
   const script = generateInstallScript("https://panel.example.com");
   assert.match(script, /proxyUrl:\$proxy/);

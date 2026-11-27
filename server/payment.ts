@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { MAX_PLAN_PURCHASE_QUANTITY, planCyclePurchaseTotals } from "../shared/planPurchase";
+import { PAYMENT_TYPES, PAYPAL_CURRENCIES, paymentMethodSupportsCurrency, type PaymentType } from "../shared/paymentMethods";
 import { accrueAffiliateCommission } from "./repositories/affiliateRepository";
 import express from "express";
 import { z } from "zod";
@@ -12,6 +13,7 @@ import { withKeyedTaskLock, withTrafficBillingUserLock } from "./keyedTaskLock";
 import { importPaymentPrivateKey, importPaymentPublicKey, PaymentConfigurationError, paymentOrderFailureMessage } from "./paymentCrypto";
 import { alipayTimestamp, fetchPaymentText, normalizePaymentLink, verifyAlipayResponse } from "./paymentProtocol";
 import { mapWithConcurrency } from "./asyncPool";
+import { createPayPalClient, paypalWebhookEvent, type PayPalConfig, type PayPalOrder } from "./paypal";
 import {
   createGmPayOrder,
   getGmPayGatewayInfo,
@@ -110,13 +112,9 @@ type PaymentConfig = {
   alipay: AlipayConfig;
   wxpay: WxpayConfig;
   stripe: StripeConfig;
+  paypal: PayPalConfig;
   gmpay: GmPayConfig;
-  fees: {
-    alipay: PaymentFeeConfig;
-    wxpay: PaymentFeeConfig;
-    stripe: PaymentFeeConfig;
-    usdt: PaymentFeeConfig;
-  };
+  fees: Record<PaymentType, PaymentFeeConfig>;
 };
 
 const defaultPaymentFee: PaymentFeeConfig = { enabled: false, rateBps: 0, fixedCents: 0 };
@@ -169,6 +167,15 @@ const defaultPaymentConfig: PaymentConfig = {
     webhookSecret: "",
     currency: "cny",
   },
+  paypal: {
+    enabled: false,
+    environment: "sandbox",
+    clientId: "",
+    clientSecret: "",
+    webhookId: "",
+    currency: "USD",
+    cnyPerUnit: 0,
+  },
   gmpay: {
     enabled: false,
     apiBase: "",
@@ -181,6 +188,7 @@ const defaultPaymentConfig: PaymentConfig = {
     alipay: { ...defaultPaymentFee },
     wxpay: { ...defaultPaymentFee },
     stripe: { ...defaultPaymentFee },
+    paypal: { ...defaultPaymentFee },
     usdt: { ...defaultPaymentFee },
   },
 };
@@ -233,6 +241,15 @@ const paymentConfigInput = z.object({
     webhookSecret: z.string().max(256).optional(),
     currency: z.string().trim().min(3).max(8),
   }),
+  paypal: z.object({
+    enabled: z.boolean(),
+    environment: z.enum(["sandbox", "live"]),
+    clientId: z.string().trim().max(256),
+    clientSecret: z.string().max(256).optional(),
+    webhookId: z.string().trim().max(128),
+    currency: z.enum(PAYPAL_CURRENCIES),
+    cnyPerUnit: z.number().min(0).max(1_000_000),
+  }).optional(),
   gmpay: z.object({
     enabled: z.boolean(),
     apiBase: z.string().trim().max(512),
@@ -245,13 +262,14 @@ const paymentConfigInput = z.object({
     alipay: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
     wxpay: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
     stripe: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
+    paypal: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }).optional(),
     usdt: z.object({ enabled: z.boolean(), rateBps: z.number().int().min(0).max(10000), fixedCents: z.number().int().min(0).max(1_000_000) }),
   }).optional(),
 });
 
 const createOrderInput = z.object({
   amount: z.number().min(0.01).max(1_000_000),
-  paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
+  paymentType: z.enum(PAYMENT_TYPES),
   planId: z.number().int().positive().optional(),
   subscriptionId: z.number().int().positive().optional(),
   quantity: z.number().int().min(1).max(MAX_PLAN_PURCHASE_QUANTITY).default(1),
@@ -270,6 +288,7 @@ function mergeConfig(raw: any): PaymentConfig {
     alipay: { ...defaultPaymentConfig.alipay, ...(raw?.alipay || {}) },
     wxpay: { ...defaultPaymentConfig.wxpay, ...(raw?.wxpay || {}) },
     stripe: { ...defaultPaymentConfig.stripe, ...(raw?.stripe || {}) },
+    paypal: { ...defaultPaymentConfig.paypal, ...(raw?.paypal || {}) },
     gmpay: { ...defaultPaymentConfig.gmpay, ...(raw?.gmpay || {}) },
     fees: {
       ...defaultPaymentConfig.fees,
@@ -277,13 +296,35 @@ function mergeConfig(raw: any): PaymentConfig {
       alipay: { ...defaultPaymentConfig.fees.alipay, ...(raw?.fees?.alipay || {}) },
       wxpay: { ...defaultPaymentConfig.fees.wxpay, ...(raw?.fees?.wxpay || {}) },
       stripe: { ...defaultPaymentConfig.fees.stripe, ...(raw?.fees?.stripe || {}) },
+      paypal: { ...defaultPaymentConfig.fees.paypal, ...(raw?.fees?.paypal || {}) },
       usdt: { ...defaultPaymentConfig.fees.usdt, ...(raw?.fees?.usdt || {}) },
     },
   };
 }
 
-function paymentFeeQuote(config: PaymentConfig, paymentType: "alipay" | "wxpay" | "stripe" | "usdt", amountCents: number) {
-  const baseAmountCents = Math.max(0, Math.round(amountCents));
+function resolvePaymentProvider(config: PaymentConfig, paymentType: PaymentType): PaymentProvider {
+  if (paymentType === "alipay" || paymentType === "wxpay") return config.routes[paymentType];
+  return paymentType === "usdt" ? "gmpay" : paymentType;
+}
+
+function paymentFeeQuote(config: PaymentConfig, paymentType: PaymentType, amountCents: number, sourceCurrency: string) {
+  const provider = resolvePaymentProvider(config, paymentType);
+  let currency = sourceCurrency.toUpperCase();
+  let baseAmountCents = Math.max(0, Math.round(amountCents));
+  if (provider === "stripe") {
+    baseAmountCents = normalizedStripeOrderAmountCents(baseAmountCents, config.stripe.currency);
+  } else if (provider === "paypal") {
+    const paypalCurrency = config.paypal.currency;
+    if (!paymentMethodSupportsCurrency({ value: "paypal", currency: paypalCurrency }, currency)) {
+      throw new PaymentConfigurationError("该套餐币种不支持使用当前 PayPal 收款配置");
+    }
+    if (currency !== paypalCurrency) {
+      const rateMillionths = Math.round(config.paypal.cnyPerUnit * 1_000_000);
+      if (rateMillionths <= 0) throw new PaymentConfigurationError("使用外币收款前请设置 PayPal 人民币换算汇率");
+      baseAmountCents = Math.ceil(baseAmountCents * 1_000_000 / rateMillionths);
+    }
+    currency = paypalCurrency;
+  }
   const feeConfig = config.fees[paymentType];
   const feeCents = config.enabled && feeConfig.enabled
     ? Math.ceil(baseAmountCents * feeConfig.rateBps / 10000) + feeConfig.fixedCents
@@ -292,6 +333,7 @@ function paymentFeeQuote(config: PaymentConfig, paymentType: "alipay" | "wxpay" 
     enabled: config.enabled && feeConfig.enabled,
     rateBps: feeConfig.rateBps,
     fixedCents: feeConfig.fixedCents,
+    ...(provider === "paypal" ? { currency } : {}),
     baseAmountCents,
     feeCents,
     totalAmountCents: baseAmountCents + feeCents,
@@ -329,6 +371,7 @@ function sanitizeConfig(config: PaymentConfig) {
       hasSecretKey: !!config.stripe.secretKey,
       hasWebhookSecret: !!config.stripe.webhookSecret,
     },
+    paypal: { ...config.paypal, clientSecret: "", hasClientSecret: !!config.paypal.clientSecret },
     gmpay: {
       ...config.gmpay,
       secretKey: "",
@@ -367,6 +410,12 @@ function validateProviderConfig(config: PaymentConfig, provider: PaymentProvider
     if (!forExistingOrder && wx.mode === "jsapi") fail("当前不支持微信 JSAPI，请选择 Native 扫码或 H5 支付");
   } else if (provider === "stripe") {
     if (!config.stripe.secretKey || !config.stripe.webhookSecret) fail("Stripe 配置不完整，请填写 Secret Key 和 Webhook Secret");
+  } else if (provider === "paypal") {
+    const { clientId, clientSecret, webhookId, currency, cnyPerUnit } = config.paypal;
+    if (!clientId || !clientSecret || !webhookId) fail("PayPal 配置不完整，请填写 Client ID、Client Secret 和 Webhook ID");
+    if (!forExistingOrder && currency !== "CNY" && !(cnyPerUnit >= 0.000001)) {
+      fail("使用外币收款前请设置 PayPal 人民币换算汇率");
+    }
   } else if (provider === "gmpay") {
     if (!config.gmpay.apiBase || !config.gmpay.pid || !config.gmpay.secretKey) fail("USDT 支付配置不完整");
   }
@@ -383,6 +432,7 @@ function merchantIdentity(config: PaymentConfig, provider: string) {
   if (provider === "alipay") return JSON.stringify({ appId: config.alipay.appId, gateway: config.alipay.gateway });
   if (provider === "wxpay") return JSON.stringify({ appId: config.wxpay.appId, mchId: config.wxpay.mchId });
   if (provider === "easypay") return JSON.stringify({ pid: config.easypay.pid, apiBase: config.easypay.apiBase });
+  if (provider === "paypal") return JSON.stringify({ clientId: config.paypal.clientId, environment: config.paypal.environment });
   if (provider === "gmpay") return JSON.stringify({ pid: config.gmpay.pid, apiBase: config.gmpay.apiBase });
   return null;
 }
@@ -559,12 +609,15 @@ async function callAlipayGateway(
     throw new Error(`支付宝返回格式异常：${text.slice(0, 120)}`);
   }
   const responseKey = method.replace(/\./g, "_") + "_response";
-  const payload = data[responseKey];
-  if (!res.ok || !payload || payload.code !== "10000") {
+  const payload = data?.[responseKey];
+  const tradeNotCreated = method === "alipay.trade.query"
+    && payload?.code === "40004"
+    && payload.sub_code === "ACQ.TRADE_NOT_EXIST";
+  if (!res.ok || !payload || (payload.code !== "10000" && !tradeNotCreated)) {
     throw new Error(payload?.sub_msg || payload?.msg || `支付宝请求失败：${res.status}`);
   }
   if (!verifyAlipayResponse(text, responseKey, alipay.publicKey)) throw new Error("支付宝响应签名校验失败");
-  return payload;
+  return tradeNotCreated ? null : payload;
 }
 
 async function createAlipayOrder(config: PaymentConfig, order: {
@@ -941,7 +994,7 @@ async function finalizePaidOrder(outTradeNo: string) {
           await db.updatePaymentOrder(outTradeNo, { status: "completed", failureReason: null } as any);
           return;
         }
-        const creditedAmountCents = Number((order as any).baseAmountCents || order.amountCents || 0);
+        const creditedAmountCents = Number(order.balanceCreditCents ?? (order.baseAmountCents || order.amountCents || 0));
         await db.addUserBalance(order.userId, creditedAmountCents, {
           type: "payment",
           description: `在线充值：${outTradeNo}`,
@@ -1013,13 +1066,69 @@ async function processPaidNotification(outTradeNo: string, notification: PaidNot
 const PAYMENT_RECOVERY_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYMENT_QUERY_INTERVAL_MS = 30_000;
 
-async function queryProviderPayment(config: PaymentConfig, order: NonNullable<Awaited<ReturnType<typeof db.getPaymentOrderByOutTradeNo>>>) {
+type StoredPaymentOrder = NonNullable<Awaited<ReturnType<typeof db.getPaymentOrderByOutTradeNo>>>;
+
+function assertPayPalOrderMatches(config: PaymentConfig, order: StoredPaymentOrder, remote: PayPalOrder) {
+  assertMerchantIdentity(order, merchantIdentity(config, "paypal"));
+  const unit = remote.purchase_units[0];
+  if (order.provider !== "paypal" || order.tradeNo !== remote.id || order.outTradeNo !== unit.reference_id) {
+    throw new Error(`PayPal order reference mismatch order=${order.outTradeNo}`);
+  }
+  if (unit.amount.cents !== Number(order.amountCents) || !sameCurrency(unit.amount.currency, order.currency)) {
+    throw new Error(`PayPal order amount or currency mismatch order=${order.outTradeNo}`);
+  }
+}
+
+// Capture only a verified approval for a still-open order. A completed
+// capture can also restore a local order that expired while payment settled.
+async function syncPayPalOrder(
+  config: PaymentConfig,
+  client: ReturnType<typeof createPayPalClient>,
+  order: StoredPaymentOrder,
+  remote: PayPalOrder,
+  expectedCaptureId?: string,
+) {
+  assertPayPalOrderMatches(config, order, remote);
+  if (!expectedCaptureId && ["completed", "paid", "processing"].includes(order.status)) return;
+  if (!expectedCaptureId && remote.status === "APPROVED" && order.status === "pending" &&
+      (!order.expiresAt || new Date(order.expiresAt).getTime() > Date.now())) {
+    remote = await client.captureOrder(remote.id, order.outTradeNo);
+    assertPayPalOrderMatches(config, order, remote);
+  }
+  const captures = remote.purchase_units[0].payments?.captures ?? [];
+  const capture = captures.length === 1 ? captures[0] : undefined;
+  if (capture?.status !== "COMPLETED" || capture.final_capture === false) {
+    if (expectedCaptureId) throw new Error(`PayPal capture not confirmed order=${order.outTradeNo}`);
+    return;
+  }
+  if (expectedCaptureId && capture.id !== expectedCaptureId) {
+    throw new Error(`PayPal capture does not match notification order=${order.outTradeNo}`);
+  }
+  await processPaidNotification(order.outTradeNo, {
+    provider: "paypal",
+    tradeNo: remote.id,
+    amountCents: capture.amount.cents,
+    currency: capture.amount.currency,
+    rawNotify: JSON.stringify({ orderId: remote.id, captureId: capture.id, status: capture.status }),
+    merchantIdentity: merchantIdentity(config, "paypal"),
+  });
+}
+
+async function queryProviderPayment(config: PaymentConfig, order: StoredPaymentOrder) {
   const identity = merchantIdentity(config, order.provider);
   assertMerchantIdentity(order, identity);
   validateProviderConfig(config, order.provider as PaymentProvider, true);
+  if (order.provider === "paypal") {
+    if (!order.tradeNo) return;
+    const client = createPayPalClient(config.paypal);
+    await syncPayPalOrder(config, client, order, await client.getOrder(order.tradeNo));
+    return;
+  }
   let notification: PaidNotification | null = null;
   if (order.provider === "alipay") {
     const payload = await callAlipayGateway(config, "alipay.trade.query", { out_trade_no: order.outTradeNo }, { notifyUrl: "", returnUrl: "" });
+    // A local page/WAP order can exist before the buyer opens Alipay.
+    if (payload === null) return;
     if (payload.out_trade_no !== order.outTradeNo) throw new Error("Alipay query order mismatch");
     if (payload.trade_status === "TRADE_SUCCESS" || payload.trade_status === "TRADE_FINISHED") {
       notification = { provider: "alipay", tradeNo: payload.trade_no, amountCents: parseAmountCents(payload.total_amount), currency: "CNY", rawNotify: JSON.stringify(payload), merchantIdentity: identity };
@@ -1058,7 +1167,7 @@ async function reconcilePaymentOrder(outTradeNo: string, config: PaymentConfig) 
   return withKeyedTaskLock(`payment-query:${outTradeNo}`, async () => {
     const order = await db.getPaymentOrderByOutTradeNo(outTradeNo);
     if (!order || !["pending", "expired", "failed", "cancelled"].includes(order.status)) return;
-    if (!["alipay", "wxpay", "easypay"].includes(order.provider)) return;
+    if (!["alipay", "wxpay", "easypay", "paypal"].includes(order.provider) || (order.provider === "paypal" && !order.tradeNo)) return;
     if (Date.now() > new Date(order.expiresAt || order.createdAt).getTime() + PAYMENT_RECOVERY_GRACE_MS) return;
     if (order.lastPaymentCheckAt && Date.now() - new Date(order.lastPaymentCheckAt).getTime() < PAYMENT_QUERY_INTERVAL_MS) return;
     // Also throttle across multiple panel processes, not just this process's lock.
@@ -1083,26 +1192,17 @@ export const paymentRouter = router({
   feeQuote: protectedProcedure
     .input(z.object({
       amountCents: z.number().int().min(0).max(100_000_000),
-      paymentType: z.enum(["alipay", "wxpay", "stripe", "usdt"]),
+      paymentType: z.enum(PAYMENT_TYPES),
+      currency: z.string().trim().regex(/^[a-z]{3}$/i).default("CNY"),
     }))
     .query(async ({ input }) => {
       const config = await getPaymentConfig();
-      const provider = input.paymentType === "stripe"
-        ? "stripe"
-        : input.paymentType === "usdt"
-          ? "gmpay"
-          : input.paymentType === "alipay"
-            ? config.routes.alipay
-            : config.routes.wxpay;
-      const baseAmountCents = provider === "stripe"
-        ? normalizedStripeOrderAmountCents(input.amountCents, config.stripe.currency)
-        : input.amountCents;
-      return paymentFeeQuote(config, input.paymentType, baseAmountCents);
+      return paymentFeeQuote(config, input.paymentType, input.amountCents, input.currency);
     }),
   availableMethods: protectedProcedure.query(async () => {
     const config = await getPaymentConfig();
     if (!config.enabled) return [];
-    const methods: Array<{ value: "alipay" | "wxpay" | "stripe" | "usdt"; label: string; feeEnabled: boolean; rateBps: number; fixedCents: number }> = [];
+    const methods: Array<{ value: PaymentType; label: string; feeEnabled: boolean; rateBps: number; fixedCents: number; currency?: string }> = [];
     const alipayProvider = config.routes.alipay;
     const wxpayProvider = config.routes.wxpay;
     const usable = (provider: PaymentProvider) => {
@@ -1115,9 +1215,9 @@ export const paymentRouter = router({
         return true;
       } catch { return false; }
     };
-    const addMethod = (value: "alipay" | "wxpay" | "stripe" | "usdt", label: string) => {
+    const addMethod = (value: PaymentType, label: string, currency?: string) => {
       const fee = config.fees[value];
-      methods.push({ value, label, feeEnabled: fee.enabled, rateBps: fee.rateBps, fixedCents: fee.fixedCents });
+      methods.push({ value, label, feeEnabled: fee.enabled, rateBps: fee.rateBps, fixedCents: fee.fixedCents, ...(currency ? { currency } : {}) });
     };
     if (usable(alipayProvider)) {
       addMethod("alipay", "支付宝");
@@ -1127,6 +1227,9 @@ export const paymentRouter = router({
     }
     if (usable("stripe")) {
       addMethod("stripe", "Stripe");
+    }
+    if (config.paypal.environment === "live" && usable("paypal")) {
+      addMethod("paypal", "PayPal", config.paypal.currency);
     }
     if (usable("gmpay")) {
       addMethod("usdt", "USDT");
@@ -1168,19 +1271,23 @@ export const paymentRouter = router({
           webhookSecret: input.stripe.webhookSecret?.trim() || previous.stripe.webhookSecret,
           currency: input.stripe.currency.trim().toLowerCase(),
         },
+        paypal: input.paypal ? {
+          ...input.paypal,
+          clientSecret: input.paypal.clientSecret?.trim() || previous.paypal.clientSecret,
+        } : previous.paypal,
         gmpay: input.gmpay ? {
           ...input.gmpay,
           signatureAlgorithm: input.gmpay.signatureAlgorithm ?? previous.gmpay.signatureAlgorithm,
           apiBase: normalizeGmPayBase(input.gmpay.apiBase),
           secretKey: input.gmpay.secretKey?.trim() || previous.gmpay.secretKey,
         } : previous.gmpay,
-        fees: input.fees ?? previous.fees,
+        fees: { ...previous.fees, ...input.fees },
       });
       if (next.gmpay.enabled && (!next.gmpay.apiBase || !next.gmpay.pid || !next.gmpay.secretKey)) {
         throw new Error("启用 USDT 支付前请完整填写网关地址、商户 PID 和商户密钥");
       }
       try {
-        for (const provider of ["easypay", "alipay", "wxpay", "stripe", "gmpay"] as const) {
+        for (const provider of ["easypay", "alipay", "wxpay", "stripe", "paypal", "gmpay"] as const) {
           if (next[provider].enabled) validateProviderConfig(next, provider);
         }
         for (const provider of ["alipay", "wxpay"] as const) {
@@ -1259,6 +1366,7 @@ export const paymentRouter = router({
       const config = await getPaymentConfig();
       if (!config.enabled) throw new Error("支付功能未启用");
       let amount = input.amount;
+      let sourceCurrency = "CNY";
       let subjectSuffix = ctx.user.username;
       let discountCodeId: number | null = null;
       let discountAmountCents = 0;
@@ -1291,6 +1399,7 @@ export const paymentRouter = router({
         if (!shopEnabled && !adminSelfRenewal) throw new Error("商店功能未开启");
         const plan = await db.getSubscriptionPlanById(input.planId);
         if (!plan || !plan.isActive || (!adminSelfRenewal && !plan.isStoreVisible)) throw new Error("套餐不可购买");
+        sourceCurrency = plan.currency || "CNY";
         const totals = planCyclePurchaseTotals(plan, input.quantity, input.billingCycleDays);
         planDurationDays = totals.durationDays;
         let amountCentsForPlan = totals.priceCents;
@@ -1313,27 +1422,24 @@ export const paymentRouter = router({
         throw new Error("待支付订单过多，请先完成或等待旧订单过期");
       }
 
-      const provider: PaymentProvider = input.paymentType === "stripe"
-        ? "stripe"
-        : input.paymentType === "usdt"
-          ? "gmpay"
-          : input.paymentType === "alipay"
-            ? config.routes.alipay
-            : config.routes.wxpay;
+      const provider = resolvePaymentProvider(config, input.paymentType);
       if (provider === "alipay" && !config.alipay.enabled) throw new Error("支付宝官方未启用");
       if (provider === "wxpay" && !config.wxpay.enabled) throw new Error("微信支付未启用");
       if (provider === "easypay" && !config.easypay.enabled) throw new Error("易支付未启用");
       if (provider === "stripe" && !config.stripe.enabled) throw new Error("Stripe 未启用");
       if (provider === "gmpay" && !config.gmpay.enabled) throw new Error("USDT 支付未启用");
-      try { validateProviderConfig(config, provider); } catch (cause) {
+      if (provider === "paypal" && config.paypal.environment === "sandbox" &&
+          (ctx.user.role !== "admin" || input.orderType !== "test" || input.planId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "PayPal 沙盒仅支持管理员测试下单" });
+      }
+      const rawAmountCents = Math.round(amount * 100);
+      let fee: ReturnType<typeof paymentFeeQuote>;
+      try {
+        validateProviderConfig(config, provider);
+        fee = paymentFeeQuote(config, input.paymentType, rawAmountCents, sourceCurrency);
+      } catch (cause) {
         throw new TRPCError({ code: "BAD_REQUEST", message: paymentOrderFailureMessage(cause), cause });
       }
-
-      const rawAmountCents = Math.round(amount * 100);
-      const baseAmountCents = provider === "stripe"
-        ? normalizedStripeOrderAmountCents(rawAmountCents, config.stripe.currency)
-        : rawAmountCents;
-      const fee = paymentFeeQuote(config, input.paymentType, baseAmountCents);
       const amountCents = fee.totalAmountCents;
       const outTradeNo = createOutTradeNo();
       const panelUrl = await getConfiguredPanelUrl();
@@ -1365,7 +1471,8 @@ export const paymentRouter = router({
           amountCents,
           baseAmountCents: fee.baseAmountCents,
           feeAmountCents: fee.feeCents,
-          currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : "CNY",
+          balanceCreditCents: provider === "paypal" && !input.planId && input.orderType !== "test" ? rawAmountCents : null,
+          currency: provider === "stripe" ? config.stripe.currency.toUpperCase() : provider === "paypal" ? config.paypal.currency : "CNY",
           orderType: input.planId ? "plan" : input.orderType || "balance",
           planId: input.planId ?? null,
           planQuantity: input.quantity,
@@ -1387,6 +1494,8 @@ export const paymentRouter = router({
         let paymentResult: { tradeNo: string | null; payUrl: string | null; qrCode: string | null };
         if (provider === "stripe") {
           paymentResult = await createStripeCheckoutOrder(config, { outTradeNo, subject, amountCents, returnUrl, cancelUrl });
+        } else if (provider === "paypal") {
+          paymentResult = await createPayPalClient(config.paypal).createOrder({ outTradeNo, subject, amountCents, returnUrl, cancelUrl });
         } else if (provider === "alipay") {
           paymentResult = await createAlipayOrder(config, { outTradeNo, subject, amountCents, notifyUrl, returnUrl });
         } else if (provider === "wxpay") {
@@ -1698,4 +1807,63 @@ paymentCallbackRouter.post("/api/payment/webhook/stripe", express.raw({ type: "*
 
 paymentCallbackRouter.get("/api/payment/return/stripe", async (req, res) => {
   await handlePaymentBrowserReturn(req, res, "stripe");
+});
+
+paymentCallbackRouter.post("/api/payment/webhook/paypal", express.raw({ type: "application/json", limit: "1mb" }), async (req, res) => {
+  const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+  let event: unknown;
+  try { event = JSON.parse(raw); } catch {
+    res.status(400).json({ error: "invalid event" });
+    return;
+  }
+  const parsed = paypalWebhookEvent.safeParse(event);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid event" });
+    return;
+  }
+  const { event_type: type, resource } = parsed.data;
+  if (type !== "CHECKOUT.ORDER.APPROVED" && type !== "PAYMENT.CAPTURE.COMPLETED") {
+    res.json({ received: true });
+    return;
+  }
+  try {
+    const config = await getPaymentConfig();
+    validateProviderConfig(config, "paypal", true);
+    const client = createPayPalClient(config.paypal);
+    if (!(await client.verifyWebhook(req.headers, event))) {
+      res.status(400).json({ error: "invalid signature" });
+      return;
+    }
+    const approved = type === "CHECKOUT.ORDER.APPROVED";
+    const orderId = approved ? resource.id : resource.supplementary_data?.related_ids?.order_id;
+    if (!orderId) throw new Error("PayPal webhook missing related order ID");
+    const remote = await client.getOrder(orderId);
+    if (remote.id !== orderId) throw new Error("PayPal webhook order ID mismatch");
+    const order = await db.getPaymentOrderByOutTradeNo(remote.purchase_units[0].reference_id);
+    if (order?.provider === "paypal") {
+      await syncPayPalOrder(config, client, order, remote, approved ? undefined : resource.id);
+    }
+    res.json({ received: true });
+  } catch (error) {
+    appendPanelLog("error", `[Payment] PayPal webhook failed: ${error instanceof Error ? error.message : String(error)}`);
+    res.status(500).json({ error: "webhook failed" });
+  }
+});
+
+paymentCallbackRouter.get("/api/payment/return/paypal", async (req, res) => {
+  const outTradeNo = firstStringValue(req.query.out_trade_no);
+  const token = firstStringValue(req.query.token);
+  const cancelled = firstStringValue(req.query.payment_cancelled) === "1";
+  try {
+    if (!cancelled && outTradeNo && token) {
+      const order = await db.getPaymentOrderByOutTradeNo(outTradeNo);
+      if (order?.provider === "paypal" && order.tradeNo === token) {
+        const config = await getPaymentConfig();
+        await queryProviderPayment(config, order);
+      }
+    }
+  } catch (error) {
+    appendPanelLog("warn", `[Payment] PayPal return failed order=${outTradeNo}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await handlePaymentBrowserReturn(req, res, "paypal");
 });

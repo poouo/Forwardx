@@ -142,7 +142,7 @@
 
 这是流量启发式判断，不能替代身份验证：短连接、小流量业务可能不计入，持续发送有效双向流量的扫描也可能被计入。未满额时允许观察流量，不能理解为每次连接都立即严格限额。
 
-需要 Agent **2.2.210 或更新版本**、`ipset`、`iptables`（IPv6 还需 `ip6tables`）、`CAP_NET_ADMIN`，以及可读取的 conntrack 字节统计（`net.netfilter.nf_conntrack_acct=1`）。安装和升级脚本会尝试准备依赖；部分 LXC/受限容器无法启用时会明确报错，转发继续运行，但 IP 限制不保证生效。旧 Agent 不会把新 IP 数量误作旧的单 IP 连接上限，请同步升级。
+需要 Agent **2.2.210 或更新版本**、`ipset`、`iptables`（IPv6 还需 `ip6tables`）、`CAP_NET_ADMIN`，以及可读取的 conntrack 字节统计（`net.netfilter.nf_conntrack_acct=1`）。首次安装会尝试准备依赖，普通升级检查内核计数配置。部分 LXC 或受限容器无法启用时会告警，转发继续运行，但 IP 限制可能无法生效。旧 Agent 不会把新 IP 数量误作旧的单 IP 连接上限，请同步升级。
 
 规则增加或调整不会清空已准入 IP；设为 0 或删除规则会清理对应限制。升级会移除旧的单 IP 连接数限制。
 

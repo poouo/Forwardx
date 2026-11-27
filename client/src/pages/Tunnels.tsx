@@ -3458,14 +3458,15 @@ function TunnelsContent() {
       <div className="rounded-lg border border-border/60 bg-muted/20">
         <button
           type="button"
+          aria-expanded={chainAdvancedOpen}
           className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
           onClick={() => setChainAdvancedOpen((open) => !open)}
         >
           <div className="min-w-0">
             <div className="text-sm font-medium">{translateText("高级设置")}</div>
-            <div className="text-xs text-muted-foreground">PROXY Protocol</div>
+            <div className="hidden text-xs text-muted-foreground sm:block">PROXY Protocol</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[11px] font-normal">
               {advancedConfigured ? translateText("已配置") : translateText("可选")}
             </Badge>
@@ -3516,6 +3517,7 @@ function TunnelsContent() {
   const renderTunnelDirection = () => {
     if (user?.role !== "admin" || !supportsReverseTunnel(form.mode, form.forwardxVersion)) return null;
     const incompatibleTopology = !!(form.entryGroupId || form.exitGroupId || form.hopHostIds.length > 2 || form.loadBalanceEnabled);
+    const reverse = isReverseTunnel(form);
     const entry = hosts?.find((host: any) => Number(host.id) === Number(form.entryHostId));
     return (
       <div className="space-y-2">
@@ -3527,14 +3529,21 @@ function TunnelsContent() {
             udpOverTcp: value === "reverse" ? false : prev.udpOverTcp,
           }));
         }}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectTrigger>
+          <SelectValue>
+            <span className="block truncate sm:hidden">{reverse ? translateText("反向") : translateText("正向")}</span>
+            <span className="hidden truncate sm:block">
+              {reverse ? translateText("反向 · 出口主动连接入口") : translateText("正向 · 入口主动连接出口")}
+            </span>
+          </SelectValue>
+        </SelectTrigger>
           <SelectContent>
             <SelectItem value="forward">{translateText("正向 · 入口主动连接出口")}</SelectItem>
             <SelectItem value="reverse" disabled={incompatibleTopology}>{translateText("反向 · 出口主动连接入口")}</SelectItem>
           </SelectContent>
         </Select>
         {incompatibleTopology && <p className="text-xs text-muted-foreground">{translateText("反向隧道仅支持单入口和单出口")}</p>}
-        {isReverseTunnel(form) && (
+        {reverse && (
           <>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem]">
               <label className="space-y-2">
@@ -3568,71 +3577,39 @@ function TunnelsContent() {
   };
   const renderForwardXVersionOptions = () => {
     if (form.mode !== "forwardx") return null;
+    const versions = [
+      { value: "v1", label: "V1", transport: "AES-GCM", icon: ShieldCheck, description: translateText("FXP 认证加密传输，兼容现有链路") },
+      { value: "v2", label: "V2", transport: "WireGuard", icon: Network, description: translateText("内置 UDP 通道（无需安装系统 WireGuard）") },
+      { value: "v3", label: "V3", transport: "HTTP/WS/TLS", icon: Globe, description: translateText("伪装为常规 HTTP、WebSocket 或 TLS 流量") },
+    ] as const;
     return (
       <>
-        <div className="space-y-2">
+        <div className="min-w-0 space-y-2">
           <Label>{translateText("隧道版本")}</Label>
-          <div className={`${segmentedControlClassName} grid grid-cols-3 gap-1`}>
-            <button
-              type="button"
-              aria-pressed={form.forwardxVersion === "v1"}
-              className={segmentedOptionClassName(
-                form.forwardxVersion === "v1",
-                false,
-                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
-              )}
-              onClick={() => setForm((prev) => ({
-                ...prev,
-                forwardxVersion: "v1",
-                connectionDirection: "forward",
-                mimicPort: prev.udpOverTcp ? prev.mimicPort : 0,
-              }))}
-            >
-              <ShieldCheck className={segmentedIconClassName(form.forwardxVersion === "v1", "mt-0.5")} />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">V1 AES-GCM</span>
-                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("FXP 认证加密传输，兼容现有链路")}</span>
-              </span>
-            </button>
-            <button
-              type="button"
-              aria-pressed={form.forwardxVersion === "v2"}
-              className={segmentedOptionClassName(
-                form.forwardxVersion === "v2",
-                false,
-                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
-              )}
-              onClick={() => setForm((prev) => ({
-                ...prev,
-                forwardxVersion: "v2",
-              }))}
-            >
-              <Network className={segmentedIconClassName(form.forwardxVersion === "v2", "mt-0.5")} />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">V2 WireGuard</span>
-                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("内置 UDP 通道（无需安装系统 WireGuard）")}</span>
-              </span>
-            </button>
-            <button
-              type="button"
-              aria-pressed={form.forwardxVersion === "v3"}
-              className={segmentedOptionClassName(
-                form.forwardxVersion === "v3",
-                false,
-                "h-auto min-h-16 items-start justify-start px-3 py-2 text-left",
-              )}
-              onClick={() => setForm((prev) => ({
-                ...prev,
-                forwardxVersion: "v3",
-                connectionDirection: "forward",
-              }))}
-            >
-              <Globe className={segmentedIconClassName(form.forwardxVersion === "v3", "mt-0.5")} />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">V3 HTTP/WS/TLS</span>
-                <span className="mt-0.5 block whitespace-normal text-[11px] font-normal leading-4 text-muted-foreground">{translateText("伪装为常规 HTTP、WebSocket 或 TLS 流量")}</span>
-              </span>
-            </button>
+          <div className={`${segmentedControlClassName} grid min-w-0 grid-cols-3 gap-1`}>
+            {versions.map(({ value, label, transport, icon: Icon, description }) => {
+              const active = form.forwardxVersion === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={active}
+                  className={segmentedOptionClassName(active, false, "h-10 gap-1.5 px-2 sm:h-auto sm:min-h-16 sm:items-start sm:justify-start sm:gap-2 sm:px-3 sm:py-2 sm:text-left")}
+                  onClick={() => setForm((prev) => ({
+                    ...prev,
+                    forwardxVersion: value,
+                    connectionDirection: value === "v2" ? prev.connectionDirection : "forward",
+                    mimicPort: value === "v1" && !prev.udpOverTcp ? 0 : prev.mimicPort,
+                  }))}
+                >
+                  <Icon aria-hidden="true" className={segmentedIconClassName(active, "sm:mt-0.5")} />
+                  <span className="min-w-0">
+                    <span className="block break-words text-sm font-medium">{label}<span className="hidden sm:inline"> {transport}</span></span>
+                    <span className="mt-0.5 hidden whitespace-normal break-words text-[11px] font-normal leading-4 text-muted-foreground sm:block">{description}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
         {renderTunnelDirection()}
@@ -3716,7 +3693,6 @@ function TunnelsContent() {
     if (!proxySupported && !transportTuningSupported) return null;
     const proxyAnyEnabled = form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend;
     const advancedConfigured = proxyAnyEnabled || form.tcpFastOpen || form.udpOverTcp;
-    const shouldCollapseAdvanced = proxySupported && transportTuningSupported;
     const renderProxySwitch = (label: string, field: "proxyProtocolReceive" | "proxyProtocolSend" | "proxyProtocolExitReceive" | "proxyProtocolExitSend") => (
       <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2">
         <span className="min-w-0 break-words text-sm">{label}</span>
@@ -3863,26 +3839,22 @@ function TunnelsContent() {
         )}
       </div>
     ) : null;
-    if (!shouldCollapseAdvanced) {
-      return (
-        <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
-          {proxyOptions}
-          {transportOptions}
-        </div>
-      );
-    }
     return (
       <div className="rounded-lg border border-border/60 bg-muted/20">
         <button
           type="button"
+          aria-expanded={tunnelAdvancedOpen}
           className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
           onClick={() => setTunnelAdvancedOpen((open) => !open)}
         >
           <div className="min-w-0">
             <div className="text-sm font-medium">{translateText("高级设置")}</div>
-            <div className="text-xs text-muted-foreground">{translateText("PROXY Protocol、传输优化")}</div>
+            <div className="hidden text-xs text-muted-foreground sm:block">
+              {proxySupported && transportTuningSupported ? translateText("PROXY Protocol、传输优化")
+                : proxySupported ? "PROXY Protocol" : translateText("传输优化")}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[11px] font-normal">
               {advancedConfigured ? translateText("已配置") : translateText("可选")}
             </Badge>
@@ -4671,11 +4643,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{translateText("新增链路")}</DialogTitle>
           </DialogHeader>
-          <div className="dialog-scroll-area min-h-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 min-w-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
@@ -4850,7 +4822,6 @@ function TunnelsContent() {
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {form.mode !== "forwardx" && renderTunnelDirection()}
                     {renderForwardXVersionOptions()}
-                    {renderTunnelRuntimeOptions()}
                     <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
                       {!isReverseTunnel(form) && <div className="space-y-2">
                         <Label>{translateText("出口监听端口")}</Label>
@@ -4865,6 +4836,7 @@ function TunnelsContent() {
                         <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
                       </div>
                     </div>
+                    {renderTunnelRuntimeOptions()}
                   </>
                 ) : (
                   <>
@@ -4906,7 +4878,6 @@ function TunnelsContent() {
                         </label>
                       </div>
                     </div>
-                    {renderChainRuntimeOptions()}
                     <div className="space-y-2">
                       <Label>{translateText("入口组")}</Label>
                       <Select
@@ -4968,6 +4939,7 @@ function TunnelsContent() {
                         }}
                       />
                     </div>
+                    {renderChainRuntimeOptions()}
                   </>
                 )}
           </div>
@@ -4984,11 +4956,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+        <DialogContent className="h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{editingId ? translateText("编辑隧道") : translateText("添加链路")}</DialogTitle>
           </DialogHeader>
-          <div className="dialog-scroll-area min-h-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 min-w-0 touch-pan-y space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
             <div className="space-y-2">
               <Label>{translateText("隧道名称")}</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={translateText("例如: 华东-香港隧道")} />
@@ -5161,7 +5133,6 @@ function TunnelsContent() {
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {form.mode !== "forwardx" && renderTunnelDirection()}
             {renderForwardXVersionOptions()}
-            {renderTunnelRuntimeOptions()}
             <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 [&>*]:min-w-0">
               {!isReverseTunnel(form) && <div className="space-y-2">
                 <Label>{translateText("出口监听端口")}</Label>
@@ -5176,6 +5147,7 @@ function TunnelsContent() {
                 <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
               </div>
             </div>
+            {renderTunnelRuntimeOptions()}
           </div>
           <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 px-3.5 py-3 sm:px-4">
             <Button variant="outline" onClick={() => setShowDialog(false)}>{translateText("取消")}</Button>

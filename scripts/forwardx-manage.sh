@@ -20,7 +20,8 @@ ForwardX Manager / 管理工具 — fwxm
   fwxm agent|panel install|upgrade|repair|uninstall
   fwxm panel reset-admin       Reset admin password / 重置管理员密码
   fwxm panel address           Panel address / 后台地址
-  fwxm agent install --panel-url URL --token TOKEN [--proxy URL]
+  fwxm agent install [--panel-url URL --token TOKEN] [--proxy URL] [--nginx y|n|ask] [--mimic y|n|ask]
+  fwxm agent configure         修改面板地址和 Agent Token
   fwxm agent tools [status]     转发环境：查看已安装组件及路径
   fwxm agent tools install [NAME]  选择安装组件，例如 realm、gost
 Agent proxy covers management/downloads, not forwarding or probes.
@@ -51,6 +52,79 @@ confirm() {
   printf '%s [y/N] ' "$1" > /dev/tty
   IFS= read -r answer < /dev/tty || return 1
   case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+read_agent_value() {
+  local label="$1" target="$2" mode="${3:-}"
+  printf '%s' "$label" > /dev/tty
+  if [ "$mode" = secret ]; then
+    IFS= read -rs "$target" < /dev/tty || return 1
+    printf '\n' > /dev/tty
+  else
+    IFS= read -r "$target" < /dev/tty
+  fi
+}
+agent_panel_url() {
+  local value="$1"
+  while [ "${value%/}" != "$value" ]; do value="${value%/}"; done
+  if [[ "$value" =~ ^https?://(\[[[:xdigit:]:.]+\]|[[:alnum:].-]+)(:[0-9]{1,5})?(/[^[:space:][:cntrl:]?#]*)?$ ]]; then
+    printf '%s' "$value"
+  else
+    echo '[ERROR] 请输入有效的 HTTP 或 HTTPS 面板地址。' >&2
+    return 1
+  fi
+}
+agent_configure() {
+  [ "$#" -eq 0 ] || die 'Use: fwxm agent configure'
+  [ -f "$AGENT_CONFIG" ] || die 'Agent config not found; install Agent first.'
+  local current panel token tmp
+  current="$(json_value panelUrl)"
+  read_agent_value "面板地址 [$current]: " panel || return 0
+  panel="$(agent_panel_url "${panel:-$current}")" || return 1
+  read_agent_value 'Agent Token（隐藏输入，留空保留当前 Token）: ' token secret || return 0
+  [ "$panel" != "$current" ] || [ -n "$token" ] || return 0
+  confirm '保存面板连接配置并重启 Agent？' || return 0
+  tmp="$(mktemp "$(dirname "$AGENT_CONFIG")/.agent-config.XXXXXX")"
+  if ! FORWARDX_NEW_AGENT_TOKEN="$token" jq --arg panel "$panel" '
+    if type != "object" then error("invalid Agent config") else
+      .panelUrl = $panel |
+      if env.FORWARDX_NEW_AGENT_TOKEN != "" then .token = env.FORWARDX_NEW_AGENT_TOKEN else . end |
+      del(.migrationFallbackPanelUrl, .panelMigrationId, .panelMigrationStartedAt)
+    end' "$AGENT_CONFIG" > "$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$AGENT_CONFIG"; then
+    rm -f "$tmp"
+    die 'Cannot update config; no service was restarted.'
+  fi
+  service_action agent restart forwardx-agent || {
+    echo '[错误] 配置已保存，Agent 重启失败，请检查 fwxm agent status 和日志。' >&2
+    return 1
+  }
+  echo '[完成] 面板连接配置已保存，Agent 已重启。'
+}
+agent_install() {
+  local panel='' token='' choice
+  local -a args=()
+  if [ "$#" -eq 0 ]; then
+    read_agent_value '面板地址: ' panel || return 0
+    read_agent_value 'Agent Token（隐藏输入）: ' token secret || return 0
+    read_agent_value '安装 Nginx (stream)？[Y/n]: ' choice || return 0
+    case "$choice" in '') choice=y ;; esac
+    args+=(--nginx "$choice")
+    read_agent_value '安装 Mimic？[y/N]: ' choice || return 0
+    case "$choice" in '') choice=n ;; esac
+    args+=(--mimic "$choice")
+  else
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --panel-url) [ "$#" -ge 2 ] || die 'Missing panel URL.'; panel="$2"; shift 2 ;;
+        --token) [ "$#" -ge 2 ] || die 'Missing token.'; token="$2"; shift 2 ;;
+        --proxy|--mimic|--nginx) [ "$#" -ge 2 ] || die "Missing value for $1."; args+=("$1" "$2"); shift 2 ;;
+        --proxy=*|--mimic=*|--nginx=*|--no-proxy) args+=("$1"); shift ;;
+        *) die "Unknown option: ${1%%=*}" ;;
+      esac
+    done
+  fi
+  [ -n "$token" ] || die 'Agent Token is required.'
+  panel="$(agent_panel_url "$panel")" || return 1
+  PANEL_URL="$panel" bash "$MANAGE_DIR/install-agent.sh" install "$token" "${args[@]}"
 }
 service_action() {
   local role="$1" action="$2" service="$3"
@@ -120,6 +194,7 @@ agent_tool_path() {
     nftables) candidates=("$(command -v nft 2>/dev/null || true)") ;;
     socat) candidates=(/usr/bin/socat) ;;
     nginx) candidates=(/usr/local/bin/forwardx-nginx /usr/sbin/nginx /usr/local/nginx/sbin/nginx "$(command -v nginx 2>/dev/null || true)") ;;
+    mimic) candidates=("$(command -v mimic 2>/dev/null || true)") ;;
     *) return 1 ;;
   esac
   for candidate in "${candidates[@]}"; do
@@ -130,7 +205,7 @@ agent_tool_path() {
 agent_tools_status() {
   local tool path label
   printf '\n转发环境 / Forwarding tools (%s / %s)\n' "$(uname -s)" "$(uname -m)"
-  for tool in realm gost iptables nftables socat nginx; do
+  for tool in realm gost iptables nftables socat nginx mimic; do
     label="$tool"; [ "$tool" != gost ] || label='ForwardX Runtime (GOST)'
     if path="$(agent_tool_path "$tool")"; then
       printf '  %-25s 已检测到 / Found  %s\n' "$label" "$path"
@@ -151,14 +226,14 @@ agent_tools() {
       IFS= read -r choice < /dev/tty
       [ "$choice" = 1 ] || return 0 ;;
     install) [ "$#" -le 2 ] || die 'Use: fwxm agent tools install [NAME]' ;;
-    *) die 'Use: fwxm agent tools status | install [realm|gost|iptables|nftables|socat|nginx]' ;;
+    *) die 'Use: fwxm agent tools status | install [realm|gost|iptables|nftables|socat|nginx|mimic]' ;;
   esac
   if [ -z "$tool" ]; then
-    printf '\n  1) Realm\n  2) ForwardX Runtime (GOST)\n  3) iptables\n  4) nftables\n  5) socat\n  6) Nginx (stream)\n  0) 取消 / Cancel\n选择安装 / Select: ' > /dev/tty
+    printf '\n  1) Realm\n  2) ForwardX Runtime (GOST)\n  3) iptables\n  4) nftables\n  5) socat\n  6) Nginx (stream)\n  7) Mimic\n  0) 取消 / Cancel\n选择安装 / Select: ' > /dev/tty
     IFS= read -r choice < /dev/tty
-    case "$choice" in 1) tool=realm ;; 2) tool=gost ;; 3) tool=iptables ;; 4) tool=nftables ;; 5) tool=socat ;; 6) tool=nginx ;; 0) return 0 ;; *) die '无效的组件选择 / Invalid selection.' ;; esac
+    case "$choice" in 1) tool=realm ;; 2) tool=gost ;; 3) tool=iptables ;; 4) tool=nftables ;; 5) tool=socat ;; 6) tool=nginx ;; 7) tool=mimic ;; 0) return 0 ;; *) die '无效的组件选择 / Invalid selection.' ;; esac
   fi
-  case "$tool" in runtime|forwardx-runtime) tool=gost ;; nft) tool=nftables ;; realm|gost|iptables|nftables|socat|nginx) ;; *) die '不支持的组件 / Unsupported tool.' ;; esac
+  case "$tool" in runtime|forwardx-runtime) tool=gost ;; nft) tool=nftables ;; realm|gost|iptables|nftables|socat|nginx|mimic) ;; *) die '不支持的组件 / Unsupported tool.' ;; esac
   [ -f "$MANAGE_DIR/install-agent.sh" ] || die 'Cached Agent installer missing; upgrade management tools first.'
   [ -f "$AGENT_CONFIG" ] || die 'Agent config not found; install/register Agent first.'
   echo "[INFO] 安装所选组件 / Installing: $tool"
@@ -175,15 +250,25 @@ if [ -z "$ROLE" ]; then
     case "$choice" in 1) ROLE=agent ;; 2) ROLE=panel ;; *) exit 0 ;; esac
   elif [ -f "$AGENT_CONFIG" ]; then ROLE=agent
   elif [ -f "$MANAGE_DIR/panel-kind" ]; then ROLE=panel
+  elif [ -f "$MANAGE_DIR/install-agent.sh" ]; then ROLE=agent
   else help; exit 0; fi
 fi
 case "$ROLE" in agent|panel) ;; *) help; exit 1 ;; esac
 ACTION="${1:-}"; [ "$#" = 0 ] || shift
 if [ -z "$ACTION" ]; then
   printf '\nForwardX %s 管理 / Management\n' "$ROLE"
+  if [ "$ROLE" = agent ] && [ ! -f "$AGENT_CONFIG" ]; then
+    echo '  10) 安装 Agent / Install Agent'
+    echo '  0) 退出 / Exit'
+    read_agent_value 'Select / 选择: ' choice || exit 0
+    [ "$choice" = 10 ] || exit 0
+    ACTION=install
+  else
   printf '%s\n' '  1) 关键信息 / Info' '  2) 运行状态 / Status' '  3) 查看日志 / Logs' '  4) 重启面板或 Agent / Restart' '  5) 代理设置 / Proxy' '  6) 升级 / Upgrade' '  7) 重装修复 / Repair' '  8) 卸载 / Uninstall'
   if [ "$ROLE" = panel ]; then echo '  9) 重置管理员密码 / Reset admin password'; fi
-  if [ "$ROLE" = agent ]; then echo '  9) 转发环境（查看 / 安装）/ Forwarding tools'; fi
+  if [ "$ROLE" = agent ]; then
+    printf '%s\n' '  9) 转发环境（查看 / 安装）/ Forwarding tools' '  10) 配置面板地址和 Token / Configure' '  11) 启动 Agent / Start' '  12) 停止 Agent / Stop'
+  fi
   echo '  0) 退出 / Exit'
   printf 'Select / 选择: ' > /dev/tty; IFS= read -r choice < /dev/tty
   case "$choice" in 1) ACTION=info ;; 2) ACTION=status ;; 3) ACTION=logs ;; 4) ACTION=restart ;; 5)
@@ -191,7 +276,11 @@ if [ -z "$ACTION" ]; then
     case "$choice" in 1) set -- show ;; 2) set -- set ;; 3) set -- off ;; *) exit 0 ;; esac ;;
     6) ACTION=upgrade ;; 7) ACTION=repair ;; 8) ACTION=uninstall ;; 9)
       if [ "$ROLE" = agent ]; then ACTION=tools; set -- menu; else ACTION=reset-admin; fi ;;
+    10|11|12)
+      [ "$ROLE" = agent ] || exit 0
+      case "$choice" in 10) ACTION=configure ;; 11) ACTION=start ;; 12) ACTION=stop ;; esac ;;
     *) exit 0 ;; esac
+  fi
 fi
 PANEL_KIND="$(metadata panel-kind)"; PANEL_DIR="$(metadata panel-dir)"
 PANEL_SERVICE="$(metadata panel-service)"; PANEL_SERVICE="${PANEL_SERVICE:-forwardx-panel}"
@@ -199,6 +288,7 @@ PANEL_CONTAINER="$(metadata panel-container)"; PANEL_CONTAINER="${PANEL_CONTAINE
 if [ "$ROLE" = agent ]; then
   case "$ACTION" in
     proxy) agent_proxy "$@" ;;
+    configure) agent_configure "$@" ;;
     tools|env) agent_tools "$@" ;;
     info|address|config)
       echo "Agent config: $AGENT_CONFIG"; echo 'Service: forwardx-agent'
@@ -211,12 +301,7 @@ if [ "$ROLE" = agent ]; then
       if [ "$ACTION" = uninstall ]; then confirm 'Uninstall Agent and managed forwarding? / 卸载会中断转发，继续？' || exit 0; fi
       if [ "$ACTION" = repair ]; then confirm 'Reinstall/upgrade binaries, preserve config, restart Agent? / 保留配置重装修复？' || exit 0; ACTION=upgrade; fi
       if [ "$ACTION" = install ] && [ ! -f "$AGENT_CONFIG" ]; then
-        panel='' token='' args=()
-        while [ "$#" -gt 0 ]; do
-          case "$1" in --panel-url) [ "$#" -ge 2 ] || die 'Missing panel URL.'; panel="$2"; shift 2 ;; --token) [ "$#" -ge 2 ] || die 'Missing token.'; token="$2"; shift 2 ;; --proxy) [ "$#" -ge 2 ] || die 'Missing proxy URL.'; args+=(--proxy "$2"); shift 2 ;; --no-proxy) args+=(--no-proxy); shift ;; *) die "Unknown option: ${1%%=*}" ;; esac
-        done
-        [ -n "$panel" ] && [ -n "$token" ] || die 'Use agent install --panel-url URL --token TOKEN [--proxy URL].'
-        PANEL_URL="$panel" bash "$MANAGE_DIR/install-agent.sh" install "$token" "${args[@]}"
+        agent_install "$@"
       else
         [ "$ACTION" != install ] || ACTION=upgrade # preserve existing registration
         bash "$MANAGE_DIR/install-agent.sh" "$ACTION" "$@"

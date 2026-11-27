@@ -73,7 +73,7 @@ test("only explicit installation rotates identity; normal upgrades preserve reti
   assert.doesNotMatch(upgrade, /rm -f "\$CONFIG_DIR\/installation\.json"/);
 });
 
-test("install and upgrade provision optional conntrack and verify persistent source accounting", () => {
+test("initial install provisions optional conntrack and both actions verify persistent source accounting", () => {
   const script = generateInstallScript("https://panel.example.com");
   const packages = scriptSection(script, "install_conntrack_optional() {", "persist_source_accounting_setting() {");
   assert.match(packages, /apt-get install -y -qq conntrack/);
@@ -87,7 +87,9 @@ test("install and upgrade provision optional conntrack and verify persistent sou
   const install = scriptSection(script, "do_install() {", "do_upgrade() {");
   const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");
   assert.match(install, /\n  ensure_source_accounting\n/);
-  assert.match(upgrade, /\n    install_deps\n    ensure_source_accounting\n/);
+  assert.match(install, /\n  install_deps\n/);
+  assert.match(upgrade, /\n    ensure_source_accounting\n/);
+  assert.match(upgrade, /\n    install_deps\n/);
   assert.doesNotMatch(install, /sysctl -p|内核参数就绪/);
   const verify = scriptSection(script, "ensure_source_accounting() {", "install_deps() {");
   assert.match(verify, /modprobe nf_conntrack/);
@@ -392,14 +394,22 @@ test("nginx installer validates a staged candidate and preserves the existing ru
   assert.match(commit, /mv -f "\$CANDIDATE" "\$NGINX_BIN"/);
 });
 
-test("Agent install and upgrade always prepare Nginx independently of protocol switches", () => {
+test("Nginx selection keeps optional setup out of normal upgrades and preserves existing components", () => {
   const script = generateInstallScript("https://panel.example.com");
-  assert.doesNotMatch(script, /FORWARDX_INSTALL_NGINX/);
+  const helper = scriptSection(script, "install_selected_nginx() {", "do_install_tool() {");
+  assert.match(helper, /no\) return 0/);
+  assert.match(helper, /ensure_nginx_runtime \|\| echo/);
+  const upgrade = scriptSection(script, "do_upgrade() {", "# ============ 入口 ============");
+  assert.match(upgrade, /if \[ "\$FORWARDX_INSTALL_MIMIC" = yes \]; then prompt_install_mimic; fi/);
+  assert.doesNotMatch(upgrade, /install_realm/);
+  assert.match(upgrade, /install_deps/);
+  assert.match(upgrade, /install_selected_nginx/);
+  assert.match(upgrade, /install_runtime/);
   for (const section of [
     scriptSection(script, "do_install() {", "do_upgrade() {"),
-    scriptSection(script, "do_upgrade() {", "# ============ 入口 ============"),
+    upgrade,
   ]) {
-    assert.match(section, /ensure_nginx_runtime \|\| echo/);
+    assert.match(section, /install_selected_nginx/);
     assert.doesNotMatch(section, /remove_service_by_name "\$NGINX_SERVICE_NAME"|rm -f "\$NGINX_BIN"|rm -rf \/etc\/forwardx\/nginx/);
   }
   const route = fs.readFileSync(new URL("./agentRoutes.ts", import.meta.url), "utf8");
